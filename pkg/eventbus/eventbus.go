@@ -160,11 +160,13 @@ func (eb *EventBus) Send(target string, eventType string, data *framework.EventD
 
 // Query delegates SQL queries to the core plugin
 func (eb *EventBus) Query(sql string, params ...interface{}) (framework.QueryResult, error) {
-	if eb.sqlQueryHandler == nil {
-		return nil, fmt.Errorf("SQL query handler not configured")
-	}
-
-	return nil, fmt.Errorf("query method not implemented: eventbus does not support synchronous query operations")
+	// The EventBus is designed for asynchronous event-driven communication
+	// Synchronous queries are not supported in the current architecture
+	// Plugins should either:
+	// 1. Use their own database connections for queries
+	// 2. Use async patterns with request/response correlation
+	// 3. Load data during Start() instead of Init()
+	return nil, fmt.Errorf("synchronous queries not supported by EventBus - use async patterns or direct DB access")
 }
 
 // Exec delegates SQL exec operations to the core plugin
