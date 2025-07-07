@@ -71,6 +71,10 @@ func (m *mockEventBus) Subscribe(eventType string, handler framework.EventHandle
 	return nil
 }
 
+func (m *mockEventBus) SetSQLHandlers(queryHandler, execHandler framework.EventHandler) {
+	// Mock implementation - can be empty
+}
+
 type mockQueryResult struct {
 	hasNext bool
 	value   *time.Time

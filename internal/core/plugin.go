@@ -62,6 +62,18 @@ func (p *Plugin) Initialize(eventBus framework.EventBus) error {
 	// Set up Cytube event handlers
 	p.setupCytubeHandlers()
 
+	// Subscribe to SQL events
+	if err := p.eventBus.Subscribe("sql.exec", p.handleSQLExec); err != nil {
+		return fmt.Errorf("failed to subscribe to SQL exec events: %w", err)
+	}
+
+	if err := p.eventBus.Subscribe("sql.query", p.handleSQLQuery); err != nil {
+		return fmt.Errorf("failed to subscribe to SQL query events: %w", err)
+	}
+
+	// Register ourselves as the SQL handler for the EventBus
+	p.eventBus.SetSQLHandlers(p.handleSQLQuery, p.handleSQLExec)
+
 	return nil
 }
 
@@ -124,6 +136,39 @@ func (p *Plugin) Stop() error {
 func (p *Plugin) HandleEvent(ctx context.Context, event framework.Event) error {
 	// Core plugin primarily publishes events, doesn't handle many
 	return nil
+}
+
+// handleSQLExec handles SQL exec requests from other plugins
+func (p *Plugin) handleSQLExec(event framework.Event) error {
+	// Check if this is a DataEvent which carries EventData
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok {
+		return nil
+	}
+
+	if dataEvent.Data == nil || dataEvent.Data.SQLRequest == nil {
+		return nil
+	}
+
+	req := dataEvent.Data.SQLRequest
+	return p.sqlModule.HandleSQLExec(p.ctx, *req)
+}
+
+// handleSQLQuery handles SQL query requests from other plugins
+func (p *Plugin) handleSQLQuery(event framework.Event) error {
+	// Check if this is a DataEvent which carries EventData
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok {
+		return nil
+	}
+
+	if dataEvent.Data == nil || dataEvent.Data.SQLRequest == nil {
+		return nil
+	}
+
+	req := dataEvent.Data.SQLRequest
+	_, err := p.sqlModule.HandleSQLRequest(p.ctx, *req)
+	return err
 }
 
 // setupCytubeHandlers starts a goroutine to process Cytube events

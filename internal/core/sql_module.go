@@ -193,6 +193,23 @@ func (s *SQLModule) initializeSchema(ctx context.Context) error {
 	return nil
 }
 
+// HandleSQLExec executes a SQL statement that doesn't return rows (INSERT, UPDATE, DELETE)
+func (s *SQLModule) HandleSQLExec(ctx context.Context, req framework.SQLRequest) error {
+	if s.pool == nil {
+		return fmt.Errorf("database not connected")
+	}
+
+	// Validate that the query is for this plugin's tables
+	// In a real implementation, we'd parse the SQL to ensure it only accesses allowed tables
+
+	_, err := s.pool.Exec(ctx, req.Query, req.Params...)
+	if err != nil {
+		return fmt.Errorf("exec failed: %w", err)
+	}
+
+	return nil
+}
+
 // HandleSQLRequest processes SQL requests from other plugins
 func (s *SQLModule) HandleSQLRequest(ctx context.Context, req framework.SQLRequest) (framework.QueryResult, error) {
 	if s.pool == nil {

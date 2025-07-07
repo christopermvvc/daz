@@ -57,6 +57,10 @@ func (m *mockEventBus) Subscribe(eventType string, handler framework.EventHandle
 	return nil
 }
 
+func (m *mockEventBus) SetSQLHandlers(queryHandler, execHandler framework.EventHandler) {
+	// Mock implementation - can be empty
+}
+
 func TestNewPlugin(t *testing.T) {
 	// Test with nil config
 	p := NewPlugin(nil)

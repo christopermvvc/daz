@@ -33,6 +33,7 @@ type EventBus interface {
 	Query(sql string, params ...interface{}) (QueryResult, error)
 	Exec(sql string, params ...interface{}) error
 	Subscribe(eventType string, handler EventHandler) error
+	SetSQLHandlers(queryHandler, execHandler EventHandler)
 }
 
 type EventHandler func(event Event) error
