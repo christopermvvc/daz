@@ -1,8 +1,8 @@
-# Command Routing Status - RESOLVED ✅
+# EventFilter (Command Routing + Filtering) Status - RESOLVED ✅
 
 ## Complete Solution Implemented (2025-07-07)
 
-The command routing system has been fully fixed and is now operational. The solution used the existing `DataEvent` wrapper type to pass both event metadata and data through the event bus.
+The EventFilter plugin (merged Filter + Command Router) has been fully implemented and is operational. This unified plugin handles both event filtering/routing and command processing. The solution uses the existing `DataEvent` wrapper type to pass both event metadata and data through the event bus.
 
 ## Fixes Implemented
 

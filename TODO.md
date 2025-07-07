@@ -1,7 +1,7 @@
 ## Current Task
 - [ ] Phase 5: Plugin Framework Extension
-  - [ ] Commands Plugin - Handle user commands with permissions
-  - [ ] User Tracker Plugin - Track user activity and sessions
+  - [x] Commands Plugin - Handle user commands with permissions (commandrouter)
+  - [x] User Tracker Plugin - Track user activity and sessions
   - [ ] Media Tracker Plugin - Track video plays and statistics
   - [ ] Analytics Plugin - Aggregate channel statistics
   - [ ] Plugin lifecycle management in main.go
@@ -34,11 +34,13 @@
   - [x] Implement Go channel-based message passing
   - [x] Add plugin registration and event routing
   - [x] Comprehensive testing with race detection
-- [x] **Phase 4: Filter Plugin**
-  - [x] Implement event routing based on rules
-  - [x] Add command detection (! prefix)
-  - [x] Direct message forwarding
-  - [x] Integration with event bus
+- [x] **Phase 4: EventFilter Plugin (Merged Filter + Command Router)**
+  - [x] Implement event filtering and routing based on rules
+  - [x] Add command detection (! prefix) and processing
+  - [x] Database-backed command registry with aliases
+  - [x] Permission-based command access control
+  - [x] Direct message forwarding to target plugins
+  - [x] Integration with event bus and SQL module
 
 ## Next Steps
 - [ ] Phase 6: Advanced Features

@@ -56,8 +56,7 @@ The project follows a modular plugin-based architecture:
 - **Core Plugin**: Manages Cytube connection and SQL module
 - **Event Bus**: Asynchronous message passing via Go channels
 - **Plugin System**: All functionality implemented as plugins
-- **Filter Plugin**: Detects commands and routes events
-- **Command Router**: Manages command registry and dispatches to command plugins
+- **EventFilter Plugin**: Unified event filtering, routing, and command processing
 - **Command Plugins**: Individual plugins for each command (help, about, uptime)
 - **Persistent Storage**: PostgreSQL for data persistence
 
@@ -66,10 +65,9 @@ The project follows a modular plugin-based architecture:
 Commands are processed through the following pipeline:
 1. User types a command (e.g., `!help`) in Cytube chat
 2. Core plugin receives the chat message and broadcasts it
-3. Filter plugin detects the command prefix and extracts command data
-4. Command router receives the command and routes to the appropriate plugin
-5. Command plugin executes and sends response back through the event bus
-6. Core plugin sends the response to Cytube
+3. EventFilter plugin detects the command prefix, validates permissions, and routes to appropriate plugin
+4. Command plugin executes and sends response back through the event bus
+5. Core plugin sends the response to Cytube
 
 ### Available Commands
 

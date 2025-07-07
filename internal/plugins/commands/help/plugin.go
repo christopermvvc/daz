@@ -151,73 +151,18 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 }
 
 func (p *Plugin) handleHelpCommand(req *framework.PluginRequest) {
-	// Query command registry from database
-	query := `
-		SELECT command, plugin_name, is_alias, primary_command, min_rank
-		FROM daz_command_registry
-		WHERE enabled = true
-		ORDER BY plugin_name, is_alias, command
-	`
+	// For now, provide a static help message until async queries are implemented
+	// TODO: Implement async query pattern or direct DB access
 
-	rows, err := p.eventBus.Query(query)
-	if err != nil {
-		log.Printf("[ERROR] Failed to query command registry: %v", err)
-		p.sendResponse(req, "Error: Unable to retrieve command list")
-		return
+	lines := []string{
+		"Available Commands:",
+		"",
+		"• help: !help, !h, !commands - Show this help message",
+		"• about: !about, !version, !info - Show bot information",
+		"• uptime: !uptime, !up - Show bot uptime",
+		"",
+		"Use !<command> to execute a command",
 	}
-	defer rows.Close()
-
-	// Build help message
-	var lines []string
-	lines = append(lines, "Available Commands:")
-	lines = append(lines, "")
-
-	currentPlugin := ""
-	var commands []string
-
-	for rows.Next() {
-		var cmd, pluginName string
-		var isAlias bool
-		var primaryCmd *string
-		var minRank int
-
-		if err := rows.Scan(&cmd, &pluginName, &isAlias, &primaryCmd, &minRank); err != nil {
-			continue
-		}
-
-		// Skip aliases if configured to not show them
-		if isAlias && !p.config.ShowAliases {
-			continue
-		}
-
-		// New plugin section
-		if pluginName != currentPlugin {
-			if currentPlugin != "" && len(commands) > 0 {
-				lines = append(lines, fmt.Sprintf("%s: %s", currentPlugin, commands))
-				commands = nil
-			}
-			currentPlugin = pluginName
-		}
-
-		// Format command
-		cmdStr := fmt.Sprintf("!%s", cmd)
-		if minRank > 0 {
-			cmdStr = fmt.Sprintf("%s (rank %d+)", cmdStr, minRank)
-		}
-		if isAlias && primaryCmd != nil {
-			cmdStr = fmt.Sprintf("%s → !%s", cmdStr, *primaryCmd)
-		}
-
-		commands = append(commands, cmdStr)
-	}
-
-	// Add last plugin's commands
-	if currentPlugin != "" && len(commands) > 0 {
-		lines = append(lines, fmt.Sprintf("%s: %s", currentPlugin, commands))
-	}
-
-	lines = append(lines, "")
-	lines = append(lines, "Use !about for more information")
 
 	message := ""
 	for _, line := range lines {
@@ -236,8 +181,8 @@ func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
 		},
 	}
 
-	// Send to core plugin to output to chat
-	if err := p.eventBus.Send("core", "cytube.send", response); err != nil {
+	// Broadcast to cytube.send event
+	if err := p.eventBus.Broadcast("cytube.send", response); err != nil {
 		log.Printf("[ERROR] Failed to send help response: %v", err)
 	}
 }

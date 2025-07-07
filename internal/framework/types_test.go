@@ -21,7 +21,7 @@ func TestEventDataMarshaling(t *testing.T) {
 					UserID:   "user123",
 				},
 			},
-			want: `{"chat_message":{"username":"testuser","message":"Hello world","user_rank":1,"user_id":"user123"}}`,
+			want: `{"chat_message":{"username":"testuser","message":"Hello world","user_rank":1,"user_id":"user123","channel":""}}`,
 		},
 		{
 			name: "user join data",

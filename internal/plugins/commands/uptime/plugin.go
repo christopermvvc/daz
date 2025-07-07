@@ -144,21 +144,8 @@ func (p *Plugin) handleUptimeCommand(req *framework.PluginRequest) {
 	// Format uptime message
 	message := formatUptime(uptime)
 
-	// Get bot start time from database (when available)
-	query := `
-		SELECT MIN(timestamp) 
-		FROM daz_core_events 
-		WHERE event_type = 'cytube.event.connect'
-	`
-
-	rows, err := p.eventBus.Query(query)
-	if err == nil && rows.Next() {
-		var firstConnect *time.Time
-		if err := rows.Scan(&firstConnect); err == nil && firstConnect != nil {
-			totalUptime := time.Since(*firstConnect)
-			message += fmt.Sprintf("\nTotal uptime since first run: %s", formatUptime(totalUptime))
-		}
-	}
+	// Skip database query for now due to sync query limitations
+	// TODO: Implement async query pattern or direct DB access
 
 	p.sendResponse(req, message)
 }
@@ -219,8 +206,8 @@ func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
 		},
 	}
 
-	// Send to core plugin to output to chat
-	if err := p.eventBus.Send("core", "cytube.send", response); err != nil {
+	// Broadcast to cytube.send event
+	if err := p.eventBus.Broadcast("cytube.send", response); err != nil {
 		log.Printf("[ERROR] Failed to send uptime response: %v", err)
 	}
 }

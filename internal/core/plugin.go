@@ -71,6 +71,11 @@ func (p *Plugin) Initialize(eventBus framework.EventBus) error {
 		return fmt.Errorf("failed to subscribe to SQL query events: %w", err)
 	}
 
+	// Subscribe to chat message sending
+	if err := p.eventBus.Subscribe("cytube.send", p.handleCytubeSend); err != nil {
+		return fmt.Errorf("failed to subscribe to cytube send events: %w", err)
+	}
+
 	// Register ourselves as the SQL handler for the EventBus
 	p.eventBus.SetSQLHandlers(p.handleSQLQuery, p.handleSQLExec)
 
@@ -171,6 +176,45 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 	return err
 }
 
+// handleCytubeSend handles requests to send messages to Cytube
+func (p *Plugin) handleCytubeSend(event framework.Event) error {
+	log.Printf("[Core] Received cytube.send event")
+
+	// Check if this is a DataEvent which carries EventData
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok {
+		log.Printf("[Core] Event is not DataEvent, got %T", event)
+		return nil
+	}
+
+	if dataEvent.Data == nil || dataEvent.Data.RawMessage == nil {
+		log.Printf("[Core] No RawMessage in event data")
+		return nil
+	}
+
+	// Send chat message to Cytube
+	msg := dataEvent.Data.RawMessage.Message
+	log.Printf("[Core] Sending message to Cytube: %d chars", len(msg))
+
+	msgData := map[string]string{
+		"msg": msg,
+	}
+
+	// Check if we have a connection
+	if p.cytubeConn == nil {
+		return fmt.Errorf("not connected to Cytube")
+	}
+
+	err := p.cytubeConn.Send("chatMsg", msgData)
+	if err != nil {
+		log.Printf("[Core] Failed to send message: %v", err)
+		return err
+	}
+
+	log.Printf("[Core] Message sent successfully")
+	return nil
+}
+
 // setupCytubeHandlers starts a goroutine to process Cytube events
 func (p *Plugin) setupCytubeHandlers() {
 	go func() {
@@ -194,6 +238,7 @@ func (p *Plugin) setupCytubeHandlers() {
 						Message:  e.Message,
 						UserRank: e.UserRank,
 						UserID:   e.UserID,
+						Channel:  e.ChannelName,
 					}
 				case *framework.UserJoinEvent:
 					eventType = eventbus.EventCytubeUserJoin

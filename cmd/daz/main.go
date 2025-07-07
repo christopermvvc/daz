@@ -15,6 +15,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/help"
 	"github.com/hildolfr/daz/internal/plugins/commands/uptime"
 	"github.com/hildolfr/daz/internal/plugins/filter"
+	"github.com/hildolfr/daz/internal/plugins/usertracker"
 	"github.com/hildolfr/daz/pkg/eventbus"
 )
 
@@ -65,7 +66,7 @@ func run(config *core.Config) error {
 	// Create the real event bus with default configuration
 	eventBusConfig := &eventbus.Config{
 		BufferSizes: map[string]int{
-			"cytube.event":              1000,
+			"cytube.event":              5000, // Increased from 1000 to handle high-frequency media updates
 			"sql.":                      100,
 			"plugin.":                   100, // Increased for command routing
 			"plugin.request":            200, // Buffer for direct plugin requests
@@ -100,6 +101,14 @@ func run(config *core.Config) error {
 		return fmt.Errorf("failed to initialize filter plugin: %w", err)
 	}
 
+	// Create and initialize the usertracker plugin
+	userTrackerPlugin := usertracker.NewPlugin(nil)
+
+	log.Println("Initializing usertracker plugin...")
+	if err := userTrackerPlugin.Initialize(bus); err != nil {
+		return fmt.Errorf("failed to initialize usertracker plugin: %w", err)
+	}
+
 	// Create and initialize the commandrouter plugin
 	commandRouterPlugin := commandrouter.New()
 
@@ -130,18 +139,19 @@ func run(config *core.Config) error {
 		}
 	}()
 
-	// Finally start commandrouter plugin
-	log.Println("Starting commandrouter plugin...")
-	if err := commandRouterPlugin.Start(); err != nil {
-		return fmt.Errorf("failed to start commandrouter plugin: %w", err)
+	// Start usertracker plugin
+	log.Println("Starting usertracker plugin...")
+	if err := userTrackerPlugin.Start(); err != nil {
+		return fmt.Errorf("failed to start usertracker plugin: %w", err)
 	}
 	defer func() {
-		if err := commandRouterPlugin.Stop(); err != nil {
-			log.Printf("Error stopping commandrouter plugin: %v", err)
+		if err := userTrackerPlugin.Stop(); err != nil {
+			log.Printf("Error stopping usertracker plugin: %v", err)
 		}
 	}()
 
-	// Initialize and start command plugins
+	// Initialize and start command plugins BEFORE commandrouter
+	// This ensures commands are registered before we start processing them
 	commandPlugins := []struct {
 		name   string
 		plugin framework.Plugin
@@ -170,6 +180,17 @@ func run(config *core.Config) error {
 			}
 		}()
 	}
+
+	// Finally start commandrouter plugin AFTER command plugins have registered
+	log.Println("Starting commandrouter plugin...")
+	if err := commandRouterPlugin.Start(); err != nil {
+		return fmt.Errorf("failed to start commandrouter plugin: %w", err)
+	}
+	defer func() {
+		if err := commandRouterPlugin.Stop(); err != nil {
+			log.Printf("Error stopping commandrouter plugin: %v", err)
+		}
+	}()
 
 	log.Println("Bot is running! Press Ctrl+C to stop.")
 

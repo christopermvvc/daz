@@ -41,6 +41,11 @@ func (m *mockEventBus) Broadcast(eventType string, data *framework.EventData) er
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.broadcasts = append(m.broadcasts, broadcastCall{eventType: eventType, data: data})
+	// Notify that Broadcast was called (for tests expecting response)
+	select {
+	case m.sendNotify <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
@@ -277,36 +282,31 @@ func TestHandleCommand(t *testing.T) {
 		t.Errorf("handleCommand() error = %v", err)
 	}
 
-	// Wait for async handler to complete
-	select {
-	case <-bus.sendNotify:
-		// Send was called
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("Timeout waiting for handler to send response")
-	}
+	// Wait for async handler to complete - it will broadcast the response
+	// Give it a moment to process since it's async
+	time.Sleep(100 * time.Millisecond)
 
-	// Check that a response was sent
+	// Check that a response was broadcast (not sent)
 	bus.mu.Lock()
-	sendCount := len(bus.sends)
-	if sendCount != 1 {
+	// We should have 2 broadcasts: 1 for command registration + 1 for the response
+	broadcastCount := len(bus.broadcasts)
+	if broadcastCount != 2 {
 		bus.mu.Unlock()
-		t.Fatalf("Expected 1 send, got %d", sendCount)
+		t.Fatalf("Expected 2 broadcasts, got %d", broadcastCount)
 	}
-	send := bus.sends[0]
+	// Get the second broadcast (the response)
+	broadcast := bus.broadcasts[1]
 	bus.mu.Unlock()
-	if send.target != "core" {
-		t.Errorf("Expected send target 'core', got '%s'", send.target)
-	}
-	if send.eventType != "cytube.send" {
-		t.Errorf("Expected send eventType 'cytube.send', got '%s'", send.eventType)
+	if broadcast.eventType != "cytube.send" {
+		t.Errorf("Expected broadcast eventType 'cytube.send', got '%s'", broadcast.eventType)
 	}
 
 	// Check message content
-	if send.data.RawMessage == nil {
+	if broadcast.data.RawMessage == nil {
 		t.Fatal("Expected RawMessage data")
 	}
 
-	message := send.data.RawMessage.Message
+	message := broadcast.data.RawMessage.Message
 	if !strings.Contains(message, "Bot uptime:") {
 		t.Error("Uptime message should contain 'Bot uptime:'")
 	}

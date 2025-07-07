@@ -84,12 +84,17 @@ func (p *Plugin) Start() error {
 	p.running = true
 	p.mu.Unlock()
 
-	if err := p.eventBus.Subscribe(eventbus.EventPluginCommand, p.HandleEvent); err != nil {
-		return fmt.Errorf("failed to subscribe to command events: %w", err)
-	}
-
+	// Subscribe to registration events first
 	if err := p.eventBus.Subscribe("command.register", p.HandleEvent); err != nil {
 		return fmt.Errorf("failed to subscribe to register events: %w", err)
+	}
+
+	// Give command plugins time to register their commands
+	time.Sleep(100 * time.Millisecond)
+
+	// Now subscribe to command events
+	if err := p.eventBus.Subscribe(eventbus.EventPluginCommand, p.HandleEvent); err != nil {
+		return fmt.Errorf("failed to subscribe to command events: %w", err)
 	}
 
 	log.Printf("[INFO] Command router plugin started: %s", p.name)
@@ -330,6 +335,7 @@ func (p *Plugin) handleCommandEvent(event *framework.DataEvent) error {
 
 	// Send to specific plugin
 	eventType := fmt.Sprintf("command.%s.execute", targetPlugin)
+	log.Printf("[CommandRouter] Broadcasting command %s to %s via %s", cmdName, targetPlugin, eventType)
 	return p.eventBus.Broadcast(eventType, cmdData)
 }
 

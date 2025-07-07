@@ -37,6 +37,7 @@ type ChatMessageData struct {
 	Message  string `json:"message"`
 	UserRank int    `json:"user_rank"`
 	UserID   string `json:"user_id"`
+	Channel  string `json:"channel"`
 }
 
 // UserJoinData represents user join event data

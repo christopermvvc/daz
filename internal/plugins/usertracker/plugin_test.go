@@ -1,0 +1,320 @@
+package usertracker
+
+import (
+	"database/sql"
+	"testing"
+	"time"
+
+	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/pkg/eventbus"
+)
+
+// MockEventBus implements framework.EventBus for testing
+type MockEventBus struct {
+	broadcasts []mockEvent
+	sends      []mockEvent
+	queries    []mockQuery
+	execs      []mockExec
+	subs       map[string][]framework.EventHandler
+}
+
+type mockEvent struct {
+	eventType string
+	data      *framework.EventData
+	target    string
+}
+
+type mockQuery struct {
+	query  string
+	params []interface{}
+}
+
+type mockExec struct {
+	query  string
+	params []interface{}
+}
+
+// MockQueryResult implements framework.QueryResult
+type MockQueryResult struct {
+	rows   [][]interface{}
+	cursor int
+}
+
+func (m *MockEventBus) Broadcast(eventType string, data *framework.EventData) error {
+	m.broadcasts = append(m.broadcasts, mockEvent{eventType: eventType, data: data})
+	return nil
+}
+
+func (m *MockEventBus) Send(target string, eventType string, data *framework.EventData) error {
+	m.sends = append(m.sends, mockEvent{target: target, eventType: eventType, data: data})
+	return nil
+}
+
+func (m *MockEventBus) Query(sql string, params ...interface{}) (framework.QueryResult, error) {
+	m.queries = append(m.queries, mockQuery{query: sql, params: params})
+	return &MockQueryResult{}, nil
+}
+
+func (m *MockEventBus) Exec(sql string, params ...interface{}) error {
+	m.execs = append(m.execs, mockExec{query: sql, params: params})
+	return nil
+}
+
+func (m *MockEventBus) Subscribe(eventType string, handler framework.EventHandler) error {
+	if m.subs == nil {
+		m.subs = make(map[string][]framework.EventHandler)
+	}
+	m.subs[eventType] = append(m.subs[eventType], handler)
+	return nil
+}
+
+func (m *MockEventBus) SetSQLHandlers(queryHandler, execHandler framework.EventHandler) {
+	// Not needed for tests
+}
+
+func (r *MockQueryResult) Scan(dest ...interface{}) error {
+	if r.cursor < 0 || r.cursor >= len(r.rows) {
+		return sql.ErrNoRows
+	}
+	row := r.rows[r.cursor]
+	for i, v := range row {
+		if i < len(dest) {
+			switch d := dest[i].(type) {
+			case *string:
+				*d = v.(string)
+			case *int:
+				*d = v.(int)
+			case *bool:
+				*d = v.(bool)
+			case *time.Time:
+				*d = v.(time.Time)
+			case *sql.NullTime:
+				if v == nil {
+					*d = sql.NullTime{Valid: false}
+				} else {
+					*d = sql.NullTime{Time: v.(time.Time), Valid: true}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (r *MockQueryResult) Next() bool {
+	r.cursor++
+	return r.cursor < len(r.rows)
+}
+
+func (r *MockQueryResult) Close() error {
+	return nil
+}
+
+func TestPluginInitialization(t *testing.T) {
+	plugin := NewPlugin(nil)
+
+	if plugin.Name() != "usertracker" {
+		t.Errorf("Expected plugin name 'usertracker', got '%s'", plugin.Name())
+	}
+
+	if plugin.SupportsStream() {
+		t.Error("Plugin should not support streaming")
+	}
+}
+
+func TestPluginInitialize(t *testing.T) {
+	plugin := NewPlugin(nil)
+	mockBus := &MockEventBus{}
+
+	err := plugin.Initialize(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to initialize plugin: %v", err)
+	}
+
+	// Check that tables were created
+	if len(mockBus.execs) != 2 {
+		t.Errorf("Expected 2 table creation queries, got %d", len(mockBus.execs))
+	}
+}
+
+func TestPluginStart(t *testing.T) {
+	plugin := NewPlugin(nil)
+	mockBus := &MockEventBus{}
+
+	err := plugin.Initialize(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to initialize plugin: %v", err)
+	}
+
+	err = plugin.Start()
+	if err != nil {
+		t.Fatalf("Failed to start plugin: %v", err)
+	}
+
+	// Check subscriptions
+	expectedSubs := []string{
+		eventbus.EventCytubeUserJoin,
+		eventbus.EventCytubeUserLeave,
+		eventbus.EventCytubeChatMsg,
+		"plugin.usertracker.seen",
+	}
+
+	for _, sub := range expectedSubs {
+		if _, ok := mockBus.subs[sub]; !ok {
+			t.Errorf("Expected subscription to %s", sub)
+		}
+	}
+
+	// Test stop
+	err = plugin.Stop()
+	if err != nil {
+		t.Fatalf("Failed to stop plugin: %v", err)
+	}
+}
+
+func TestHandleUserJoin(t *testing.T) {
+	plugin := NewPlugin(nil)
+	mockBus := &MockEventBus{}
+
+	err := plugin.Initialize(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to initialize plugin: %v", err)
+	}
+
+	err = plugin.Start()
+	if err != nil {
+		t.Fatalf("Failed to start plugin: %v", err)
+	}
+
+	// Create user join event
+	joinData := &framework.EventData{
+		UserJoin: &framework.UserJoinData{
+			Username: "testuser",
+			UserRank: 2,
+		},
+	}
+
+	event := framework.NewDataEvent(eventbus.EventCytubeUserJoin, joinData)
+
+	// Get the handler and call it
+	handlers := mockBus.subs[eventbus.EventCytubeUserJoin]
+	if len(handlers) == 0 {
+		t.Fatal("No handler registered for user join")
+	}
+
+	// Clear execs from initialization
+	mockBus.execs = nil
+
+	err = handlers[0](event)
+	if err != nil {
+		t.Fatalf("Handler failed: %v", err)
+	}
+
+	// Should have 2 SQL execs (session + history)
+	if len(mockBus.execs) != 2 {
+		t.Errorf("Expected 2 SQL execs, got %d", len(mockBus.execs))
+	}
+
+	// Check in-memory state
+	plugin.mu.RLock()
+	user, exists := plugin.users["testuser"]
+	plugin.mu.RUnlock()
+
+	if !exists {
+		t.Error("User not found in memory")
+	} else {
+		if user.Username != "testuser" {
+			t.Errorf("Expected username 'testuser', got '%s'", user.Username)
+		}
+		if user.Rank != 2 {
+			t.Errorf("Expected rank 2, got %d", user.Rank)
+		}
+		if !user.IsActive {
+			t.Error("User should be active")
+		}
+	}
+}
+
+func TestHandleUserLeave(t *testing.T) {
+	plugin := NewPlugin(nil)
+	mockBus := &MockEventBus{}
+
+	err := plugin.Initialize(mockBus)
+	if err != nil {
+		t.Fatalf("Failed to initialize plugin: %v", err)
+	}
+
+	err = plugin.Start()
+	if err != nil {
+		t.Fatalf("Failed to start plugin: %v", err)
+	}
+
+	// First add a user
+	plugin.mu.Lock()
+	plugin.users["testuser"] = &UserState{
+		Username:     "testuser",
+		Rank:         2,
+		JoinedAt:     time.Now(),
+		LastActivity: time.Now(),
+		IsActive:     true,
+	}
+	plugin.mu.Unlock()
+
+	// Create user leave event
+	leaveData := &framework.EventData{
+		UserLeave: &framework.UserLeaveData{
+			Username: "testuser",
+		},
+	}
+
+	event := framework.NewDataEvent(eventbus.EventCytubeUserLeave, leaveData)
+
+	// Get the handler and call it
+	handlers := mockBus.subs[eventbus.EventCytubeUserLeave]
+	if len(handlers) == 0 {
+		t.Fatal("No handler registered for user leave")
+	}
+
+	// Clear execs from initialization
+	mockBus.execs = nil
+
+	err = handlers[0](event)
+	if err != nil {
+		t.Fatalf("Handler failed: %v", err)
+	}
+
+	// Should have 2 SQL execs (session update + history)
+	if len(mockBus.execs) != 2 {
+		t.Errorf("Expected 2 SQL execs, got %d", len(mockBus.execs))
+	}
+
+	// Check in-memory state
+	plugin.mu.RLock()
+	user, exists := plugin.users["testuser"]
+	plugin.mu.RUnlock()
+
+	if !exists {
+		t.Error("User should still exist in memory")
+	} else if user.IsActive {
+		t.Error("User should not be active")
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		duration time.Duration
+		expected string
+	}{
+		{30 * time.Second, "30 seconds"},
+		{5 * time.Minute, "5 minutes"},
+		{2 * time.Hour, "2 hours"},
+		{36 * time.Hour, "1 days"},
+		{7 * 24 * time.Hour, "7 days"},
+	}
+
+	for _, test := range tests {
+		result := formatDuration(test.duration)
+		if result != test.expected {
+			t.Errorf("formatDuration(%v) = %s, expected %s", test.duration, result, test.expected)
+		}
+	}
+}

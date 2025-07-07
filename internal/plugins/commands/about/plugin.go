@@ -184,6 +184,8 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 }
 
 func (p *Plugin) handleAboutCommand(req *framework.PluginRequest) {
+	log.Printf("[About] Handling about command from %s", req.Data.Command.Params["username"])
+
 	// Build about message
 	var lines []string
 	lines = append(lines, fmt.Sprintf("%s v%s", p.config.Description, p.config.Version))
@@ -210,15 +212,20 @@ func (p *Plugin) handleAboutCommand(req *framework.PluginRequest) {
 
 func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
 	// Create a simple text response to send back to chat
+	channel := req.Data.Command.Params["channel"]
+	log.Printf("[About] Sending response to channel %s: %d chars", channel, len(message))
+
 	response := &framework.EventData{
 		RawMessage: &framework.RawMessageData{
 			Message: message,
-			Channel: req.Data.Command.Params["channel"],
+			Channel: channel,
 		},
 	}
 
-	// Send to core plugin to output to chat
-	if err := p.eventBus.Send("core", "cytube.send", response); err != nil {
+	// Broadcast to cytube.send event
+	if err := p.eventBus.Broadcast("cytube.send", response); err != nil {
 		log.Printf("[ERROR] Failed to send about response: %v", err)
+	} else {
+		log.Printf("[About] Response sent successfully via cytube.send")
 	}
 }

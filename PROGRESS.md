@@ -116,52 +116,61 @@ pkg/
 - Router management optimization (avoid duplicate routers)
 - Request/response correlation for plugin communication
 
-## Phase 4: Filter Plugin - COMPLETED ✅
+## Phase 4: EventFilter Plugin (Merged Filter + Command Router) - COMPLETED ✅
+
+### Architectural Decision:
+The originally planned Filter Plugin and Command Router Plugin have been **merged into a single EventFilter plugin** to eliminate redundancy and simplify the architecture.
 
 ### What Was Accomplished:
-1. **Filter Plugin Implementation** ✅
-   - Created `internal/plugins/filter/plugin.go` with complete implementation
-   - Event routing based on configurable rules
-   - Command detection and parsing with configurable prefix
+1. **Unified EventFilter Implementation** ✅
+   - Merged filtering and command routing into `internal/plugins/commandrouter/`
+   - Event filtering based on configurable rules
+   - Command detection, parsing, and routing
    - Direct message forwarding to specific plugins
-   - Non-blocking error handling
+   - Database-backed command registry with aliases
 
 2. **Event Analysis & Routing** ✅
    - Pattern matching with wildcard support (e.g., `cytube.event.*`)
    - Configurable routing rules with priorities
-   - Routes user events to user tracking plugins
-   - Routes media events to media tracking plugins
-   - Routes all events to analytics plugins
+   - Routes events to appropriate handler plugins
+   - Filters spam and unwanted content
+   - Permission-based command access control
 
-3. **Command Detection & Parsing** ✅
+3. **Command Processing** ✅
    - Detects commands by configurable prefix (default "!")
    - Parses command name and arguments
-   - Creates structured command events
-   - Forwards to command handler plugins with full context
+   - Database registry for command-to-plugin mapping
+   - Support for command aliases
+   - Rank-based permission checking
+   - Command execution history logging
 
 4. **Integration with Main Application** ✅
-   - Filter plugin initialized after core plugin
+   - EventFilter plugin initialized after core plugin
    - Proper startup sequence maintained
    - Graceful shutdown handling
+   - SQL integration for persistent command registry
 
 5. **Comprehensive Testing** ✅
    - Full unit test coverage
    - Mock event bus for testing
-   - Tests for command parsing, routing, and error cases
+   - Tests for filtering, command parsing, routing, and permissions
    - All tests passing with race detection
 
 ### Technical Achievements:
+- **Simplified Architecture** - One plugin instead of two
 - **Type-safe implementation** - No interface{} usage
 - **Thread-safe operations** - Proper mutex usage for state
 - **Production-ready** - Comprehensive error handling and logging
-- **Extensible design** - Easy to add new routing rules
+- **Database-backed** - Persistent command configuration
 
-### Current Filter Plugin Features:
+### Current EventFilter Features:
 - Subscribes to all Cytube events
+- Filters unwanted events (spam, rate limiting)
 - Command detection with configurable prefix
 - Pattern-based event routing
-- Direct plugin messaging
-- Default routing rules for common use cases
+- Database-backed command registry
+- Permission checking
+- Command execution history
 - Non-blocking event processing
 
 ## Phase 5: Plugin Framework Extension (In Progress)

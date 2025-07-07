@@ -2,7 +2,6 @@ package filter
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -144,7 +143,7 @@ func (p *Plugin) Status() framework.PluginStatus {
 
 // handleCytubeEvent routes Cytube events to appropriate plugins
 func (p *Plugin) handleCytubeEvent(event framework.Event) error {
-	cytubeEvent, ok := event.(*framework.CytubeEvent)
+	dataEvent, ok := event.(*framework.DataEvent)
 	if !ok {
 		return fmt.Errorf("invalid event type for cytube event")
 	}
@@ -155,8 +154,8 @@ func (p *Plugin) handleCytubeEvent(event framework.Event) error {
 			continue
 		}
 
-		if matchesEventType(cytubeEvent.EventType, rule.EventType) {
-			p.routeToPlugin(rule.TargetPlugin, cytubeEvent)
+		if matchesEventType(dataEvent.EventType, rule.EventType) {
+			p.routeToPlugin(rule.TargetPlugin, dataEvent)
 		}
 	}
 
@@ -165,43 +164,29 @@ func (p *Plugin) handleCytubeEvent(event framework.Event) error {
 
 // handleChatMessage specifically handles chat messages for command detection
 func (p *Plugin) handleChatMessage(event framework.Event) error {
-	// For now, we'll need to parse the raw data from the event
-	// In a real implementation, the core plugin would send us EventData
-	// with the ChatMessage field populated
-
-	cytubeEvent, ok := event.(*framework.CytubeEvent)
+	// Extract the DataEvent which contains EventData
+	dataEvent, ok := event.(*framework.DataEvent)
 	if !ok {
 		return fmt.Errorf("invalid event type for chat message")
 	}
 
-	// Parse the raw data to get chat message details
-	var chatData struct {
-		Username string `json:"username"`
-		Msg      string `json:"msg"`
-		Meta     struct {
-			Rank int `json:"rank"`
-		} `json:"meta"`
+	// Check if EventData and ChatMessage are present
+	if dataEvent.Data == nil || dataEvent.Data.ChatMessage == nil {
+		return fmt.Errorf("no chat message data in event")
 	}
 
-	if err := json.Unmarshal(cytubeEvent.RawData, &chatData); err != nil {
-		log.Printf("[Filter] Failed to parse chat message data: %v", err)
-		return nil
-	}
+	chatData := dataEvent.Data.ChatMessage
 
 	// Check if message is a command
-	if strings.HasPrefix(chatData.Msg, p.config.CommandPrefix) {
-		p.handleCommand(cytubeEvent, framework.ChatMessageData{
-			Username: chatData.Username,
-			Message:  chatData.Msg,
-			UserRank: chatData.Meta.Rank,
-		})
+	if strings.HasPrefix(chatData.Message, p.config.CommandPrefix) {
+		p.handleCommand(dataEvent, *chatData)
 	}
 
 	return nil
 }
 
 // handleCommand processes detected commands
-func (p *Plugin) handleCommand(event *framework.CytubeEvent, chatData framework.ChatMessageData) {
+func (p *Plugin) handleCommand(event *framework.DataEvent, chatData framework.ChatMessageData) {
 	// Remove command prefix and parse
 	cmdText := strings.TrimPrefix(chatData.Message, p.config.CommandPrefix)
 	parts := strings.Fields(cmdText)
@@ -224,7 +209,7 @@ func (p *Plugin) handleCommand(event *framework.CytubeEvent, chatData framework.
 			UserID:   chatData.UserID,
 		},
 		KeyValue: map[string]string{
-			"channel": event.ChannelName,
+			"channel": chatData.Channel,
 		},
 	}
 
@@ -236,18 +221,21 @@ func (p *Plugin) handleCommand(event *framework.CytubeEvent, chatData framework.
 }
 
 // routeToPlugin forwards an event to a specific plugin
-func (p *Plugin) routeToPlugin(targetPlugin string, event *framework.CytubeEvent) {
-	// Create forwarded event data with raw message
-	eventData := &framework.EventData{
-		RawMessage: &framework.RawMessageData{
-			Message: string(event.RawData),
-			Channel: event.ChannelName,
-		},
-		KeyValue: map[string]string{
-			"event_type": event.EventType,
-			"timestamp":  event.EventTime.Format(time.RFC3339),
-		},
+func (p *Plugin) routeToPlugin(targetPlugin string, event *framework.DataEvent) {
+	// Forward the event data directly
+	eventData := event.Data
+
+	// If no existing data, create new
+	if eventData == nil {
+		eventData = &framework.EventData{}
 	}
+
+	// Add routing metadata
+	if eventData.KeyValue == nil {
+		eventData.KeyValue = make(map[string]string)
+	}
+	eventData.KeyValue["event_type"] = event.EventType
+	eventData.KeyValue["timestamp"] = event.EventTime.Format(time.RFC3339)
 
 	// Determine appropriate event type for target
 	eventType := fmt.Sprintf("plugin.%s.event", targetPlugin)

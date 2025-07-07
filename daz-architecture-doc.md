@@ -28,22 +28,22 @@
                   │
           ┌───────┼───────┐
           │       │       │
-     ┌────▼───┐ ┌─▼─┐ ┌───▼────┐
-     │ Filter │ │...│ │Feature │
-     │Plugin  │ │   │ │Plugins │
-     └────────┘ └───┘ └────────┘
+     ┌────▼────┐ ┌─▼─┐ ┌───▼────┐
+     │  Event  │ │...│ │Feature │
+     │ Filter  │ │   │ │Plugins │
+     └─────────┘ └───┘ └────────┘
 ```
 
 ### Startup Sequence
 
 1. **Core Plugin**: Cytube connection + SQL module initialization
-2. **Filter Plugin**: Event routing and message filtering
-3. **Feature Plugins**: All other plugins (command handlers, analytics, etc.)
+2. **EventFilter Plugin**: Event filtering, routing, and command processing
+3. **Feature Plugins**: All other plugins (custom commands, analytics, etc.)
 
 ### Data Flow
 
 ```
-Cytube API → Core Plugin → Event Bus → Filter Plugin → Target Plugins
+Cytube API → Core Plugin → Event Bus → EventFilter → Target Plugins
                      ↓
               SQL Module (logging)
 ```
@@ -86,15 +86,23 @@ Cytube API → Core Plugin → Event Bus → Filter Plugin → Target Plugins
 
 **Communication Patterns**:
 - **Broadcast**: Core → All plugins (Cytube events)
-- **Direct Forwarding**: Filter → Specific plugins
+- **Direct Forwarding**: EventFilter → Specific plugins
 - **Request/Response**: Plugin ↔ SQL module
 
-### 4. Filter Plugin
+### 4. EventFilter Plugin
 
-- **Purpose**: Intelligent event routing and command parsing
-- **Functionality**: Analyzes events and forwards to appropriate plugins
-- **Criticality**: System pauses event processing if filter fails
+- **Purpose**: Unified event filtering, routing, and command processing
+- **Functionality**: 
+  - Filters unwanted events (spam, rate limiting)
+  - Routes events to appropriate handler plugins
+  - Detects and processes commands from chat messages
+  - Manages command registry and permissions
+- **Criticality**: System pauses event processing if EventFilter fails
 - **Dependencies**: Requires core plugin operational
+- **Database Tables**:
+  - `daz_eventfilter_rules`: Filter patterns and routing rules
+  - `daz_eventfilter_commands`: Command registry and aliases
+  - `daz_eventfilter_history`: Command execution audit log
 
 ## Error Handling & Resilience
 
@@ -116,7 +124,7 @@ Cytube API → Core Plugin → Event Bus → Filter Plugin → Target Plugins
 
 - **Non-blocking**: Drop events for slow plugins rather than blocking
 - **No Replay**: Simple event loss rather than complex buffering
-- **Filter Failure**: Pause all event processing except SQL logging
+- **EventFilter Failure**: Pause all event processing except SQL logging
 - **Core Continuity**: Core always runs for SQL logging (chat history)
 
 ## Configuration Management

@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -180,11 +179,18 @@ func TestHandleChatMessage(t *testing.T) {
 	}
 
 	// Test command detection
-	chatMsg := framework.CytubeEvent{
-		EventType:   "chatMsg",
-		EventTime:   time.Now(),
-		ChannelName: "test-channel",
-		RawData:     json.RawMessage(`{"username": "testuser", "msg": "!help arg1 arg2"}`),
+	chatMsg := framework.DataEvent{
+		EventType: "chatMsg",
+		EventTime: time.Now(),
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username: "testuser",
+				Message:  "!help arg1 arg2",
+				UserRank: 0,
+				UserID:   "",
+				Channel:  "test-channel",
+			},
+		},
 	}
 
 	// Get the handler and call it
@@ -231,11 +237,18 @@ func TestHandleChatMessageNonCommand(t *testing.T) {
 	}
 
 	// Test non-command message
-	chatMsg := framework.CytubeEvent{
-		EventType:   "chatMsg",
-		EventTime:   time.Now(),
-		ChannelName: "test-channel",
-		RawData:     json.RawMessage(`{"username": "testuser", "msg": "regular message"}`),
+	chatMsg := framework.DataEvent{
+		EventType: "chatMsg",
+		EventTime: time.Now(),
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username: "testuser",
+				Message:  "regular message",
+				UserRank: 0,
+				UserID:   "",
+				Channel:  "test-channel",
+			},
+		},
 	}
 
 	handlers := eb.subscriptions[eventbus.EventCytubeChatMsg]
@@ -279,11 +292,18 @@ func TestRouteToPlugin(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	event := &framework.CytubeEvent{
-		EventType:   "cytube.event.changeMedia",
-		EventTime:   time.Now(),
-		ChannelName: "test-channel",
-		RawData:     json.RawMessage(`{"id": "abc123", "type": "youtube"}`),
+	event := &framework.DataEvent{
+		EventType: "cytube.event.changeMedia",
+		EventTime: time.Now(),
+		Data: &framework.EventData{
+			VideoChange: &framework.VideoChangeData{
+				VideoID:   "abc123",
+				VideoType: "youtube",
+			},
+			KeyValue: map[string]string{
+				"channel": "test-channel",
+			},
+		},
 	}
 
 	p.routeToPlugin("mediatracker", event)

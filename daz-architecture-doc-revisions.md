@@ -56,6 +56,37 @@ The concrete types created in Phase 1 will influence the event bus design:
 - No need for runtime type assertions
 - Better compile-time guarantees
 
+### 2025-07-07: Filter Plugin and Command Router Merger
+
+#### EventFilter Plugin Consolidation
+**Original Plan**: Separate Filter Plugin and Command Router Plugin  
+**Actual Implementation**: Merged into single EventFilter plugin
+
+**Rationale**: Analysis revealed significant overlap between the two plugins:
+- Both examine incoming events and make routing decisions
+- Both need access to similar configuration and state
+- Separate plugins created redundant event processing
+- Unclear separation of responsibilities
+
+**New Design**: The EventFilter plugin now provides:
+- **Event Filtering**: Spam blocking, rate limiting, content filtering
+- **Event Routing**: Directing events to appropriate handler plugins  
+- **Command Processing**: Detection, parsing, and routing of commands
+- **Unified Permissions**: Single system for both filter rules and command access
+
+**Benefits**:
+1. Single analysis pass for each event (performance improvement)
+2. Unified configuration system for all routing rules
+3. Clearer architectural boundaries
+4. Simplified plugin communication flow
+5. Reduced code duplication
+
+**Impact**: 
+- Startup sequence simplified (one plugin instead of two)
+- Event flow now: `Core → EventFilter → Target Plugins`
+- Database schema uses `daz_eventfilter_*` prefix for all tables
+- Command Router functionality fully preserved within EventFilter
+
 ## Architecture Principles Maintained
 
 Despite these revisions, the core architectural principles remain intact:

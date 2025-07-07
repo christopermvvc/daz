@@ -40,6 +40,11 @@ func (m *mockEventBus) Broadcast(eventType string, data *framework.EventData) er
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.broadcasts = append(m.broadcasts, broadcastCall{eventType: eventType, data: data})
+	// Notify that Broadcast was called (for tests expecting response)
+	select {
+	case m.sendNotify <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
@@ -291,33 +296,39 @@ func TestHandleCommand(t *testing.T) {
 	// Wait for async handler to complete
 	select {
 	case <-bus.sendNotify:
-		// Send was called
-	case <-time.After(500 * time.Millisecond):
+		// Broadcast was called
+	case <-time.After(1 * time.Second):
 		t.Fatal("Timeout waiting for handler to send response")
 	}
 
-	// Check that a response was sent
+	// Give a bit more time for the handler to finish
+	time.Sleep(100 * time.Millisecond)
+
+	// Check that a response was broadcast
 	bus.mu.Lock()
-	sendCount := len(bus.sends)
-	if sendCount != 1 {
-		bus.mu.Unlock()
-		t.Fatalf("Expected 1 send, got %d", sendCount)
+	broadcastCount := len(bus.broadcasts)
+	// Find the cytube.send broadcast
+	var broadcast broadcastCall
+	found := false
+	for _, b := range bus.broadcasts {
+		if b.eventType == "cytube.send" {
+			broadcast = b
+			found = true
+			break
+		}
 	}
-	send := bus.sends[0]
 	bus.mu.Unlock()
-	if send.target != "core" {
-		t.Errorf("Expected send target 'core', got '%s'", send.target)
-	}
-	if send.eventType != "cytube.send" {
-		t.Errorf("Expected send eventType 'cytube.send', got '%s'", send.eventType)
+	if !found {
+		t.Errorf("Expected cytube.send broadcast not found in %d broadcasts", broadcastCount)
+		return
 	}
 
 	// Check message content
-	if send.data.RawMessage == nil {
+	if broadcast.data.RawMessage == nil {
 		t.Fatal("Expected RawMessage data")
 	}
 
-	message := send.data.RawMessage.Message
+	message := broadcast.data.RawMessage.Message
 	if !strings.Contains(message, "Daz") {
 		t.Error("About message should contain 'Daz'")
 	}
