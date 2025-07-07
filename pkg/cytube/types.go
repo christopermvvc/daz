@@ -2,6 +2,8 @@ package cytube
 
 import (
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -57,10 +59,48 @@ type UserPayload struct {
 	Rank int    `json:"rank"`
 }
 
+// FlexibleDuration handles both string and int duration values from the server
+type FlexibleDuration int
+
+// UnmarshalJSON implements json.Unmarshaler to handle both string and int values
+func (fd *FlexibleDuration) UnmarshalJSON(data []byte) error {
+	// Check for null
+	if string(data) == "null" {
+		return fmt.Errorf("duration cannot be null")
+	}
+
+	// Try to unmarshal as int first
+	var intVal int
+	if err := json.Unmarshal(data, &intVal); err == nil {
+		*fd = FlexibleDuration(intVal)
+		return nil
+	}
+
+	// Try to unmarshal as string
+	var strVal string
+	if err := json.Unmarshal(data, &strVal); err != nil {
+		return fmt.Errorf("duration must be a string or number: %w", err)
+	}
+
+	// Convert string to int
+	intVal, err := strconv.Atoi(strVal)
+	if err != nil {
+		return fmt.Errorf("duration string must be a valid number: %w", err)
+	}
+
+	*fd = FlexibleDuration(intVal)
+	return nil
+}
+
+// Int returns the duration as an int
+func (fd FlexibleDuration) Int() int {
+	return int(fd)
+}
+
 // MediaPayload represents media change event data
 type MediaPayload struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Duration int    `json:"duration"`
-	Title    string `json:"title"`
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Duration FlexibleDuration `json:"duration"`
+	Title    string           `json:"title"`
 }

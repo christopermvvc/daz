@@ -95,12 +95,15 @@ func main() {
 		fmt.Printf("\n  DB ID: %d", id)
 
 		// Pretty print raw data
-		var prettyJSON map[string]interface{}
-		if err := json.Unmarshal(rawData, &prettyJSON); err == nil {
-			if meta, ok := prettyJSON["meta"].(map[string]interface{}); ok {
-				if uid, ok := meta["uid"]; ok {
-					fmt.Printf("\n  User ID: %v", uid)
-				}
+		type eventData struct {
+			Meta struct {
+				UID string `json:"uid"`
+			} `json:"meta"`
+		}
+		var data eventData
+		if err := json.Unmarshal(rawData, &data); err == nil {
+			if data.Meta.UID != "" {
+				fmt.Printf("\n  User ID: %s", data.Meta.UID)
 			}
 		}
 		fmt.Println("\n---------------------------")

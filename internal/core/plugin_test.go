@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/pkg/eventbus"
 )
 
 type mockEventBus struct {
@@ -201,8 +202,8 @@ func TestPlugin_EventBroadcasting(t *testing.T) {
 		t.Errorf("Expected 1 broadcast, got %d", len(mockBus.broadcasts))
 	} else {
 		broadcast := mockBus.broadcasts[0]
-		if broadcast.eventType != "chatMessage" {
-			t.Errorf("Expected event type 'chatMessage', got '%s'", broadcast.eventType)
+		if broadcast.eventType != eventbus.EventCytubeChatMsg {
+			t.Errorf("Expected event type '%s', got '%s'", eventbus.EventCytubeChatMsg, broadcast.eventType)
 		}
 		if broadcast.data.ChatMessage == nil {
 			t.Error("Expected ChatMessage data to be set")

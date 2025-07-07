@@ -111,12 +111,8 @@ func (eb *EventBus) SetSQLHandlers(queryHandler, execHandler framework.EventHand
 
 // Broadcast sends an event to all subscribers of the event type
 func (eb *EventBus) Broadcast(eventType string, data *framework.EventData) error {
-	// Create a framework event
-	event := &framework.CytubeEvent{
-		EventType: eventType,
-		EventTime: time.Now(),
-		Metadata:  make(map[string]string),
-	}
+	// Create a DataEvent to carry the EventData
+	event := framework.NewDataEvent(eventType, data)
 
 	msg := &eventMessage{
 		Event: event,
@@ -139,12 +135,8 @@ func (eb *EventBus) Broadcast(eventType string, data *framework.EventData) error
 
 // Send sends an event to a specific target plugin
 func (eb *EventBus) Send(target string, eventType string, data *framework.EventData) error {
-	// Create a framework event
-	event := &framework.CytubeEvent{
-		EventType: eventType,
-		EventTime: time.Now(),
-		Metadata:  map[string]string{"target": target},
-	}
+	// Create a DataEvent to carry the EventData
+	event := framework.NewDataEvent(eventType, data)
 
 	msg := &eventMessage{
 		Event:  event,
@@ -172,9 +164,7 @@ func (eb *EventBus) Query(sql string, params ...interface{}) (framework.QueryRes
 		return nil, fmt.Errorf("SQL query handler not configured")
 	}
 
-	// TODO: Implement proper request/response correlation
-	// For now, this is a placeholder implementation
-	return nil, fmt.Errorf("query result handling not yet implemented")
+	return nil, fmt.Errorf("query method not implemented: eventbus does not support synchronous query operations")
 }
 
 // Exec delegates SQL exec operations to the core plugin

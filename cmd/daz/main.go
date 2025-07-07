@@ -9,6 +9,11 @@ import (
 	"syscall"
 
 	"github.com/hildolfr/daz/internal/core"
+	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/plugins/commandrouter"
+	"github.com/hildolfr/daz/internal/plugins/commands/about"
+	"github.com/hildolfr/daz/internal/plugins/commands/help"
+	"github.com/hildolfr/daz/internal/plugins/commands/uptime"
 	"github.com/hildolfr/daz/internal/plugins/filter"
 	"github.com/hildolfr/daz/pkg/eventbus"
 )
@@ -60,9 +65,11 @@ func run(config *core.Config) error {
 	// Create the real event bus with default configuration
 	eventBusConfig := &eventbus.Config{
 		BufferSizes: map[string]int{
-			"cytube.event": 1000,
-			"sql.":         100,
-			"plugin.":      50,
+			"cytube.event":              1000,
+			"sql.":                      100,
+			"plugin.":                   100, // Increased for command routing
+			"plugin.request":            200, // Buffer for direct plugin requests
+			eventbus.EventPluginCommand: 100, // Buffer for command events
 		},
 	}
 	bus := eventbus.NewEventBus(eventBusConfig)
@@ -93,6 +100,14 @@ func run(config *core.Config) error {
 		return fmt.Errorf("failed to initialize filter plugin: %w", err)
 	}
 
+	// Create and initialize the commandrouter plugin
+	commandRouterPlugin := commandrouter.New()
+
+	log.Println("Initializing commandrouter plugin...")
+	if err := commandRouterPlugin.Init(nil, bus); err != nil {
+		return fmt.Errorf("failed to initialize commandrouter plugin: %w", err)
+	}
+
 	// Start core plugin first
 	log.Println("Starting core plugin...")
 	if err := corePlugin.Start(); err != nil {
@@ -114,6 +129,47 @@ func run(config *core.Config) error {
 			log.Printf("Error stopping filter plugin: %v", err)
 		}
 	}()
+
+	// Finally start commandrouter plugin
+	log.Println("Starting commandrouter plugin...")
+	if err := commandRouterPlugin.Start(); err != nil {
+		return fmt.Errorf("failed to start commandrouter plugin: %w", err)
+	}
+	defer func() {
+		if err := commandRouterPlugin.Stop(); err != nil {
+			log.Printf("Error stopping commandrouter plugin: %v", err)
+		}
+	}()
+
+	// Initialize and start command plugins
+	commandPlugins := []struct {
+		name   string
+		plugin framework.Plugin
+	}{
+		{"about", about.New()},
+		{"help", help.New()},
+		{"uptime", uptime.New()},
+	}
+
+	for _, cmd := range commandPlugins {
+		log.Printf("Initializing %s command plugin...", cmd.name)
+		if err := cmd.plugin.Init(nil, bus); err != nil {
+			return fmt.Errorf("failed to initialize %s plugin: %w", cmd.name, err)
+		}
+
+		log.Printf("Starting %s command plugin...", cmd.name)
+		if err := cmd.plugin.Start(); err != nil {
+			return fmt.Errorf("failed to start %s plugin: %w", cmd.name, err)
+		}
+
+		// Register deferred stop
+		plugin := cmd.plugin
+		defer func() {
+			if err := plugin.Stop(); err != nil {
+				log.Printf("Error stopping %s plugin: %v", cmd.name, err)
+			}
+		}()
+	}
 
 	log.Println("Bot is running! Press Ctrl+C to stop.")
 

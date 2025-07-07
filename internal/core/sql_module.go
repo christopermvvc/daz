@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -211,20 +212,18 @@ func (s *SQLModule) HandleSQLRequest(ctx context.Context, req framework.SQLReque
 
 // pgxQueryResult wraps pgx rows to implement framework.QueryResult
 type pgxQueryResult struct {
-	rows interface{} // Would be pgx.Rows in real implementation
+	rows pgx.Rows
 }
 
 func (r *pgxQueryResult) Next() bool {
-	// Implementation would call rows.Next()
-	return false
+	return r.rows.Next()
 }
 
 func (r *pgxQueryResult) Scan(dest ...interface{}) error {
-	// Implementation would call rows.Scan(dest...)
-	return nil
+	return r.rows.Scan(dest...)
 }
 
 func (r *pgxQueryResult) Close() error {
-	// Implementation would call rows.Close()
+	r.rows.Close()
 	return nil
 }

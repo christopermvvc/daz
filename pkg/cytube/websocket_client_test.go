@@ -61,6 +61,11 @@ func TestWebSocketClient_Connect(t *testing.T) {
 		},
 	}
 
+	// Channel to signal when server has completed handshake
+	serverReady := make(chan struct{})
+	// Channel to keep server connection open until test completes
+	serverDone := make(chan struct{})
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/socket.io/" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
@@ -95,8 +100,11 @@ func TestWebSocketClient_Connect(t *testing.T) {
 			t.Errorf("expected Socket.IO connect (40), got: %s", msg)
 		}
 
-		// Keep connection open for test
-		time.Sleep(100 * time.Millisecond)
+		// Signal that server handshake is complete
+		close(serverReady)
+
+		// Keep connection open until test signals completion
+		<-serverDone
 	}))
 	defer server.Close()
 
@@ -120,11 +128,22 @@ func TestWebSocketClient_Connect(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 
-	// Wait a bit to ensure the connection is established
-	time.Sleep(100 * time.Millisecond)
+	// Wait for server to complete handshake
+	select {
+	case <-serverReady:
+		// Server has completed handshake, connection is established
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for server handshake")
+	}
+
+	// Verify client is connected
+	if !client.IsConnected() {
+		t.Error("expected client to be connected after handshake")
+	}
 
 	// Clean up
 	_ = client.Disconnect()
+	close(serverDone)
 }
 
 func TestWebSocketClient_IsConnected(t *testing.T) {

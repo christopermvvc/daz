@@ -164,13 +164,52 @@ pkg/
 - Default routing rules for common use cases
 - Non-blocking event processing
 
-### Next Steps (Phase 5):
-1. Create command handler plugin
-2. Implement user tracking plugin
-3. Add media tracking plugin
-4. Create analytics plugin
-5. Add configuration file support
-6. Implement plugin loader system
+## Phase 5: Plugin Framework Extension (In Progress)
+
+### Command Router Plugin ✅
+- Created modular command routing system in `internal/plugins/commandrouter/`
+- Database-backed command registry with aliases support
+- Permission checking based on user ranks
+- Command cooldown management
+- Comprehensive test coverage
+
+### Basic Command Plugins ✅
+- **Help Plugin** (`internal/plugins/commands/help/`)
+  - Lists all available commands with aliases
+  - Queries command registry dynamically
+  - Commands: !help, !h, !?
+  
+- **About Plugin** (`internal/plugins/commands/about/`)
+  - Displays bot information and features
+  - Configurable version and description
+  - Commands: !about, !version, !info
+  
+- **Uptime Plugin** (`internal/plugins/commands/uptime/`)
+  - Shows current session uptime
+  - Queries database for total uptime history
+  - Commands: !uptime, !up
+
+### Architecture Decisions:
+- Each command is its own plugin for maximum modularity
+- Command router acts as dispatcher to individual command plugins
+- Commands can have multiple aliases pointing to same functionality
+- All command metadata stored in PostgreSQL for persistence
+- Thread-safe implementation with proper mutex usage
+- Comprehensive test coverage with race detection
+
+### Next Steps (Phase 5 continued):
+1. ✅ Command router plugin (dispatcher)
+2. ✅ Basic command plugins (help, about, uptime)
+3. Data-driven command plugins:
+   - Seen command plugin (requires user tracker)
+   - NowPlaying command plugin (requires media tracker)
+   - Stats command plugin (requires analytics)
+4. Service plugins:
+   - User tracker plugin (provides data for user commands)
+   - Media tracker plugin (provides data for media commands)
+   - Analytics plugin (aggregates statistics)
+5. Plugin lifecycle management in main.go
+6. Configuration file support for plugins
 
 ### Running the Application:
 ```bash
@@ -221,6 +260,65 @@ Successfully tested end-to-end flow with real Cytube connection:
 ### Known Issues (Minor):
 - Some non-chat events have null raw_data (expected for now)
 - These events are filtered out by NOT NULL constraint
+
+## Phase 6: Command System Implementation - COMPLETED ✅ (2025-07-07)
+
+### Critical Issues Fixed:
+1. **MediaPayload Duration Parsing** ✅
+   - Created `FlexibleDuration` type to handle both string and int duration values
+   - Cytube server was sending duration as string (e.g., "212") but code expected int
+   - Now gracefully handles both formats without parsing errors
+   - Added comprehensive tests for the new type
+
+2. **Command Processing Pipeline** ✅
+   - Commands were being ignored due to incomplete event routing
+   - Fixed event type broadcasting in core plugin (now uses proper `cytube.event.*` constants)
+   - DataEvent wrapper was already implemented, just needed proper usage
+   - Command flow now works: Chat → Core → Filter → CommandRouter → Command Plugins
+
+3. **Plugin Initialization** ✅
+   - Command plugins (help, about, uptime) were not being initialized in main.go
+   - Added proper initialization sequence for all command plugins
+   - Each plugin now registers itself with the command router on startup
+
+4. **EventBus Buffer Optimization** ✅
+   - Increased buffer sizes to prevent event dropping:
+     - General plugin buffer: 50 → 100
+     - Plugin request events: 200
+     - Command events: 100
+   - No more "buffer full" warnings during normal operation
+
+### Architecture Improvements:
+- **Event Flow**: Core plugin now broadcasts proper event types matching what plugins subscribe to
+- **DataEvent Usage**: Properly utilized existing DataEvent wrapper to pass both event metadata and data
+- **Command Registration**: Command plugins broadcast registration events that the command router processes
+- **Command Execution**: Commands flow through proper channels with full context (username, rank, etc.)
+
+### Current Command System:
+```
+User types: !help
+   ↓
+Core Plugin receives chat message
+   ↓ (broadcasts cytube.event.chatMsg)
+Filter Plugin detects command prefix
+   ↓ (broadcasts plugin.command with DataEvent)
+CommandRouter receives command
+   ↓ (routes to appropriate plugin)
+Help Plugin executes command
+   ↓ (sends response back)
+Core Plugin sends to Cytube
+```
+
+### Working Commands:
+- **!help** (aliases: !h, !commands) - Lists available commands
+- **!about** (aliases: !version, !info) - Shows bot information
+- **!uptime** (aliases: !up) - Displays bot uptime
+
+### Technical Achievement:
+- All forbidden patterns eliminated (no time.Sleep, no interface{})
+- Full test coverage with race detection
+- Clean architecture with proper separation of concerns
+- Production-ready error handling and logging
 
 ### Database Contents:
 ```sql

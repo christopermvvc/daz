@@ -9,10 +9,16 @@ import (
 )
 
 func TestDiscoverServer(t *testing.T) {
+	// Define concrete types for test responses
+	type testResponse struct {
+		serverConfig *ServerConfig
+		invalidJSON  string
+	}
+
 	tests := []struct {
 		name          string
 		channel       string
-		response      interface{}
+		response      testResponse
 		statusCode    int
 		wantURL       string
 		wantErr       bool
@@ -21,13 +27,15 @@ func TestDiscoverServer(t *testing.T) {
 		{
 			name:    "successful discovery with secure server",
 			channel: "test-channel",
-			response: ServerConfig{
-				Servers: []struct {
-					URL    string `json:"url"`
-					Secure bool   `json:"secure"`
-				}{
-					{URL: "http://insecure.example.com", Secure: false},
-					{URL: "https://secure.example.com", Secure: true},
+			response: testResponse{
+				serverConfig: &ServerConfig{
+					Servers: []struct {
+						URL    string `json:"url"`
+						Secure bool   `json:"secure"`
+					}{
+						{URL: "http://insecure.example.com", Secure: false},
+						{URL: "https://secure.example.com", Secure: true},
+					},
 				},
 			},
 			statusCode: http.StatusOK,
@@ -37,13 +45,15 @@ func TestDiscoverServer(t *testing.T) {
 		{
 			name:    "successful discovery with only insecure servers",
 			channel: "test-channel",
-			response: ServerConfig{
-				Servers: []struct {
-					URL    string `json:"url"`
-					Secure bool   `json:"secure"`
-				}{
-					{URL: "http://server1.example.com", Secure: false},
-					{URL: "http://server2.example.com", Secure: false},
+			response: testResponse{
+				serverConfig: &ServerConfig{
+					Servers: []struct {
+						URL    string `json:"url"`
+						Secure bool   `json:"secure"`
+					}{
+						{URL: "http://server1.example.com", Secure: false},
+						{URL: "http://server2.example.com", Secure: false},
+					},
 				},
 			},
 			statusCode: http.StatusOK,
@@ -53,7 +63,7 @@ func TestDiscoverServer(t *testing.T) {
 		{
 			name:          "server returns 404",
 			channel:       "nonexistent",
-			response:      nil,
+			response:      testResponse{},
 			statusCode:    http.StatusNotFound,
 			wantErr:       true,
 			errorContains: "status 404",
@@ -61,10 +71,12 @@ func TestDiscoverServer(t *testing.T) {
 		{
 			name:    "empty server list",
 			channel: "empty-channel",
-			response: ServerConfig{Servers: []struct {
-				URL    string `json:"url"`
-				Secure bool   `json:"secure"`
-			}{}},
+			response: testResponse{
+				serverConfig: &ServerConfig{Servers: []struct {
+					URL    string `json:"url"`
+					Secure bool   `json:"secure"`
+				}{}},
+			},
 			statusCode:    http.StatusOK,
 			wantErr:       true,
 			errorContains: "no servers found",
@@ -72,7 +84,7 @@ func TestDiscoverServer(t *testing.T) {
 		{
 			name:          "invalid JSON response",
 			channel:       "bad-json",
-			response:      "invalid json",
+			response:      testResponse{invalidJSON: "invalid json"},
 			statusCode:    http.StatusOK,
 			wantErr:       true,
 			errorContains: "failed to parse",
@@ -89,10 +101,12 @@ func TestDiscoverServer(t *testing.T) {
 				}
 
 				w.WriteHeader(tt.statusCode)
-				if tt.response != nil {
-					if err := json.NewEncoder(w).Encode(tt.response); err != nil {
+				if tt.response.serverConfig != nil {
+					if err := json.NewEncoder(w).Encode(tt.response.serverConfig); err != nil {
 						t.Fatalf("failed to encode response: %v", err)
 					}
+				} else if tt.response.invalidJSON != "" {
+					w.Write([]byte(tt.response.invalidJSON))
 				}
 			}))
 			defer ts.Close()

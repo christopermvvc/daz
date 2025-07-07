@@ -194,32 +194,25 @@ func TestHandleChatMessage(t *testing.T) {
 		t.Fatalf("Handler error: %v", err)
 	}
 
-	// Check if command was sent
-	if len(eb.sends) != 1 {
-		t.Fatalf("Expected 1 send call, got %d", len(eb.sends))
+	// Check if command was broadcast
+	if len(eb.broadcasts) != 1 {
+		t.Fatalf("Expected 1 broadcast call, got %d", len(eb.broadcasts))
 	}
 
-	send := eb.sends[0]
-	if send.target != "commands" {
-		t.Errorf("Expected target 'commands', got %s", send.target)
-	}
-	if send.eventType != eventbus.EventPluginCommand {
-		t.Errorf("Expected event type %s, got %s", eventbus.EventPluginCommand, send.eventType)
+	broadcast := eb.broadcasts[0]
+	if broadcast.eventType != eventbus.EventPluginCommand {
+		t.Errorf("Expected event type %s, got %s", eventbus.EventPluginCommand, broadcast.eventType)
 	}
 
 	// Check command data
-	if send.data.PluginRequest == nil {
-		t.Fatal("Expected PluginRequest in data")
+	if broadcast.data.ChatMessage == nil {
+		t.Fatal("Expected ChatMessage in data")
 	}
-	if send.data.PluginRequest.Data.Command == nil {
-		t.Fatal("Expected Command in request data")
+	if broadcast.data.ChatMessage.Username != "testuser" {
+		t.Errorf("Expected username 'testuser', got %s", broadcast.data.ChatMessage.Username)
 	}
-	cmd := send.data.PluginRequest.Data.Command
-	if cmd.Name != "help" {
-		t.Errorf("Expected command name 'help', got %s", cmd.Name)
-	}
-	if len(cmd.Args) != 2 || cmd.Args[0] != "arg1" || cmd.Args[1] != "arg2" {
-		t.Errorf("Expected args [arg1 arg2], got %v", cmd.Args)
+	if broadcast.data.ChatMessage.Message != "!help arg1 arg2" {
+		t.Errorf("Expected message '!help arg1 arg2', got %s", broadcast.data.ChatMessage.Message)
 	}
 }
 

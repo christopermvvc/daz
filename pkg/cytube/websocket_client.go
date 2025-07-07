@@ -28,7 +28,9 @@ type WebSocketClient struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	writeChan       chan []byte
-	sid             string // Socket.IO session ID
+	sid             string        // Socket.IO session ID
+	socketIOReady   chan struct{} // Signals when Socket.IO connection is ready
+	shutdownDone    chan struct{} // Signals when shutdown is complete
 }
 
 // NewWebSocketClient creates a new WebSocket client for cytube
@@ -53,9 +55,11 @@ func NewWebSocketClient(channel string, eventChan chan<- framework.Event) (*WebS
 			RetryDelay:     5 * time.Second,
 			CooldownPeriod: 30 * time.Second,
 		},
-		ctx:       ctx,
-		cancel:    cancel,
-		writeChan: make(chan []byte, 100),
+		ctx:           ctx,
+		cancel:        cancel,
+		writeChan:     make(chan []byte, 100),
+		socketIOReady: make(chan struct{}),
+		shutdownDone:  make(chan struct{}),
 	}
 
 	return client, nil
@@ -69,6 +73,10 @@ func (c *WebSocketClient) Connect() error {
 	if c.connected {
 		return fmt.Errorf("already connected")
 	}
+
+	// Reset channels for new connection
+	c.socketIOReady = make(chan struct{})
+	c.shutdownDone = make(chan struct{})
 
 	// Parse the server URL to construct WebSocket URL
 	u, err := url.Parse(c.serverURL)
@@ -126,6 +134,13 @@ func (c *WebSocketClient) readLoop() {
 		c.connected = false
 		c.mu.Unlock()
 		c.cancel()
+		// Signal shutdown is complete
+		select {
+		case <-c.shutdownDone:
+			// Already closed
+		default:
+			close(c.shutdownDone)
+		}
 	}()
 
 	for {
@@ -192,14 +207,6 @@ func (c *WebSocketClient) handleMessage(message []byte) {
 
 			// Note: In Engine.IO, the server sends pings and we respond with pongs
 			// We should NOT send unsolicited pings from the client side
-
-			// Join channel after Socket.IO connection
-			go func() {
-				time.Sleep(100 * time.Millisecond)
-				if err := c.joinChannel(); err != nil {
-					log.Printf("Failed to join channel: %v", err)
-				}
-			}()
 		} else {
 			log.Printf("Failed to parse handshake: %v", err)
 			log.Printf("Raw handshake message: %s", msg)
@@ -233,6 +240,20 @@ func (c *WebSocketClient) handleSocketIOMessage(message []byte) {
 	switch msg[0] {
 	case '0': // Connect
 		log.Println("Socket.IO connected")
+		// Signal that Socket.IO is ready and join channel
+		if c.socketIOReady != nil {
+			select {
+			case <-c.socketIOReady:
+				// Already signaled
+			default:
+				close(c.socketIOReady)
+				go func() {
+					if err := c.joinChannel(); err != nil {
+						log.Printf("Failed to join channel: %v", err)
+					}
+				}()
+			}
+		}
 
 	case '1': // Disconnect
 		log.Println("Socket.IO disconnected")
@@ -328,8 +349,18 @@ func (c *WebSocketClient) Disconnect() error {
 	// Cancel context to stop goroutines
 	c.cancel()
 
-	// Give goroutines time to exit
-	time.Sleep(100 * time.Millisecond)
+	// Wait for goroutines to exit with timeout
+	if c.shutdownDone != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer shutdownCancel()
+
+		select {
+		case <-c.shutdownDone:
+			// Graceful shutdown complete
+		case <-shutdownCtx.Done():
+			// Timeout reached
+		}
+	}
 
 	// Lock for writing the disconnect message
 	c.writeMu.Lock()
@@ -380,7 +411,14 @@ func (c *WebSocketClient) Login(username, password string) error {
 
 	// Per ***REMOVED***-connect.md, we need a 2-second delay between join and login
 	log.Println("Waiting 2 seconds before login (per cytube protocol)...")
-	time.Sleep(2 * time.Second)
+	loginTimer := time.NewTimer(2 * time.Second)
+	select {
+	case <-loginTimer.C:
+		// Timer expired, continue with login
+	case <-c.ctx.Done():
+		loginTimer.Stop()
+		return fmt.Errorf("context cancelled during login delay")
+	}
 
 	loginData := LoginData{
 		Name:     username,
@@ -427,7 +465,14 @@ func (c *WebSocketClient) ConnectWithRetry() error {
 		log.Printf("Connection attempt %d failed: %v", attempts, err)
 
 		if attempts < c.reconnectConfig.MaxAttempts {
-			time.Sleep(c.reconnectConfig.RetryDelay)
+			retryTimer := time.NewTimer(c.reconnectConfig.RetryDelay)
+			select {
+			case <-retryTimer.C:
+				// Timer expired, continue with next attempt
+			case <-c.ctx.Done():
+				retryTimer.Stop()
+				return fmt.Errorf("context cancelled during retry: %w", c.ctx.Err())
+			}
 		}
 	}
 

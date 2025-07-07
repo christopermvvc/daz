@@ -8,6 +8,7 @@ import (
 
 	"github.com/hildolfr/daz/internal/framework"
 	"github.com/hildolfr/daz/pkg/cytube"
+	"github.com/hildolfr/daz/pkg/eventbus"
 )
 
 // Plugin implements the core plugin functionality
@@ -138,10 +139,11 @@ func (p *Plugin) setupCytubeHandlers() {
 
 				// Re-publish to event bus for other plugins
 				eventData := &framework.EventData{}
-				eventType := event.Type()
+				var eventType string
 
 				switch e := event.(type) {
 				case *framework.ChatMessageEvent:
+					eventType = eventbus.EventCytubeChatMsg
 					eventData.ChatMessage = &framework.ChatMessageData{
 						Username: e.Username,
 						Message:  e.Message,
@@ -149,21 +151,27 @@ func (p *Plugin) setupCytubeHandlers() {
 						UserID:   e.UserID,
 					}
 				case *framework.UserJoinEvent:
+					eventType = eventbus.EventCytubeUserJoin
 					eventData.UserJoin = &framework.UserJoinData{
 						Username: e.Username,
 						UserRank: e.UserRank,
 					}
 				case *framework.UserLeaveEvent:
+					eventType = eventbus.EventCytubeUserLeave
 					eventData.UserLeave = &framework.UserLeaveData{
 						Username: e.Username,
 					}
 				case *framework.VideoChangeEvent:
+					eventType = eventbus.EventCytubeVideoChange
 					eventData.VideoChange = &framework.VideoChangeData{
 						VideoID:   e.VideoID,
 						VideoType: e.VideoType,
 						Duration:  e.Duration,
 						Title:     e.Title,
 					}
+				default:
+					// For other events, use the original type
+					eventType = event.Type()
 				}
 
 				if err := p.eventBus.Broadcast(eventType, eventData); err != nil {

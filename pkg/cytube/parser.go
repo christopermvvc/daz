@@ -102,7 +102,7 @@ func (p *Parser) parseVideoChange(base framework.CytubeEvent, data json.RawMessa
 		CytubeEvent: base,
 		VideoID:     media.ID,
 		VideoType:   media.Type,
-		Duration:    media.Duration,
+		Duration:    media.Duration.Int(),
 		Title:       media.Title,
 	}
 

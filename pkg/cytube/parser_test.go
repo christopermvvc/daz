@@ -138,6 +138,43 @@ func TestParseVideoChange(t *testing.T) {
 	}
 }
 
+func TestParseVideoChangeWithStringDuration(t *testing.T) {
+	parser := NewParser("test-channel")
+
+	// Test with duration as a string
+	rawData := json.RawMessage(`{"id":"abc123","type":"youtube","duration":"212","title":"Test Video"}`)
+	event := Event{
+		Type: "changeMedia",
+		Data: rawData,
+	}
+
+	parsed, err := parser.ParseEvent(event)
+	if err != nil {
+		t.Fatalf("ParseEvent failed: %v", err)
+	}
+
+	videoChange, ok := parsed.(*framework.VideoChangeEvent)
+	if !ok {
+		t.Fatalf("Expected VideoChangeEvent, got %T", parsed)
+	}
+
+	if videoChange.VideoID != "abc123" {
+		t.Errorf("VideoID = %v, want %v", videoChange.VideoID, "abc123")
+	}
+
+	if videoChange.VideoType != "youtube" {
+		t.Errorf("VideoType = %v, want %v", videoChange.VideoType, "youtube")
+	}
+
+	if videoChange.Duration != 212 {
+		t.Errorf("Duration = %v, want %v", videoChange.Duration, 212)
+	}
+
+	if videoChange.Title != "Test Video" {
+		t.Errorf("Title = %v, want %v", videoChange.Title, "Test Video")
+	}
+}
+
 func TestParseUnknownEvent(t *testing.T) {
 	parser := NewParser("test-channel")
 

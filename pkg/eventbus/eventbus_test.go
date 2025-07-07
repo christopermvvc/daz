@@ -278,10 +278,13 @@ func TestEventBus_MultipleSubscribers(t *testing.T) {
 
 	count := 0
 	var mu sync.Mutex
+	var wg sync.WaitGroup
 
 	// Register multiple subscribers
+	wg.Add(3) // Expect 3 handlers to be called
 	for i := 0; i < 3; i++ {
 		handler := func(event framework.Event) error {
+			defer wg.Done()
 			mu.Lock()
 			count++
 			mu.Unlock()
@@ -302,8 +305,19 @@ func TestEventBus_MultipleSubscribers(t *testing.T) {
 		t.Fatalf("Broadcast failed: %v", err)
 	}
 
-	// Wait for handlers
-	time.Sleep(100 * time.Millisecond)
+	// Wait for all handlers to complete
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All handlers completed
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Timeout waiting for handlers to complete")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()

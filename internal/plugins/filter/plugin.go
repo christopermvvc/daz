@@ -178,6 +178,9 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	var chatData struct {
 		Username string `json:"username"`
 		Msg      string `json:"msg"`
+		Meta     struct {
+			Rank int `json:"rank"`
+		} `json:"meta"`
 	}
 
 	if err := json.Unmarshal(cytubeEvent.RawData, &chatData); err != nil {
@@ -190,6 +193,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		p.handleCommand(cytubeEvent, framework.ChatMessageData{
 			Username: chatData.Username,
 			Message:  chatData.Msg,
+			UserRank: chatData.Meta.Rank,
 		})
 	}
 
@@ -211,29 +215,21 @@ func (p *Plugin) handleCommand(event *framework.CytubeEvent, chatData framework.
 
 	log.Printf("[Filter] Detected command: %s with args: %v", cmdName, args)
 
-	// Create command event data
+	// Create command event data with full chat message information
 	cmdData := &framework.EventData{
-		PluginRequest: &framework.PluginRequest{
-			ID:   fmt.Sprintf("cmd_%d", time.Now().UnixNano()),
-			From: p.name,
-			To:   "commands", // Target the commands plugin
-			Type: "command.execute",
-			Data: &framework.RequestData{
-				Command: &framework.CommandData{
-					Name: cmdName,
-					Args: args,
-					Params: map[string]string{
-						"username": chatData.Username,
-						"channel":  event.ChannelName,
-						"raw_msg":  chatData.Message,
-					},
-				},
-			},
+		ChatMessage: &framework.ChatMessageData{
+			Username: chatData.Username,
+			Message:  chatData.Message,
+			UserRank: chatData.UserRank,
+			UserID:   chatData.UserID,
+		},
+		KeyValue: map[string]string{
+			"channel": event.ChannelName,
 		},
 	}
 
-	// Send to command handler plugin
-	err := p.eventBus.Send("commands", eventbus.EventPluginCommand, cmdData)
+	// Broadcast to command router
+	err := p.eventBus.Broadcast(eventbus.EventPluginCommand, cmdData)
 	if err != nil {
 		log.Printf("[Filter] Failed to route command: %v", err)
 	}

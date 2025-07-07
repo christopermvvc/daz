@@ -6,11 +6,15 @@ import (
 )
 
 func TestFormatSocketIOMessage(t *testing.T) {
+	// Define concrete types for test data
+	type stringData string
+	type mapData map[string]string
+
 	tests := []struct {
 		name     string
 		msgType  int
 		event    string
-		data     interface{}
+		data     any // This is for the formatSocketIOMessage function parameter
 		expected string
 	}{
 		{
@@ -24,14 +28,14 @@ func TestFormatSocketIOMessage(t *testing.T) {
 			name:     "event with string data",
 			msgType:  MessageTypeEvent,
 			event:    "message",
-			data:     "hello",
+			data:     stringData("hello"),
 			expected: "42[\"message\",\"hello\"]",
 		},
 		{
 			name:    "event with object data",
 			msgType: MessageTypeEvent,
 			event:   "login",
-			data:    map[string]string{"name": "test", "pw": "pass"},
+			data:    mapData{"name": "test", "pw": "pass"},
 		},
 	}
 
