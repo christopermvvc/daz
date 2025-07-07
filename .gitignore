@@ -1,0 +1,92 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/daz
+bin/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go vendor directory
+vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# IDE specific files
+.idea/
+*.swp
+*.swo
+*~
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Sensitive files
+CLAUDE.md
+.claude/
+*.key
+*.pem
+*.cert
+*.crt
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.sql.gz
+
+# Log files
+logs/
+*.log
+ping_pong_*.log
+websocket_*.log
+test_output.log
+
+# Environment files
+.env
+.env.*
+.env.local
+.env.production
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.cache
+tmp/
+temp/
+
+# Configuration files with secrets
+config.local.json
+config.prod.json
+secrets.json
+credentials.json
+
+# Session files
+*.session
+
+# Debug files
+debug
+debug.test
+*.pprof
+
+# Interface replacement summary (may contain implementation details)
+INTERFACE_REPLACEMENT_SUMMARY.md
