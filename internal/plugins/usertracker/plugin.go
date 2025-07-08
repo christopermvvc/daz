@@ -3,6 +3,7 @@ package usertracker
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -27,12 +28,17 @@ type Plugin struct {
 
 	// In-memory user state cache
 	users map[string]*UserState
+
+	// Plugin status tracking
+	status framework.PluginStatus
 }
 
 // Config holds usertracker plugin configuration
 type Config struct {
+	// The channel to track users for
+	Channel string `json:"channel"`
 	// How long to wait before marking a user as inactive
-	InactivityTimeout time.Duration
+	InactivityTimeout time.Duration `json:"inactivity_timeout"`
 }
 
 // UserState tracks current state of a user
@@ -44,7 +50,23 @@ type UserState struct {
 	IsActive     bool
 }
 
+// New creates a new usertracker plugin instance that implements framework.Plugin
+func New() framework.Plugin {
+	return &Plugin{
+		name: "usertracker",
+		config: &Config{
+			InactivityTimeout: 30 * time.Minute,
+		},
+		users: make(map[string]*UserState),
+		status: framework.PluginStatus{
+			Name:  "usertracker",
+			State: "initialized",
+		},
+	}
+}
+
 // NewPlugin creates a new usertracker plugin instance
+// Deprecated: Use New() instead
 func NewPlugin(config *Config) *Plugin {
 	if config == nil {
 		config = &Config{
@@ -56,6 +78,10 @@ func NewPlugin(config *Config) *Plugin {
 		name:   "usertracker",
 		config: config,
 		users:  make(map[string]*UserState),
+		status: framework.PluginStatus{
+			Name:  "usertracker",
+			State: "initialized",
+		},
 	}
 }
 
@@ -64,18 +90,40 @@ func (p *Plugin) Name() string {
 	return p.name
 }
 
-// Initialize sets up the plugin with the event bus
-func (p *Plugin) Initialize(eventBus framework.EventBus) error {
-	p.eventBus = eventBus
-	p.ctx, p.cancel = context.WithCancel(context.Background())
-
-	// Create database tables
-	if err := p.createTables(); err != nil {
-		return fmt.Errorf("failed to create tables: %w", err)
+// Init initializes the plugin with configuration and event bus
+func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
+	// Parse configuration if provided
+	if len(config) > 0 {
+		var cfg Config
+		if err := json.Unmarshal(config, &cfg); err != nil {
+			return fmt.Errorf("failed to parse config: %w", err)
+		}
+		p.config = &cfg
 	}
+
+	// Ensure default config if not set
+	if p.config == nil {
+		p.config = &Config{
+			InactivityTimeout: 30 * time.Minute,
+		}
+	}
+
+	// Set default channel if not specified
+	if p.config.Channel == "" {
+		p.config.Channel = "default"
+	}
+
+	p.eventBus = bus
+	p.ctx, p.cancel = context.WithCancel(context.Background())
 
 	log.Printf("[UserTracker] Initialized with inactivity timeout: %v", p.config.InactivityTimeout)
 	return nil
+}
+
+// Initialize sets up the plugin with the event bus
+// Deprecated: Use Init() instead
+func (p *Plugin) Initialize(eventBus framework.EventBus) error {
+	return p.Init(nil, eventBus)
 }
 
 // Start begins the plugin operation
@@ -87,22 +135,32 @@ func (p *Plugin) Start() error {
 		return fmt.Errorf("usertracker plugin already running")
 	}
 
+	// Create database tables now that database is connected
+	if err := p.createTables(); err != nil {
+		p.status.LastError = err
+		return fmt.Errorf("failed to create tables: %w", err)
+	}
+
 	// Subscribe to user events
 	if err := p.eventBus.Subscribe(eventbus.EventCytubeUserJoin, p.handleUserJoin); err != nil {
+		p.status.LastError = err
 		return fmt.Errorf("failed to subscribe to user join events: %w", err)
 	}
 
 	if err := p.eventBus.Subscribe(eventbus.EventCytubeUserLeave, p.handleUserLeave); err != nil {
+		p.status.LastError = err
 		return fmt.Errorf("failed to subscribe to user leave events: %w", err)
 	}
 
 	// Subscribe to chat messages to track activity
 	if err := p.eventBus.Subscribe(eventbus.EventCytubeChatMsg, p.handleChatMessage); err != nil {
+		p.status.LastError = err
 		return fmt.Errorf("failed to subscribe to chat events: %w", err)
 	}
 
 	// Subscribe to command requests for user info
 	if err := p.eventBus.Subscribe("plugin.usertracker.seen", p.handleSeenRequest); err != nil {
+		p.status.LastError = err
 		return fmt.Errorf("failed to subscribe to seen requests: %w", err)
 	}
 
@@ -111,6 +169,8 @@ func (p *Plugin) Start() error {
 	go p.cleanupInactiveSessions()
 
 	p.running = true
+	p.status.State = "running"
+	p.status.Uptime = time.Since(time.Now())
 	log.Println("[UserTracker] Started user tracking")
 	return nil
 }
@@ -131,19 +191,28 @@ func (p *Plugin) Stop() error {
 	p.wg.Wait()
 
 	p.running = false
+	p.status.State = "stopped"
 	log.Println("[UserTracker] Stopped user tracking")
 	return nil
 }
 
 // HandleEvent processes incoming events
-func (p *Plugin) HandleEvent(ctx context.Context, event framework.Event) error {
+func (p *Plugin) HandleEvent(event framework.Event) error {
 	// This plugin uses specific event subscriptions
+	p.status.EventsHandled++
 	return nil
 }
 
-// SupportsStream indicates if the plugin supports streaming events
-func (p *Plugin) SupportsStream() bool {
-	return false
+// Status returns the current plugin status
+func (p *Plugin) Status() framework.PluginStatus {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	status := p.status
+	if p.running {
+		status.Uptime = time.Since(time.Now().Add(-status.Uptime))
+	}
+	return status
 }
 
 // createTables creates the necessary database tables
@@ -178,9 +247,10 @@ func (p *Plugin) createTables() error {
 		username VARCHAR(255) NOT NULL,
 		event_type VARCHAR(50) NOT NULL,
 		timestamp TIMESTAMP NOT NULL,
-		metadata JSONB,
-		INDEX idx_usertracker_history_user (channel, username, timestamp)
+		metadata JSONB
 	);
+
+	CREATE INDEX IF NOT EXISTS idx_usertracker_history_user ON ***REMOVED***tracker_history(channel, username, timestamp);
 	`
 
 	// Execute table creation
@@ -205,7 +275,11 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	}
 
 	userJoin := dataEvent.Data.UserJoin
-	channel := "***REMOVED***" // TODO: Get from config
+	// Use channel from event if available, otherwise fall back to config
+	channel := userJoin.Channel
+	if channel == "" {
+		channel = p.config.Channel
+	}
 	now := time.Now()
 
 	// Update in-memory state
@@ -243,6 +317,7 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	}
 
 	log.Printf("[UserTracker] User joined: %s (rank %d)", userJoin.Username, userJoin.UserRank)
+	p.status.EventsHandled++
 	return nil
 }
 
@@ -254,7 +329,11 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 	}
 
 	userLeave := dataEvent.Data.UserLeave
-	channel := "***REMOVED***" // TODO: Get from config
+	// Use channel from event if available, otherwise fall back to config
+	channel := userLeave.Channel
+	if channel == "" {
+		channel = p.config.Channel
+	}
 	now := time.Now()
 
 	// Update in-memory state
@@ -288,6 +367,7 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 	}
 
 	log.Printf("[UserTracker] User left: %s", userLeave.Username)
+	p.status.EventsHandled++
 	return nil
 }
 
@@ -319,6 +399,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		log.Printf("[UserTracker] Error updating activity: %v", err)
 	}
 
+	p.status.EventsHandled++
 	return nil
 }
 
@@ -330,7 +411,7 @@ func (p *Plugin) handleSeenRequest(event framework.Event) error {
 	}
 
 	targetUser := dataEvent.Data.RawMessage.Message
-	channel := "***REMOVED***" // TODO: Get from config
+	channel := p.config.Channel
 
 	// Query database for user info
 	query := `
@@ -341,11 +422,19 @@ func (p *Plugin) handleSeenRequest(event framework.Event) error {
 		LIMIT 1
 	`
 
-	rows, err := p.eventBus.Query(query, channel, targetUser)
+	// Create context with timeout for the query
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	rows, err := p.eventBus.QuerySync(ctx, query, channel, targetUser)
 	if err != nil {
 		return fmt.Errorf("failed to query user info: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("Failed to close rows: %v", err)
+		}
+	}()
 
 	// Parse result
 	var username string

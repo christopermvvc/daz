@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -82,10 +83,50 @@ func (fd *FlexibleDuration) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("duration must be a string or number: %w", err)
 	}
 
-	// Convert string to int
+	// Check if it's a time format (HH:MM:SS or MM:SS)
+	if strings.Contains(strVal, ":") {
+		parts := strings.Split(strVal, ":")
+		var seconds int
+
+		switch len(parts) {
+		case 2: // MM:SS
+			minutes, err := strconv.Atoi(parts[0])
+			if err != nil {
+				return fmt.Errorf("invalid minutes in duration: %w", err)
+			}
+			secs, err := strconv.Atoi(parts[1])
+			if err != nil {
+				return fmt.Errorf("invalid seconds in duration: %w", err)
+			}
+			seconds = minutes*60 + secs
+
+		case 3: // HH:MM:SS
+			hours, err := strconv.Atoi(parts[0])
+			if err != nil {
+				return fmt.Errorf("invalid hours in duration: %w", err)
+			}
+			minutes, err := strconv.Atoi(parts[1])
+			if err != nil {
+				return fmt.Errorf("invalid minutes in duration: %w", err)
+			}
+			secs, err := strconv.Atoi(parts[2])
+			if err != nil {
+				return fmt.Errorf("invalid seconds in duration: %w", err)
+			}
+			seconds = hours*3600 + minutes*60 + secs
+
+		default:
+			return fmt.Errorf("invalid time format: %s", strVal)
+		}
+
+		*fd = FlexibleDuration(seconds)
+		return nil
+	}
+
+	// Convert plain number string to int
 	intVal, err := strconv.Atoi(strVal)
 	if err != nil {
-		return fmt.Errorf("duration string must be a valid number: %w", err)
+		return fmt.Errorf("duration string must be a valid number or time format: %w", err)
 	}
 
 	*fd = FlexibleDuration(intVal)

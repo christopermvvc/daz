@@ -2,19 +2,24 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/metrics"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // SQLModule handles database operations for the core plugin
 type SQLModule struct {
 	config   DatabaseConfig
 	pool     *pgxpool.Pool
+	db       *sql.DB // Standard sql.DB for sync queries
 	eventBus framework.EventBus
 }
 
@@ -63,13 +68,38 @@ func (s *SQLModule) Start() error {
 
 	s.pool = pool
 
+	// Also create a standard sql.DB connection for sync queries
+	// Register pgx driver with stdlib
+	connConfig, err := pgx.ParseConfig(connStr)
+	if err != nil {
+		pool.Close()
+		return fmt.Errorf("failed to parse config for stdlib: %w", err)
+	}
+
+	stdlib.RegisterConnConfig(connConfig)
+	db, err := sql.Open("pgx", stdlib.RegisterConnConfig(connConfig))
+	if err != nil {
+		pool.Close()
+		return fmt.Errorf("failed to open stdlib connection: %w", err)
+	}
+
+	// Test the stdlib connection
+	if err := db.PingContext(ctx); err != nil {
+		pool.Close()
+		db.Close()
+		return fmt.Errorf("failed to ping stdlib database: %w", err)
+	}
+
+	s.db = db
+
 	// Initialize schema
 	if err := s.initializeSchema(ctx); err != nil {
 		pool.Close()
+		db.Close()
 		return fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
-	log.Printf("[SQLModule] Connected to database successfully")
+	log.Printf("[SQLModule] Connected to database successfully (both pgxpool and stdlib)")
 	return nil
 }
 
@@ -77,6 +107,9 @@ func (s *SQLModule) Start() error {
 func (s *SQLModule) Stop() error {
 	if s.pool != nil {
 		s.pool.Close()
+	}
+	if s.db != nil {
+		s.db.Close()
 	}
 	return nil
 }
@@ -195,7 +228,13 @@ func (s *SQLModule) initializeSchema(ctx context.Context) error {
 
 // HandleSQLExec executes a SQL statement that doesn't return rows (INSERT, UPDATE, DELETE)
 func (s *SQLModule) HandleSQLExec(ctx context.Context, req framework.SQLRequest) error {
+	// Track metrics
+	timer := prometheus.NewTimer(metrics.DatabaseQueryDuration)
+	defer timer.ObserveDuration()
+	metrics.DatabaseQueries.WithLabelValues("exec").Inc()
+
 	if s.pool == nil {
+		metrics.DatabaseErrors.Inc()
 		return fmt.Errorf("database not connected")
 	}
 
@@ -204,6 +243,7 @@ func (s *SQLModule) HandleSQLExec(ctx context.Context, req framework.SQLRequest)
 
 	_, err := s.pool.Exec(ctx, req.Query, req.Params...)
 	if err != nil {
+		metrics.DatabaseErrors.Inc()
 		return fmt.Errorf("exec failed: %w", err)
 	}
 
@@ -212,7 +252,13 @@ func (s *SQLModule) HandleSQLExec(ctx context.Context, req framework.SQLRequest)
 
 // HandleSQLRequest processes SQL requests from other plugins
 func (s *SQLModule) HandleSQLRequest(ctx context.Context, req framework.SQLRequest) (framework.QueryResult, error) {
+	// Track metrics
+	timer := prometheus.NewTimer(metrics.DatabaseQueryDuration)
+	defer timer.ObserveDuration()
+	metrics.DatabaseQueries.WithLabelValues("query").Inc()
+
 	if s.pool == nil {
+		metrics.DatabaseErrors.Inc()
 		return nil, fmt.Errorf("database not connected")
 	}
 
@@ -221,6 +267,7 @@ func (s *SQLModule) HandleSQLRequest(ctx context.Context, req framework.SQLReque
 
 	rows, err := s.pool.Query(ctx, req.Query, req.Params...)
 	if err != nil {
+		metrics.DatabaseErrors.Inc()
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
 
@@ -243,4 +290,9 @@ func (r *pgxQueryResult) Scan(dest ...interface{}) error {
 func (r *pgxQueryResult) Close() error {
 	r.rows.Close()
 	return nil
+}
+
+// GetDB returns the standard sql.DB connection for sync queries
+func (s *SQLModule) GetDB() *sql.DB {
+	return s.db
 }

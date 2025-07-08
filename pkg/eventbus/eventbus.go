@@ -2,6 +2,7 @@ package eventbus
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // EventBus implements the framework.EventBus interface using Go channels
@@ -29,10 +32,23 @@ type EventBus struct {
 	// Buffer size configuration
 	bufferSizes map[string]int
 
+	// Track active routers to prevent duplicates
+	activeRouters map[string]bool
+	routerMu      sync.RWMutex
+
+	// Sync operation tracking
+	pendingQueries map[string]chan *queryResponse
+	pendingExecs   map[string]chan *execResponse
+	syncMu         sync.RWMutex
+
 	// Mutexes for thread safety
 	chanMu sync.RWMutex
 	subMu  sync.RWMutex
 	plugMu sync.RWMutex
+
+	// Metrics
+	droppedEvents map[string]int64
+	metricsMu     sync.RWMutex
 
 	// Shutdown management
 	ctx    context.Context
@@ -52,6 +68,18 @@ type eventMessage struct {
 type subscriberInfo struct {
 	Handler framework.EventHandler
 	Name    string // For debugging
+}
+
+// queryResponse holds the response from a synchronous query
+type queryResponse struct {
+	rows *sql.Rows
+	err  error
+}
+
+// execResponse holds the response from a synchronous exec
+type execResponse struct {
+	result sql.Result
+	err    error
 }
 
 // Config holds event bus configuration
@@ -78,12 +106,16 @@ func NewEventBus(config *Config) *EventBus {
 	}
 
 	eb := &EventBus{
-		channels:    make(map[string]chan *eventMessage),
-		subscribers: make(map[string][]subscriberInfo),
-		plugins:     make(map[string]framework.Plugin),
-		bufferSizes: bufferSizes,
-		ctx:         ctx,
-		cancel:      cancel,
+		channels:       make(map[string]chan *eventMessage),
+		subscribers:    make(map[string][]subscriberInfo),
+		plugins:        make(map[string]framework.Plugin),
+		bufferSizes:    bufferSizes,
+		activeRouters:  make(map[string]bool),
+		pendingQueries: make(map[string]chan *queryResponse),
+		pendingExecs:   make(map[string]chan *execResponse),
+		droppedEvents:  make(map[string]int64),
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 
 	// Initialize channels for known event types
@@ -128,7 +160,16 @@ func (eb *EventBus) Broadcast(eventType string, data *framework.EventData) error
 	case ch <- msg:
 		return nil
 	default:
-		log.Printf("[EventBus] WARNING: Dropped event %s - buffer full", eventType)
+		// Track dropped event
+		eb.metricsMu.Lock()
+		eb.droppedEvents[eventType]++
+		count := eb.droppedEvents[eventType]
+		eb.metricsMu.Unlock()
+
+		// Update Prometheus metrics
+		metrics.EventsDropped.WithLabelValues(eventType).Inc()
+
+		log.Printf("[EventBus] WARNING: Dropped event %s - buffer full (total dropped: %d)", eventType, count)
 		return nil // Don't return error for dropped events
 	}
 }
@@ -153,20 +194,29 @@ func (eb *EventBus) Send(target string, eventType string, data *framework.EventD
 	case ch <- msg:
 		return nil
 	default:
-		log.Printf("[EventBus] WARNING: Dropped direct event to %s - buffer full", target)
+		// Track dropped event
+		eb.metricsMu.Lock()
+		eb.droppedEvents["plugin.request"]++
+		count := eb.droppedEvents["plugin.request"]
+		eb.metricsMu.Unlock()
+
+		log.Printf("[EventBus] WARNING: Dropped direct event to %s - buffer full (total dropped: %d)", target, count)
 		return nil
 	}
 }
 
 // Query delegates SQL queries to the core plugin
 func (eb *EventBus) Query(sql string, params ...interface{}) (framework.QueryResult, error) {
-	// The EventBus is designed for asynchronous event-driven communication
-	// Synchronous queries are not supported in the current architecture
-	// Plugins should either:
-	// 1. Use their own database connections for queries
-	// 2. Use async patterns with request/response correlation
-	// 3. Load data during Start() instead of Init()
-	return nil, fmt.Errorf("synchronous queries not supported by EventBus - use async patterns or direct DB access")
+	// Delegate to QuerySync with a 30-second timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	rows, err := eb.QuerySync(ctx, sql, params...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &sqlRowsAdapter{rows: rows}, nil
 }
 
 // Exec delegates SQL exec operations to the core plugin
@@ -191,6 +241,106 @@ func (eb *EventBus) Exec(sql string, params ...interface{}) error {
 
 	// Broadcast as sql.exec event
 	return eb.Broadcast("sql.exec", data)
+}
+
+// QuerySync performs a synchronous SQL query with context support
+func (eb *EventBus) QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error) {
+	// Generate correlation ID
+	correlationID := generateID()
+
+	// Create response channel
+	respCh := make(chan *queryResponse, 1)
+
+	// Register pending query
+	eb.syncMu.Lock()
+	eb.pendingQueries[correlationID] = respCh
+	eb.syncMu.Unlock()
+
+	// Clean up on exit
+	defer func() {
+		eb.syncMu.Lock()
+		delete(eb.pendingQueries, correlationID)
+		eb.syncMu.Unlock()
+		close(respCh)
+	}()
+
+	// Create sync request
+	request := &framework.SQLRequest{
+		ID:         correlationID,
+		Query:      sql,
+		Params:     params,
+		IsSync:     true,
+		ResponseCh: correlationID,
+		RequestBy:  "sync_query",
+	}
+
+	// Create event data
+	data := &framework.EventData{
+		SQLRequest: request,
+	}
+
+	// Send request
+	if err := eb.Broadcast("sql.query", data); err != nil {
+		return nil, fmt.Errorf("failed to broadcast query: %w", err)
+	}
+
+	// Wait for response with timeout
+	select {
+	case resp := <-respCh:
+		return resp.rows, resp.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("query timeout: %w", ctx.Err())
+	}
+}
+
+// ExecSync performs a synchronous SQL exec with context support
+func (eb *EventBus) ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error) {
+	// Generate correlation ID
+	correlationID := generateID()
+
+	// Create response channel
+	respCh := make(chan *execResponse, 1)
+
+	// Register pending exec
+	eb.syncMu.Lock()
+	eb.pendingExecs[correlationID] = respCh
+	eb.syncMu.Unlock()
+
+	// Clean up on exit
+	defer func() {
+		eb.syncMu.Lock()
+		delete(eb.pendingExecs, correlationID)
+		eb.syncMu.Unlock()
+		close(respCh)
+	}()
+
+	// Create sync request
+	request := &framework.SQLRequest{
+		ID:         correlationID,
+		Query:      sql,
+		Params:     params,
+		IsSync:     true,
+		ResponseCh: correlationID,
+		RequestBy:  "sync_exec",
+	}
+
+	// Create event data
+	data := &framework.EventData{
+		SQLRequest: request,
+	}
+
+	// Send request
+	if err := eb.Broadcast("sql.exec", data); err != nil {
+		return nil, fmt.Errorf("failed to broadcast exec: %w", err)
+	}
+
+	// Wait for response with timeout
+	select {
+	case resp := <-respCh:
+		return resp.result, resp.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("exec timeout: %w", ctx.Err())
+	}
 }
 
 // Subscribe registers a handler for an event type
@@ -288,12 +438,23 @@ func (eb *EventBus) getBufferSize(eventType string) int {
 // startRouter starts the event router for a specific event type
 func (eb *EventBus) startRouter(eventType string, ch chan *eventMessage) {
 	// Check if router already exists
-	// For simplicity, we'll start one router per Subscribe call
-	// In production, we'd track active routers
+	eb.routerMu.Lock()
+	if eb.activeRouters[eventType] {
+		eb.routerMu.Unlock()
+		return // Router already exists, don't start another
+	}
+	eb.activeRouters[eventType] = true
+	eb.routerMu.Unlock()
 
 	eb.wg.Add(1)
 	go func() {
 		defer eb.wg.Done()
+		defer func() {
+			// Clean up when router stops
+			eb.routerMu.Lock()
+			delete(eb.activeRouters, eventType)
+			eb.routerMu.Unlock()
+		}()
 		eb.routeEvents(eventType, ch)
 	}()
 }
@@ -319,9 +480,15 @@ func (eb *EventBus) routeEvents(eventType string, ch chan *eventMessage) {
 			for _, sub := range subscribers {
 				// Non-blocking dispatch
 				go func(s subscriberInfo, m *eventMessage) {
+					timer := prometheus.NewTimer(metrics.EventProcessingDuration.WithLabelValues(eventType))
+					defer timer.ObserveDuration()
+
 					if err := s.Handler(m.Event); err != nil {
 						log.Printf("[EventBus] Handler error for %s: %v", eventType, err)
 					}
+
+					// Track successful processing
+					metrics.EventsProcessed.WithLabelValues(eventType).Inc()
 				}(sub, msg)
 			}
 
@@ -335,4 +502,79 @@ func (eb *EventBus) routeEvents(eventType string, ch chan *eventMessage) {
 // generateID generates a unique ID for requests
 func generateID() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+// GetDroppedEventCounts returns a copy of the dropped event counts
+func (eb *EventBus) GetDroppedEventCounts() map[string]int64 {
+	eb.metricsMu.RLock()
+	defer eb.metricsMu.RUnlock()
+
+	// Create a copy to avoid race conditions
+	counts := make(map[string]int64)
+	for k, v := range eb.droppedEvents {
+		counts[k] = v
+	}
+	return counts
+}
+
+// GetDroppedEventCount returns the dropped event count for a specific event type
+func (eb *EventBus) GetDroppedEventCount(eventType string) int64 {
+	eb.metricsMu.RLock()
+	defer eb.metricsMu.RUnlock()
+	return eb.droppedEvents[eventType]
+}
+
+// DeliverQueryResponse delivers a query response to a waiting sync operation
+func (eb *EventBus) DeliverQueryResponse(correlationID string, rows *sql.Rows, err error) {
+	eb.syncMu.RLock()
+	respCh, exists := eb.pendingQueries[correlationID]
+	eb.syncMu.RUnlock()
+
+	if exists {
+		select {
+		case respCh <- &queryResponse{rows: rows, err: err}:
+			// Delivered successfully
+		default:
+			// Channel full or closed, log error
+			log.Printf("[EventBus] Failed to deliver query response for %s", correlationID)
+		}
+	}
+}
+
+// DeliverExecResponse delivers an exec response to a waiting sync operation
+func (eb *EventBus) DeliverExecResponse(correlationID string, result sql.Result, err error) {
+	eb.syncMu.RLock()
+	respCh, exists := eb.pendingExecs[correlationID]
+	eb.syncMu.RUnlock()
+
+	if exists {
+		select {
+		case respCh <- &execResponse{result: result, err: err}:
+			// Delivered successfully
+		default:
+			// Channel full or closed, log error
+			log.Printf("[EventBus] Failed to deliver exec response for %s", correlationID)
+		}
+	}
+}
+
+// sqlRowsAdapter adapts *sql.Rows to framework.QueryResult
+type sqlRowsAdapter struct {
+	rows *sql.Rows
+}
+
+func (a *sqlRowsAdapter) Next() bool {
+	return a.rows.Next()
+}
+
+func (a *sqlRowsAdapter) Scan(dest ...interface{}) error {
+	return a.rows.Scan(dest...)
+}
+
+func (a *sqlRowsAdapter) Close() error {
+	return a.rows.Close()
+}
+
+func (a *sqlRowsAdapter) Columns() ([]string, error) {
+	return a.rows.Columns()
 }
