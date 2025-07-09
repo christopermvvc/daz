@@ -62,19 +62,35 @@ func main() {
 	}
 
 	fmt.Println("Daz - Modular Go Chat Bot for Cytube")
-	fmt.Printf("Joining channel: %s\n", cfg.Core.Cytube.Channel)
-	if cfg.Core.Cytube.Username != "" {
-		fmt.Printf("Authenticating as: %s\n", cfg.Core.Cytube.Username)
+
+	// Display room information
+	enabledRooms := 0
+	for _, room := range cfg.Core.Rooms {
+		if room.Enabled {
+			enabledRooms++
+			fmt.Printf("Room '%s': Joining channel %s", room.ID, room.Channel)
+			if room.Username != "" {
+				fmt.Printf(" as %s", room.Username)
+			}
+			fmt.Println()
+		}
 	}
-	fmt.Println("Using WebSocket transport with PostgreSQL persistence")
+	fmt.Printf("Managing %d room(s) with WebSocket transport and PostgreSQL persistence\n", enabledRooms)
 
 	// Create core plugin configuration from loaded config
 	coreConfig := &core.Config{
-		Cytube: core.CytubeConfig{
-			Channel:  cfg.Core.Cytube.Channel,
-			Username: cfg.Core.Cytube.Username,
-			Password: cfg.Core.Cytube.Password,
-		},
+		Rooms: make([]core.RoomConfig, len(cfg.Core.Rooms)),
+	}
+	for i, room := range cfg.Core.Rooms {
+		coreConfig.Rooms[i] = core.RoomConfig{
+			ID:                room.ID,
+			Channel:           room.Channel,
+			Username:          room.Username,
+			Password:          room.Password,
+			Enabled:           room.Enabled,
+			ReconnectAttempts: room.ReconnectAttempts,
+			CooldownMinutes:   room.CooldownMinutes,
+		}
 	}
 
 	if err := run(coreConfig, cfg, *healthPort); err != nil {

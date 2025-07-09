@@ -16,15 +16,17 @@ type Config struct {
 
 // CoreConfig contains configuration for the core plugin
 type CoreConfig struct {
-	Cytube   CytubeConfig   `json:"cytube"`
+	Rooms    []RoomConfig   `json:"rooms"`
 	Database DatabaseConfig `json:"database"`
 }
 
-// CytubeConfig contains Cytube connection settings
-type CytubeConfig struct {
+// RoomConfig contains configuration for a single room/channel connection
+type RoomConfig struct {
+	ID                string `json:"id"`
 	Channel           string `json:"channel"`
 	Username          string `json:"username,omitempty"`
 	Password          string `json:"password,omitempty"`
+	Enabled           bool   `json:"enabled"`
 	ReconnectAttempts int    `json:"reconnect_attempts"`
 	CooldownMinutes   int    `json:"cooldown_minutes"`
 }
@@ -56,13 +58,7 @@ func (p *PluginConfig) UnmarshalJSON(data []byte) error {
 func DefaultConfig() *Config {
 	return &Config{
 		Core: CoreConfig{
-			Cytube: CytubeConfig{
-				Channel:           "",
-				Username:          "",
-				Password:          "",
-				ReconnectAttempts: 10,
-				CooldownMinutes:   30,
-			},
+			Rooms: []RoomConfig{},
 			Database: DatabaseConfig{
 				Host:     "localhost",
 				Port:     5432,
@@ -114,14 +110,20 @@ func LoadFromFile(path string) (*Config, error) {
 
 // LoadFromEnv loads configuration from environment variables
 func (c *Config) LoadFromEnv() {
-	if v := os.Getenv("DAZ_CYTUBE_USERNAME"); v != "" {
-		c.Core.Cytube.Username = v
-	}
-	if v := os.Getenv("DAZ_CYTUBE_PASSWORD"); v != "" {
-		c.Core.Cytube.Password = v
-	}
-	if v := os.Getenv("DAZ_CYTUBE_CHANNEL"); v != "" {
-		c.Core.Cytube.Channel = v
+	// For backward compatibility, create a single room from env vars if no rooms configured
+	if len(c.Core.Rooms) == 0 {
+		if channel := os.Getenv("DAZ_CYTUBE_CHANNEL"); channel != "" {
+			room := RoomConfig{
+				ID:                "default",
+				Channel:           channel,
+				Username:          os.Getenv("DAZ_CYTUBE_USERNAME"),
+				Password:          os.Getenv("DAZ_CYTUBE_PASSWORD"),
+				Enabled:           true,
+				ReconnectAttempts: 10,
+				CooldownMinutes:   30,
+			}
+			c.Core.Rooms = []RoomConfig{room}
+		}
 	}
 	if v := os.Getenv("DAZ_DB_USER"); v != "" {
 		c.Core.Database.User = v
@@ -146,14 +148,25 @@ func (c *Config) LoadFromEnv() {
 // MergeWithFlags merges command-line flag values into the configuration
 // Command-line flags take precedence over config file values and environment variables
 func (c *Config) MergeWithFlags(channel, username, password, dbHost string, dbPort int, dbName, dbUser, dbPass string) {
-	if channel != "" {
-		c.Core.Cytube.Channel = channel
-	}
-	if username != "" {
-		c.Core.Cytube.Username = username
-	}
-	if password != "" {
-		c.Core.Cytube.Password = password
+	// For backward compatibility, update the first room or create one
+	if channel != "" || username != "" || password != "" {
+		if len(c.Core.Rooms) == 0 {
+			c.Core.Rooms = []RoomConfig{{
+				ID:                "default",
+				Enabled:           true,
+				ReconnectAttempts: 10,
+				CooldownMinutes:   30,
+			}}
+		}
+		if channel != "" {
+			c.Core.Rooms[0].Channel = channel
+		}
+		if username != "" {
+			c.Core.Rooms[0].Username = username
+		}
+		if password != "" {
+			c.Core.Rooms[0].Password = password
+		}
 	}
 	if dbHost != "" {
 		c.Core.Database.Host = dbHost
@@ -182,14 +195,33 @@ func (c *Config) GetPluginConfig(name string) json.RawMessage {
 
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
-	if c.Core.Cytube.Username == "" {
-		return fmt.Errorf("CyTube username is required (set DAZ_CYTUBE_USERNAME environment variable)")
+	if len(c.Core.Rooms) == 0 {
+		return fmt.Errorf("at least one room must be configured")
 	}
-	if c.Core.Cytube.Password == "" {
-		return fmt.Errorf("CyTube password is required (set DAZ_CYTUBE_PASSWORD environment variable)")
+
+	enabledRooms := 0
+	for i, room := range c.Core.Rooms {
+		if !room.Enabled {
+			continue
+		}
+		enabledRooms++
+
+		if room.ID == "" {
+			return fmt.Errorf("room[%d]: ID is required", i)
+		}
+		if room.Username == "" {
+			return fmt.Errorf("room[%d] '%s': username is required", i, room.ID)
+		}
+		if room.Password == "" {
+			return fmt.Errorf("room[%d] '%s': password is required", i, room.ID)
+		}
+		if room.Channel == "" {
+			return fmt.Errorf("room[%d] '%s': channel is required", i, room.ID)
+		}
 	}
-	if c.Core.Cytube.Channel == "" {
-		return fmt.Errorf("CyTube channel is required (set DAZ_CYTUBE_CHANNEL environment variable)")
+
+	if enabledRooms == 0 {
+		return fmt.Errorf("at least one room must be enabled")
 	}
 	if c.Core.Database.Host == "" {
 		return fmt.Errorf("database host is required")

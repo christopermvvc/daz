@@ -47,8 +47,6 @@ type Config struct {
 	// How often to update aggregated statistics
 	StatsUpdateIntervalMinutes int `json:"stats_update_interval_minutes"`
 	StatsUpdateInterval        time.Duration
-	// Channel to track
-	Channel string `json:"channel"`
 }
 
 // MediaState tracks current media playing
@@ -146,11 +144,6 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	// Ensure we have a valid interval
 	if p.config.StatsUpdateInterval <= 0 {
 		p.config.StatsUpdateInterval = 5 * time.Minute
-	}
-
-	// Ensure channel is set (will be overridden by config.json)
-	if p.config.Channel == "" {
-		p.config.Channel = "default"
 	}
 
 	p.eventBus = bus
@@ -399,9 +392,16 @@ func (p *Plugin) handleMediaChange(event framework.Event) error {
 	media := dataEvent.Data.VideoChange
 	now := time.Now()
 
+	// Get channel from event (must be present)
+	channel := media.Channel
+	if channel == "" {
+		log.Printf("[MediaTracker] Skipping video change event without channel information")
+		return nil
+	}
+
 	// End the previous media play if any
 	if p.currentMedia != nil {
-		if err := p.endMediaPlay(p.currentMedia, now); err != nil {
+		if err := p.endMediaPlay(p.currentMedia, now, channel); err != nil {
 			log.Printf("[MediaTracker] Error ending previous media: %v", err)
 		}
 	}
@@ -424,7 +424,7 @@ func (p *Plugin) handleMediaChange(event framework.Event) error {
 		media.Title,
 		media.Duration,
 		"", // addedBy unknown for now
-		p.config.Channel,
+		channel,
 		nil, // metadata
 	); err != nil {
 		log.Printf("[MediaTracker] Error adding to library: %v", err)
@@ -437,7 +437,7 @@ func (p *Plugin) handleMediaChange(event framework.Event) error {
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`
 	err := p.eventBus.Exec(playSQL,
-		framework.SQLParam{Value: p.config.Channel},
+		framework.SQLParam{Value: channel},
 		framework.SQLParam{Value: media.VideoID},
 		framework.SQLParam{Value: media.VideoType},
 		framework.SQLParam{Value: media.Title},
@@ -459,7 +459,7 @@ func (p *Plugin) handleMediaChange(event framework.Event) error {
 			title = EXCLUDED.title
 	`
 	err = p.eventBus.Exec(statsSQL,
-		framework.SQLParam{Value: p.config.Channel},
+		framework.SQLParam{Value: channel},
 		framework.SQLParam{Value: media.VideoID},
 		framework.SQLParam{Value: media.VideoType},
 		framework.SQLParam{Value: media.Title},
@@ -501,10 +501,11 @@ func (p *Plugin) handleQueueUpdate(event framework.Event) error {
 func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error {
 	p.status.EventsHandled++
 
-	// Use channel from event or fall back to config
+	// Get channel from event (must be present)
 	channel := queueData.Channel
 	if channel == "" {
-		channel = p.config.Channel
+		log.Printf("[MediaTracker] Skipping queue update without channel information")
+		return nil
 	}
 
 	log.Printf("[MediaTracker] Processing queue %s for channel %s", queueData.Action, channel)
@@ -757,6 +758,21 @@ func (p *Plugin) handleNowPlayingRequest(event framework.Event) error {
 
 // handleStatsRequest handles requests for media statistics
 func (p *Plugin) handleStatsRequest(event framework.Event) error {
+	// Get channel from event context
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil {
+		return nil
+	}
+
+	channel := ""
+	if dataEvent.Data.ChatMessage != nil {
+		channel = dataEvent.Data.ChatMessage.Channel
+	}
+	if channel == "" {
+		log.Printf("[MediaTracker] Skipping stats request without channel context")
+		return nil
+	}
+
 	// Query most played media
 	query := `
 		SELECT title, media_type, play_count, last_played
@@ -769,7 +785,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
-	rows, err := p.eventBus.QuerySync(ctx, query, p.config.Channel)
+	rows, err := p.eventBus.QuerySync(ctx, query, channel)
 	if err != nil {
 		return fmt.Errorf("failed to query stats: %w", err)
 	}
@@ -813,7 +829,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 }
 
 // endMediaPlay marks a media play as ended
-func (p *Plugin) endMediaPlay(media *MediaState, endTime time.Time) error {
+func (p *Plugin) endMediaPlay(media *MediaState, endTime time.Time, channel string) error {
 	duration := endTime.Sub(media.StartedAt)
 	completed := duration >= time.Duration(media.Duration)*time.Second*9/10 // 90% watched
 
@@ -825,7 +841,7 @@ func (p *Plugin) endMediaPlay(media *MediaState, endTime time.Time) error {
 	err := p.eventBus.Exec(updateSQL,
 		framework.SQLParam{Value: endTime},
 		framework.SQLParam{Value: completed},
-		framework.SQLParam{Value: p.config.Channel},
+		framework.SQLParam{Value: channel},
 		framework.SQLParam{Value: media.ID},
 		framework.SQLParam{Value: media.StartedAt})
 	if err != nil {
@@ -840,7 +856,7 @@ func (p *Plugin) endMediaPlay(media *MediaState, endTime time.Time) error {
 	`
 	err = p.eventBus.Exec(statsSQL,
 		framework.SQLParam{Value: int(duration.Seconds())},
-		framework.SQLParam{Value: p.config.Channel},
+		framework.SQLParam{Value: channel},
 		framework.SQLParam{Value: media.ID})
 	if err != nil {
 		return fmt.Errorf("failed to update total duration: %w", err)
@@ -851,42 +867,9 @@ func (p *Plugin) endMediaPlay(media *MediaState, endTime time.Time) error {
 
 // loadCurrentState loads the current media state from database
 func (p *Plugin) loadCurrentState() error {
-	query := `
-		SELECT media_id, media_type, title, duration, started_at
-		FROM daz_mediatracker_plays
-		WHERE channel = $1 AND ended_at IS NULL
-		ORDER BY started_at DESC
-		LIMIT 1
-	`
-
-	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
-	defer cancel()
-
-	rows, err := p.eventBus.QuerySync(ctx, query, p.config.Channel)
-	if err != nil {
-		return fmt.Errorf("failed to query current state: %w", err)
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("Failed to close rows: %v", err)
-		}
-	}()
-
-	if rows.Next() {
-		var media MediaState
-		err := rows.Scan(&media.ID, &media.Type, &media.Title,
-			&media.Duration, &media.StartedAt)
-		if err != nil {
-			return fmt.Errorf("failed to scan media state: %w", err)
-		}
-
-		p.mu.Lock()
-		p.currentMedia = &media
-		p.mu.Unlock()
-
-		log.Printf("[MediaTracker] Restored current media: %s", media.Title)
-	}
-
+	// Since this is called at startup, we can't determine channel from events
+	// Skip loading current state for now in multi-room setup
+	log.Printf("[MediaTracker] Skipping current state load in multi-room mode")
 	return nil
 }
 
@@ -968,7 +951,8 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 		// Deduplication: ignore duplicate playlist events within 2 seconds for the same channel
 		channel := playlistArray.ChannelName
 		if channel == "" {
-			channel = p.config.Channel
+			log.Printf("[MediaTracker] Skipping playlist event without channel information")
+			return nil
 		}
 
 		p.mu.Lock()
@@ -1005,7 +989,7 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 			batch := playlistArray.Items[i:end]
 
 			// Use bulk insert for better performance
-			if err := p.bulkAddPlaylistToLibrary(batch, p.config.Channel); err != nil {
+			if err := p.bulkAddPlaylistToLibrary(batch, channel); err != nil {
 				log.Printf("[MediaTracker] Failed to bulk add playlist items to library: %v", err)
 				// Fall back to individual inserts on bulk failure
 				for _, item := range batch {
@@ -1019,7 +1003,7 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 						item.Title,
 						item.Duration,
 						item.QueuedBy,
-						p.config.Channel,
+						channel,
 						metadata,
 					); err != nil {
 						log.Printf("[MediaTracker] Failed to add playlist item to library: %v", err)
@@ -1029,7 +1013,7 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 
 			// Also update the queue table
 			for _, item := range batch {
-				if err := p.insertQueueItem(p.config.Channel, &framework.QueueItem{
+				if err := p.insertQueueItem(channel, &framework.QueueItem{
 					Position:  item.Position,
 					MediaID:   item.MediaID,
 					MediaType: item.MediaType,

@@ -11,11 +11,13 @@ import (
 
 type Parser struct {
 	channel string
+	roomID  string
 }
 
-func NewParser(channel string) *Parser {
+func NewParser(channel string, roomID string) *Parser {
 	return &Parser{
 		channel: channel,
+		roomID:  roomID,
 	}
 }
 
@@ -26,6 +28,7 @@ func (p *Parser) ParseEvent(event Event) (framework.Event, error) {
 		EventType:   event.Type,
 		EventTime:   timestamp,
 		ChannelName: p.channel,
+		RoomID:      p.roomID,
 		RawData:     event.Data,
 		Metadata:    make(map[string]string),
 	}

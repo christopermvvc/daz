@@ -173,14 +173,10 @@ func TestNewPlugin(t *testing.T) {
 	// Test with custom config
 	config := &Config{
 		StatsUpdateInterval: 10 * time.Minute,
-		Channel:             "test-channel",
 	}
 	p = NewPlugin(config)
 	if p.config.StatsUpdateInterval != 10*time.Minute {
 		t.Errorf("Expected custom stats interval to be 10 minutes, got %v", p.config.StatsUpdateInterval)
-	}
-	if p.config.Channel != "test-channel" {
-		t.Errorf("Expected channel to be 'test-channel', got '%s'", p.config.Channel)
 	}
 }
 
@@ -260,7 +256,7 @@ func TestPluginStart(t *testing.T) {
 }
 
 func TestHandleMediaChange(t *testing.T) {
-	p := NewPlugin(&Config{Channel: "test-channel"})
+	p := NewPlugin(nil)
 	bus := newMockEventBus()
 
 	err := p.Initialize(bus)
@@ -274,6 +270,7 @@ func TestHandleMediaChange(t *testing.T) {
 		VideoType: "youtube",
 		Title:     "Test Video",
 		Duration:  300,
+		Channel:   "test-channel",
 	}
 
 	event := &framework.DataEvent{

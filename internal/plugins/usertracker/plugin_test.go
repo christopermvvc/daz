@@ -241,6 +241,7 @@ func TestHandleUserJoin(t *testing.T) {
 		UserJoin: &framework.UserJoinData{
 			Username: "testuser",
 			UserRank: 2,
+			Channel:  "testchannel",
 		},
 	}
 
@@ -314,6 +315,7 @@ func TestHandleUserLeave(t *testing.T) {
 	leaveData := &framework.EventData{
 		UserLeave: &framework.UserLeaveData{
 			Username: "testuser",
+			Channel:  "testchannel",
 		},
 	}
 

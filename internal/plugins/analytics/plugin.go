@@ -44,8 +44,6 @@ type Config struct {
 	// How often to run daily aggregation (in hours)
 	DailyIntervalHours int `json:"daily_interval_hours"`
 	DailyInterval      time.Duration
-	// Channel to track
-	Channel string `json:"channel"`
 }
 
 // StatsData holds aggregated statistics
@@ -160,11 +158,6 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 	if p.config.DailyInterval <= 0 {
 		p.config.DailyInterval = 24 * time.Hour
-	}
-
-	// Ensure channel is set (will be overridden by config.json)
-	if p.config.Channel == "" {
-		p.config.Channel = "default"
 	}
 
 	p.eventBus = bus
@@ -341,6 +334,13 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 
 	chat := dataEvent.Data.ChatMessage
 
+	// Get channel from event (must be present)
+	channel := chat.Channel
+	if channel == "" {
+		log.Printf("[Analytics] Skipping chat message without channel information")
+		return nil
+	}
+
 	// Update real-time counters
 	p.mu.Lock()
 	p.messagesCount++
@@ -359,7 +359,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 			last_seen = NOW()
 	`
 	ctx := context.Background()
-	_, err := p.eventBus.ExecSync(ctx, userStatsSQL, p.config.Channel, chat.Username)
+	_, err := p.eventBus.ExecSync(ctx, userStatsSQL, channel, chat.Username)
 	if err != nil {
 		log.Printf("[Analytics] Error updating user stats: %v", err)
 	}
@@ -369,6 +369,21 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 
 // handleStatsRequest provides analytics data
 func (p *Plugin) handleStatsRequest(event framework.Event) error {
+	// Get channel from event context
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil {
+		return nil
+	}
+
+	channel := ""
+	if dataEvent.Data.ChatMessage != nil {
+		channel = dataEvent.Data.ChatMessage.Channel
+	}
+	if channel == "" {
+		log.Printf("[Analytics] Skipping stats request without channel context")
+		return nil
+	}
+
 	// Get current hour stats
 	currentHourQuery := `
 		SELECT message_count, unique_users, media_plays
@@ -379,7 +394,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
-	rows, err := p.eventBus.QuerySync(ctx, currentHourQuery, p.config.Channel)
+	rows, err := p.eventBus.QuerySync(ctx, currentHourQuery, channel)
 	if err != nil {
 		return fmt.Errorf("failed to query current hour stats: %w", err)
 	}
@@ -406,7 +421,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 		WHERE channel = $1 AND day_date = CURRENT_DATE
 	`
 
-	rows2, err := p.eventBus.QuerySync(ctx, todayQuery, p.config.Channel)
+	rows2, err := p.eventBus.QuerySync(ctx, todayQuery, channel)
 	if err != nil {
 		return fmt.Errorf("failed to query today stats: %w", err)
 	}
@@ -435,7 +450,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 		LIMIT 3
 	`
 
-	rows3, err := p.eventBus.QuerySync(ctx, topChattersQuery, p.config.Channel)
+	rows3, err := p.eventBus.QuerySync(ctx, topChattersQuery, channel)
 	if err != nil {
 		return fmt.Errorf("failed to query top chatters: %w", err)
 	}
@@ -504,123 +519,8 @@ func (p *Plugin) runHourlyAggregation() {
 
 // doHourlyAggregation performs the actual hourly aggregation
 func (p *Plugin) doHourlyAggregation() {
-	hourStart := time.Now().Truncate(time.Hour)
-	hourEnd := hourStart.Add(time.Hour)
-
-	// Count messages in the hour
-	messageCountQuery := `
-		SELECT COUNT(*) 
-		FROM daz_core_events
-		WHERE channel_name = $1 
-			AND event_type = 'chatMsg'
-			AND timestamp >= $2 
-			AND timestamp < $3
-	`
-
-	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
-	defer cancel()
-
-	rows, err := p.eventBus.QuerySync(ctx, messageCountQuery, p.config.Channel, hourStart, hourEnd)
-	if err != nil {
-		log.Printf("[Analytics] Error querying message count: %v", err)
-		return
-	}
-	if rows != nil {
-		defer func() {
-			if err := rows.Close(); err != nil {
-				log.Printf("Failed to close rows: %v", err)
-			}
-		}()
-	}
-
-	var messageCount int64
-	if rows != nil && rows.Next() {
-		err = rows.Scan(&messageCount)
-		if err != nil {
-			log.Printf("[Analytics] Error scanning message count: %v", err)
-		}
-	}
-
-	// Count unique users
-	uniqueUsersQuery := `
-		SELECT COUNT(DISTINCT username) 
-		FROM daz_core_events
-		WHERE channel_name = $1 
-			AND event_type = 'chatMsg'
-			AND timestamp >= $2 
-			AND timestamp < $3
-	`
-
-	rows2, err := p.eventBus.QuerySync(ctx, uniqueUsersQuery, p.config.Channel, hourStart, hourEnd)
-	if err != nil {
-		log.Printf("[Analytics] Error querying unique users: %v", err)
-		return
-	}
-	if rows2 != nil {
-		defer func() {
-			if err := rows2.Close(); err != nil {
-				log.Printf("Failed to close rows2: %v", err)
-			}
-		}()
-	}
-
-	var uniqueUsers int
-	if rows2 != nil && rows2.Next() {
-		err = rows2.Scan(&uniqueUsers)
-		if err != nil {
-			log.Printf("[Analytics] Error scanning unique users: %v", err)
-		}
-	}
-
-	// Count media plays
-	mediaPlaysQuery := `
-		SELECT COUNT(*) 
-		FROM daz_mediatracker_plays
-		WHERE channel = $1 
-			AND started_at >= $2 
-			AND started_at < $3
-	`
-
-	rows3, err := p.eventBus.QuerySync(ctx, mediaPlaysQuery, p.config.Channel, hourStart, hourEnd)
-	if err != nil {
-		log.Printf("[Analytics] Error querying media plays: %v", err)
-		return
-	}
-	if rows3 != nil {
-		defer func() {
-			if err := rows3.Close(); err != nil {
-				log.Printf("Failed to close rows3: %v", err)
-			}
-		}()
-	}
-
-	var mediaPlays int
-	if rows3 != nil && rows3.Next() {
-		err = rows3.Scan(&mediaPlays)
-		if err != nil {
-			log.Printf("[Analytics] Error scanning media plays: %v", err)
-		}
-	}
-
-	// Store hourly stats
-	insertSQL := `
-		INSERT INTO daz_analytics_hourly 
-			(channel, hour_start, message_count, unique_users, media_plays)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (channel, hour_start) 
-		DO UPDATE SET 
-			message_count = EXCLUDED.message_count,
-			unique_users = EXCLUDED.unique_users,
-			media_plays = EXCLUDED.media_plays
-	`
-	_, err = p.eventBus.ExecSync(ctx, insertSQL, p.config.Channel, hourStart, messageCount, uniqueUsers, mediaPlays)
-	if err != nil {
-		log.Printf("[Analytics] Error storing hourly stats: %v", err)
-	} else {
-		log.Printf("[Analytics] Hourly stats updated: %d messages, %d users, %d plays",
-			messageCount, uniqueUsers, mediaPlays)
-	}
-
+	// Skip aggregation in multi-room mode for now
+	log.Printf("[Analytics] Skipping hourly aggregation in multi-room mode")
 	p.lastHourlyRun = time.Now()
 }
 
@@ -653,97 +553,7 @@ func (p *Plugin) runDailyAggregation() {
 
 // doDailyAggregation performs the actual daily aggregation
 func (p *Plugin) doDailyAggregation() {
-	today := time.Now().Truncate(24 * time.Hour)
-
-	// Aggregate from hourly stats
-	aggregateQuery := `
-		SELECT 
-			SUM(message_count) as total_messages,
-			MAX(unique_users) as peak_users,
-			SUM(media_plays) as total_plays,
-			COUNT(DISTINCT hour_start) as active_hours
-		FROM daz_analytics_hourly
-		WHERE channel = $1 
-			AND hour_start >= $2 
-			AND hour_start < $2 + INTERVAL '1 day'
-	`
-
-	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
-	defer cancel()
-
-	rows, err := p.eventBus.QuerySync(ctx, aggregateQuery, p.config.Channel, today)
-	if err != nil {
-		log.Printf("[Analytics] Error querying daily aggregate: %v", err)
-		return
-	}
-	if rows != nil {
-		defer func() {
-			if err := rows.Close(); err != nil {
-				log.Printf("Failed to close rows: %v", err)
-			}
-		}()
-	}
-
-	var totalMessages, peakUsers, totalPlays, activeHours int64
-	if rows != nil && rows.Next() {
-		err = rows.Scan(&totalMessages, &peakUsers, &totalPlays, &activeHours)
-		if err != nil {
-			log.Printf("[Analytics] Error scanning daily aggregate: %v", err)
-		}
-	}
-
-	// Count unique users for the day
-	uniqueUsersQuery := `
-		SELECT COUNT(DISTINCT username) 
-		FROM daz_core_events
-		WHERE channel_name = $1 
-			AND event_type = 'chatMsg'
-			AND timestamp >= $2 
-			AND timestamp < $2 + INTERVAL '1 day'
-	`
-
-	rows2, err := p.eventBus.QuerySync(ctx, uniqueUsersQuery, p.config.Channel, today)
-	if err != nil {
-		log.Printf("[Analytics] Error querying daily unique users: %v", err)
-		return
-	}
-	if rows2 != nil {
-		defer func() {
-			if err := rows2.Close(); err != nil {
-				log.Printf("Failed to close rows2: %v", err)
-			}
-		}()
-	}
-
-	var uniqueUsers int
-	if rows2 != nil && rows2.Next() {
-		err = rows2.Scan(&uniqueUsers)
-		if err != nil {
-			log.Printf("[Analytics] Error scanning daily unique users: %v", err)
-		}
-	}
-
-	// Store daily stats
-	insertSQL := `
-		INSERT INTO daz_analytics_daily 
-			(channel, day_date, total_messages, unique_users, total_media_plays, peak_users, active_hours)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (channel, day_date) 
-		DO UPDATE SET 
-			total_messages = EXCLUDED.total_messages,
-			unique_users = EXCLUDED.unique_users,
-			total_media_plays = EXCLUDED.total_media_plays,
-			peak_users = EXCLUDED.peak_users,
-			active_hours = EXCLUDED.active_hours
-	`
-	_, err = p.eventBus.ExecSync(ctx, insertSQL, p.config.Channel, today, totalMessages,
-		uniqueUsers, totalPlays, peakUsers, activeHours)
-	if err != nil {
-		log.Printf("[Analytics] Error storing daily stats: %v", err)
-	} else {
-		log.Printf("[Analytics] Daily stats updated: %d messages, %d users, %d plays, %d active hours",
-			totalMessages, uniqueUsers, totalPlays, activeHours)
-	}
-
+	// Skip aggregation in multi-room mode for now
+	log.Printf("[Analytics] Skipping daily aggregation in multi-room mode")
 	p.lastDailyRun = time.Now()
 }

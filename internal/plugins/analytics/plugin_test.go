@@ -217,7 +217,6 @@ func TestNewPlugin(t *testing.T) {
 	config := &Config{
 		HourlyInterval: 30 * time.Minute,
 		DailyInterval:  12 * time.Hour,
-		Channel:        "test-channel",
 	}
 	p = NewPlugin(config)
 	if p.config.HourlyInterval != 30*time.Minute {
@@ -250,7 +249,6 @@ func TestPluginStart(t *testing.T) {
 	p := NewPlugin(&Config{
 		HourlyInterval: 1 * time.Hour,
 		DailyInterval:  24 * time.Hour,
-		Channel:        "test-channel",
 	})
 	bus := newMockEventBus()
 
@@ -278,13 +276,13 @@ func TestPluginStart(t *testing.T) {
 	<-startupDone
 
 	// Check that tables were created during Start (with proper locking)
-	// Expected: 3 table creations + 1 hourly aggregation insert
-	expectedExecCalls := 4
+	// Expected: 3 table creations (hourly aggregation is skipped in multi-room mode)
+	expectedExecCalls := 3
 	bus.mu.Lock()
 	actualExecCalls := len(bus.execCalls)
 	bus.mu.Unlock()
 	if actualExecCalls != expectedExecCalls {
-		t.Errorf("Expected %d exec calls during Start (3 tables + 1 hourly aggregation), got %d", expectedExecCalls, actualExecCalls)
+		t.Errorf("Expected %d exec calls during Start (3 tables only), got %d", expectedExecCalls, actualExecCalls)
 	}
 
 	// Check that it subscribed to the right events
@@ -318,7 +316,7 @@ func TestPluginStart(t *testing.T) {
 }
 
 func TestHandleChatMessage(t *testing.T) {
-	p := NewPlugin(&Config{Channel: "test-channel"})
+	p := NewPlugin(nil)
 	bus := newMockEventBus()
 
 	err := p.Initialize(bus)
@@ -367,7 +365,7 @@ func TestHandleChatMessage(t *testing.T) {
 }
 
 func TestHandleStatsRequest(t *testing.T) {
-	p := NewPlugin(&Config{Channel: "test-channel"})
+	p := NewPlugin(nil)
 	bus := newMockEventBus()
 
 	// Set up mock query responses
@@ -397,7 +395,11 @@ func TestHandleStatsRequest(t *testing.T) {
 	// Create stats request event
 	event := &framework.DataEvent{
 		EventType: "plugin.analytics.stats",
-		Data:      &framework.EventData{},
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Channel: "test-channel",
+			},
+		},
 	}
 
 	err = p.handleStatsRequest(event)
@@ -466,7 +468,7 @@ func TestPluginStop(t *testing.T) {
 }
 
 func TestDoHourlyAggregation(t *testing.T) {
-	p := NewPlugin(&Config{Channel: "test-channel"})
+	p := NewPlugin(nil)
 	bus := newMockEventBus()
 
 	// Set up mock query responses
@@ -493,14 +495,15 @@ func TestDoHourlyAggregation(t *testing.T) {
 	// Run aggregation
 	p.doHourlyAggregation()
 
-	// Check that queries were made
-	if len(bus.queryCalls) < 3 {
-		t.Errorf("Expected at least 3 query calls, got %d", len(bus.queryCalls))
+	// In multi-room mode, aggregation is skipped
+	// Check that no queries were made
+	if len(bus.queryCalls) != 0 {
+		t.Errorf("Expected 0 query calls (skipped in multi-room mode), got %d", len(bus.queryCalls))
 	}
 
-	// Check that insert was executed
-	if len(bus.execCalls) != 1 {
-		t.Errorf("Expected 1 exec call, got %d", len(bus.execCalls))
+	// Check that no insert was executed
+	if len(bus.execCalls) != 0 {
+		t.Errorf("Expected 0 exec calls (skipped in multi-room mode), got %d", len(bus.execCalls))
 	}
 }
 

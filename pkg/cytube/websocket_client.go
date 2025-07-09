@@ -18,6 +18,7 @@ import (
 type WebSocketClient struct {
 	serverURL       string
 	channel         string
+	roomID          string // ID of the room this client belongs to
 	conn            *websocket.Conn
 	eventChan       chan<- framework.Event
 	parser          *Parser
@@ -34,7 +35,7 @@ type WebSocketClient struct {
 }
 
 // NewWebSocketClient creates a new WebSocket client for cytube
-func NewWebSocketClient(channel string, eventChan chan<- framework.Event) (*WebSocketClient, error) {
+func NewWebSocketClient(channel string, roomID string, eventChan chan<- framework.Event) (*WebSocketClient, error) {
 	// Discover the server URL for this channel
 	serverURL, err := DiscoverServer(channel)
 	if err != nil {
@@ -48,8 +49,9 @@ func NewWebSocketClient(channel string, eventChan chan<- framework.Event) (*WebS
 	client := &WebSocketClient{
 		serverURL: serverURL,
 		channel:   channel,
+		roomID:    roomID,
 		eventChan: eventChan,
-		parser:    NewParser(channel),
+		parser:    NewParser(channel, roomID),
 		reconnectConfig: ReconnectConfig{
 			MaxAttempts:    10,
 			RetryDelay:     5 * time.Second,
@@ -262,6 +264,7 @@ func (c *WebSocketClient) handleSocketIOMessage(message []byte) {
 			EventType:   "disconnect",
 			EventTime:   time.Now(),
 			ChannelName: c.channel,
+			RoomID:      c.roomID,
 			Metadata:    make(map[string]string),
 		}
 		select {

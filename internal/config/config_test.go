@@ -10,15 +10,9 @@ import (
 func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig()
 
-	// Should have empty credentials by default
-	if config.Core.Cytube.Channel != "" {
-		t.Errorf("expected empty default channel, got %s", config.Core.Cytube.Channel)
-	}
-	if config.Core.Cytube.Username != "" {
-		t.Errorf("expected empty default username, got %s", config.Core.Cytube.Username)
-	}
-	if config.Core.Cytube.Password != "" {
-		t.Errorf("expected empty default password, got %s", config.Core.Cytube.Password)
+	// Should have empty rooms by default
+	if len(config.Core.Rooms) != 0 {
+		t.Errorf("expected empty rooms array, got %d rooms", len(config.Core.Rooms))
 	}
 	if config.Core.Database.User != "" {
 		t.Errorf("expected empty default db user, got %s", config.Core.Database.User)
@@ -47,16 +41,29 @@ func TestLoadFromFile(t *testing.T) {
 		wantErr  bool
 	}{
 		{
-			name: "valid config",
+			name: "valid config with multiple rooms",
 			content: `{
 				"core": {
-					"cytube": {
-						"channel": "test-channel",
-						"username": "testuser",
-						"password": "testpass",
-						"reconnect_attempts": 5,
-						"cooldown_minutes": 15
-					},
+					"rooms": [
+						{
+							"id": "room1",
+							"channel": "test-channel",
+							"username": "testuser",
+							"password": "testpass",
+							"enabled": true,
+							"reconnect_attempts": 5,
+							"cooldown_minutes": 15
+						},
+						{
+							"id": "room2",
+							"channel": "another-channel",
+							"username": "testuser2",
+							"password": "testpass2",
+							"enabled": false,
+							"reconnect_attempts": 3,
+							"cooldown_minutes": 10
+						}
+					],
 					"database": {
 						"host": "db.example.com",
 						"port": 5433,
@@ -79,8 +86,20 @@ func TestLoadFromFile(t *testing.T) {
 				}
 			}`,
 			validate: func(t *testing.T, c *Config) {
-				if c.Core.Cytube.Channel != "test-channel" {
-					t.Errorf("expected channel test-channel, got %s", c.Core.Cytube.Channel)
+				if len(c.Core.Rooms) != 2 {
+					t.Errorf("expected 2 rooms, got %d", len(c.Core.Rooms))
+				}
+				if c.Core.Rooms[0].ID != "room1" {
+					t.Errorf("expected room ID room1, got %s", c.Core.Rooms[0].ID)
+				}
+				if c.Core.Rooms[0].Channel != "test-channel" {
+					t.Errorf("expected channel test-channel, got %s", c.Core.Rooms[0].Channel)
+				}
+				if !c.Core.Rooms[0].Enabled {
+					t.Error("expected room1 to be enabled")
+				}
+				if c.Core.Rooms[1].Enabled {
+					t.Error("expected room2 to be disabled")
 				}
 				if c.Core.Database.Port != 5433 {
 					t.Errorf("expected port 5433, got %d", c.Core.Database.Port)
@@ -96,24 +115,34 @@ func TestLoadFromFile(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "partial config with defaults",
+			name: "backward compatibility with old format",
 			content: `{
 				"core": {
 					"cytube": {
-						"channel": "custom-channel"
+						"channel": "legacy-channel",
+						"username": "legacyuser",
+						"password": "legacypass"
 					}
 				}
 			}`,
 			validate: func(t *testing.T, c *Config) {
-				if c.Core.Cytube.Channel != "custom-channel" {
-					t.Errorf("expected channel custom-channel, got %s", c.Core.Cytube.Channel)
+				// LoadFromEnv should create a room from env vars
+				os.Setenv("DAZ_CYTUBE_CHANNEL", "legacy-channel")
+				os.Setenv("DAZ_CYTUBE_USERNAME", "legacyuser")
+				os.Setenv("DAZ_CYTUBE_PASSWORD", "legacypass")
+				defer os.Unsetenv("DAZ_CYTUBE_CHANNEL")
+				defer os.Unsetenv("DAZ_CYTUBE_USERNAME")
+				defer os.Unsetenv("DAZ_CYTUBE_PASSWORD")
+
+				c.LoadFromEnv()
+
+				if len(c.Core.Rooms) != 1 {
+					t.Errorf("expected 1 room from env vars, got %d", len(c.Core.Rooms))
 				}
-				// Should keep defaults for unspecified values
-				if c.Core.Database.Host != "localhost" {
-					t.Errorf("expected default host localhost, got %s", c.Core.Database.Host)
-				}
-				if c.Core.Cytube.ReconnectAttempts != 10 {
-					t.Errorf("expected default reconnect attempts 10, got %d", c.Core.Cytube.ReconnectAttempts)
+				if len(c.Core.Rooms) > 0 {
+					if c.Core.Rooms[0].Channel != "legacy-channel" {
+						t.Errorf("expected channel legacy-channel, got %s", c.Core.Rooms[0].Channel)
+					}
 				}
 			},
 			wantErr: false,
@@ -175,11 +204,14 @@ func TestMergeWithFlags(t *testing.T) {
 		"flag-dbpass",
 	)
 
-	if config.Core.Cytube.Channel != "flag-channel" {
-		t.Errorf("expected channel flag-channel, got %s", config.Core.Cytube.Channel)
+	if len(config.Core.Rooms) != 1 {
+		t.Fatalf("expected 1 room after merge, got %d", len(config.Core.Rooms))
 	}
-	if config.Core.Cytube.Username != "flag-user" {
-		t.Errorf("expected username flag-user, got %s", config.Core.Cytube.Username)
+	if config.Core.Rooms[0].Channel != "flag-channel" {
+		t.Errorf("expected channel flag-channel, got %s", config.Core.Rooms[0].Channel)
+	}
+	if config.Core.Rooms[0].Username != "flag-user" {
+		t.Errorf("expected username flag-user, got %s", config.Core.Rooms[0].Username)
 	}
 	if config.Core.Database.Host != "flag-host" {
 		t.Errorf("expected host flag-host, got %s", config.Core.Database.Host)
@@ -192,11 +224,14 @@ func TestMergeWithFlags(t *testing.T) {
 	config2 := DefaultConfig()
 	config2.MergeWithFlags("new-channel", "", "", "", 0, "", "", "")
 
-	if config2.Core.Cytube.Channel != "new-channel" {
-		t.Errorf("expected channel new-channel, got %s", config2.Core.Cytube.Channel)
+	if len(config2.Core.Rooms) != 1 {
+		t.Fatalf("expected 1 room after partial merge, got %d", len(config2.Core.Rooms))
 	}
-	if config2.Core.Cytube.Username != "" {
-		t.Errorf("expected empty username, got %s", config2.Core.Cytube.Username)
+	if config2.Core.Rooms[0].Channel != "new-channel" {
+		t.Errorf("expected channel new-channel, got %s", config2.Core.Rooms[0].Channel)
+	}
+	if config2.Core.Rooms[0].Username != "" {
+		t.Errorf("expected empty username, got %s", config2.Core.Rooms[0].Username)
 	}
 	if config2.Core.Database.Port != 5432 {
 		t.Errorf("expected default port 5432, got %d", config2.Core.Database.Port)
@@ -240,12 +275,17 @@ func TestValidate(t *testing.T) {
 		errMsg  string
 	}{
 		{
-			name: "valid config",
+			name: "valid config with rooms",
 			modify: func(c *Config) {
-				// Set all required credentials
-				c.Core.Cytube.Username = "testuser"
-				c.Core.Cytube.Password = "testpass"
-				c.Core.Cytube.Channel = "testchannel"
+				c.Core.Rooms = []RoomConfig{
+					{
+						ID:       "room1",
+						Username: "testuser",
+						Password: "testpass",
+						Channel:  "testchannel",
+						Enabled:  true,
+					},
+				}
 				c.Core.Database.User = "dbuser"
 				c.Core.Database.Password = "dbpass"
 				c.Core.Database.Database = "testdb"
@@ -253,50 +293,123 @@ func TestValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "missing username",
+			name: "no rooms configured",
 			modify: func(c *Config) {
-				c.Core.Cytube.Username = ""
-				c.Core.Cytube.Password = "testpass"
-				c.Core.Cytube.Channel = "testchannel"
+				c.Core.Rooms = []RoomConfig{}
 				c.Core.Database.User = "dbuser"
 				c.Core.Database.Password = "dbpass"
 				c.Core.Database.Database = "testdb"
 			},
 			wantErr: true,
-			errMsg:  "CyTube username is required (set DAZ_CYTUBE_USERNAME environment variable)",
+			errMsg:  "at least one room must be configured",
 		},
 		{
-			name: "missing password",
+			name: "room missing ID",
 			modify: func(c *Config) {
-				c.Core.Cytube.Username = "testuser"
-				c.Core.Cytube.Password = ""
-				c.Core.Cytube.Channel = "testchannel"
+				c.Core.Rooms = []RoomConfig{
+					{
+						ID:       "",
+						Username: "testuser",
+						Password: "testpass",
+						Channel:  "testchannel",
+						Enabled:  true,
+					},
+				}
 				c.Core.Database.User = "dbuser"
 				c.Core.Database.Password = "dbpass"
 				c.Core.Database.Database = "testdb"
 			},
 			wantErr: true,
-			errMsg:  "CyTube password is required (set DAZ_CYTUBE_PASSWORD environment variable)",
+			errMsg:  "room[0]: ID is required",
 		},
 		{
-			name: "missing channel",
+			name: "room missing username",
 			modify: func(c *Config) {
-				c.Core.Cytube.Username = "testuser"
-				c.Core.Cytube.Password = "testpass"
-				c.Core.Cytube.Channel = ""
+				c.Core.Rooms = []RoomConfig{
+					{
+						ID:       "room1",
+						Username: "",
+						Password: "testpass",
+						Channel:  "testchannel",
+						Enabled:  true,
+					},
+				}
 				c.Core.Database.User = "dbuser"
 				c.Core.Database.Password = "dbpass"
 				c.Core.Database.Database = "testdb"
 			},
 			wantErr: true,
-			errMsg:  "CyTube channel is required (set DAZ_CYTUBE_CHANNEL environment variable)",
+			errMsg:  "room[0] 'room1': username is required",
+		},
+		{
+			name: "room missing password",
+			modify: func(c *Config) {
+				c.Core.Rooms = []RoomConfig{
+					{
+						ID:       "room1",
+						Username: "testuser",
+						Password: "",
+						Channel:  "testchannel",
+						Enabled:  true,
+					},
+				}
+				c.Core.Database.User = "dbuser"
+				c.Core.Database.Password = "dbpass"
+				c.Core.Database.Database = "testdb"
+			},
+			wantErr: true,
+			errMsg:  "room[0] 'room1': password is required",
+		},
+		{
+			name: "room missing channel",
+			modify: func(c *Config) {
+				c.Core.Rooms = []RoomConfig{
+					{
+						ID:       "room1",
+						Username: "testuser",
+						Password: "testpass",
+						Channel:  "",
+						Enabled:  true,
+					},
+				}
+				c.Core.Database.User = "dbuser"
+				c.Core.Database.Password = "dbpass"
+				c.Core.Database.Database = "testdb"
+			},
+			wantErr: true,
+			errMsg:  "room[0] 'room1': channel is required",
+		},
+		{
+			name: "no enabled rooms",
+			modify: func(c *Config) {
+				c.Core.Rooms = []RoomConfig{
+					{
+						ID:       "room1",
+						Username: "testuser",
+						Password: "testpass",
+						Channel:  "testchannel",
+						Enabled:  false,
+					},
+				}
+				c.Core.Database.User = "dbuser"
+				c.Core.Database.Password = "dbpass"
+				c.Core.Database.Database = "testdb"
+			},
+			wantErr: true,
+			errMsg:  "at least one room must be enabled",
 		},
 		{
 			name: "missing db host",
 			modify: func(c *Config) {
-				c.Core.Cytube.Username = "testuser"
-				c.Core.Cytube.Password = "testpass"
-				c.Core.Cytube.Channel = "testchannel"
+				c.Core.Rooms = []RoomConfig{
+					{
+						ID:       "room1",
+						Username: "testuser",
+						Password: "testpass",
+						Channel:  "testchannel",
+						Enabled:  true,
+					},
+				}
 				c.Core.Database.Host = ""
 				c.Core.Database.User = "dbuser"
 				c.Core.Database.Password = "dbpass"
@@ -308,9 +421,15 @@ func TestValidate(t *testing.T) {
 		{
 			name: "invalid db port",
 			modify: func(c *Config) {
-				c.Core.Cytube.Username = "testuser"
-				c.Core.Cytube.Password = "testpass"
-				c.Core.Cytube.Channel = "testchannel"
+				c.Core.Rooms = []RoomConfig{
+					{
+						ID:       "room1",
+						Username: "testuser",
+						Password: "testpass",
+						Channel:  "testchannel",
+						Enabled:  true,
+					},
+				}
 				c.Core.Database.Port = 0
 				c.Core.Database.User = "dbuser"
 				c.Core.Database.Password = "dbpass"
@@ -322,9 +441,15 @@ func TestValidate(t *testing.T) {
 		{
 			name: "missing db name",
 			modify: func(c *Config) {
-				c.Core.Cytube.Username = "testuser"
-				c.Core.Cytube.Password = "testpass"
-				c.Core.Cytube.Channel = "testchannel"
+				c.Core.Rooms = []RoomConfig{
+					{
+						ID:       "room1",
+						Username: "testuser",
+						Password: "testpass",
+						Channel:  "testchannel",
+						Enabled:  true,
+					},
+				}
 				c.Core.Database.Database = ""
 				c.Core.Database.User = "dbuser"
 				c.Core.Database.Password = "dbpass"
@@ -335,9 +460,15 @@ func TestValidate(t *testing.T) {
 		{
 			name: "missing db user",
 			modify: func(c *Config) {
-				c.Core.Cytube.Username = "testuser"
-				c.Core.Cytube.Password = "testpass"
-				c.Core.Cytube.Channel = "testchannel"
+				c.Core.Rooms = []RoomConfig{
+					{
+						ID:       "room1",
+						Username: "testuser",
+						Password: "testpass",
+						Channel:  "testchannel",
+						Enabled:  true,
+					},
+				}
 				c.Core.Database.User = ""
 				c.Core.Database.Password = "dbpass"
 				c.Core.Database.Database = "testdb"
@@ -348,9 +479,15 @@ func TestValidate(t *testing.T) {
 		{
 			name: "missing db password",
 			modify: func(c *Config) {
-				c.Core.Cytube.Username = "testuser"
-				c.Core.Cytube.Password = "testpass"
-				c.Core.Cytube.Channel = "testchannel"
+				c.Core.Rooms = []RoomConfig{
+					{
+						ID:       "room1",
+						Username: "testuser",
+						Password: "testpass",
+						Channel:  "testchannel",
+						Enabled:  true,
+					},
+				}
 				c.Core.Database.User = "dbuser"
 				c.Core.Database.Password = ""
 				c.Core.Database.Database = "testdb"

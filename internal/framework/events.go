@@ -9,6 +9,7 @@ type CytubeEvent struct {
 	EventType   string            `json:"type"`
 	EventTime   time.Time         `json:"timestamp"`
 	ChannelName string            `json:"channel"`
+	RoomID      string            `json:"room_id"` // ID of the room this event came from
 	RawData     json.RawMessage   `json:"raw_data"`
 	Metadata    map[string]string `json:"metadata"`
 }

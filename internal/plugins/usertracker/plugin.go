@@ -36,8 +36,6 @@ type Plugin struct {
 
 // Config holds usertracker plugin configuration
 type Config struct {
-	// The channel to track users for
-	Channel string `json:"channel"`
 	// How long to wait before marking a user as inactive (in minutes)
 	InactivityTimeoutMinutes int `json:"inactivity_timeout_minutes"`
 	// How long to wait before marking a user as inactive
@@ -135,11 +133,6 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	// Ensure we have a valid timeout
 	if p.config.InactivityTimeout <= 0 {
 		p.config.InactivityTimeout = 30 * time.Minute
-	}
-
-	// Set default channel if not specified
-	if p.config.Channel == "" {
-		p.config.Channel = "default"
 	}
 
 	p.eventBus = bus
@@ -308,10 +301,11 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	}
 
 	userJoin := dataEvent.Data.UserJoin
-	// Use channel from event if available, otherwise fall back to config
+	// Get channel from event (must be present)
 	channel := userJoin.Channel
 	if channel == "" {
-		channel = p.config.Channel
+		log.Printf("[UserTracker] Skipping user join event without channel information")
+		return nil
 	}
 	now := time.Now()
 
@@ -371,10 +365,11 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 	}
 
 	userLeave := dataEvent.Data.UserLeave
-	// Use channel from event if available, otherwise fall back to config
+	// Get channel from event (must be present)
 	channel := userLeave.Channel
 	if channel == "" {
-		channel = p.config.Channel
+		log.Printf("[UserTracker] Skipping user leave event without channel information")
+		return nil
 	}
 	now := time.Now()
 
@@ -462,7 +457,15 @@ func (p *Plugin) handleSeenRequest(event framework.Event) error {
 	}
 
 	targetUser := dataEvent.Data.RawMessage.Message
-	channel := p.config.Channel
+	// Get channel from event context
+	channel := ""
+	if dataEvent.Data.ChatMessage != nil {
+		channel = dataEvent.Data.ChatMessage.Channel
+	}
+	if channel == "" {
+		log.Printf("[UserTracker] Skipping seen request without channel context")
+		return nil
+	}
 
 	// Query database for user info
 	query := `

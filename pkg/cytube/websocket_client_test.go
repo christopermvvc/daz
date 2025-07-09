@@ -26,7 +26,7 @@ func TestNewWebSocketClient(t *testing.T) {
 	eventChan := make(chan framework.Event, 100)
 
 	// Test with valid channel (should succeed since it hits real server)
-	client, err := NewWebSocketClient("test-channel", eventChan)
+	client, err := NewWebSocketClient("test-channel", "test-room", eventChan)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -113,8 +113,9 @@ func TestWebSocketClient_Connect(t *testing.T) {
 	client := &WebSocketClient{
 		serverURL: server.URL,
 		channel:   "test-channel",
+		roomID:    "test-room",
 		eventChan: eventChan,
-		parser:    NewParser("test-channel"),
+		parser:    NewParser("test-channel", "test-room"),
 		writeChan: make(chan []byte, 100),
 	}
 
@@ -238,7 +239,7 @@ func TestWebSocketClient_handleMessage(t *testing.T) {
 	client := &WebSocketClient{
 		channel:   "test-channel",
 		eventChan: eventChan,
-		parser:    NewParser("test-channel"),
+		parser:    NewParser("test-channel", "test-room"),
 		writeChan: writeChan,
 	}
 
@@ -293,7 +294,7 @@ func TestWebSocketClient_handleSocketIOMessage(t *testing.T) {
 	client := &WebSocketClient{
 		channel:   "test-channel",
 		eventChan: eventChan,
-		parser:    NewParser("test-channel"),
+		parser:    NewParser("test-channel", "test-room"),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

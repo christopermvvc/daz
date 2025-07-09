@@ -5,31 +5,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
 	"github.com/hildolfr/daz/internal/metrics"
-	"github.com/hildolfr/daz/pkg/cytube"
 	"github.com/hildolfr/daz/pkg/eventbus"
 )
 
 // Plugin implements the core plugin functionality
 type Plugin struct {
-	config           *Config
-	eventBus         framework.EventBus
-	cytubeConn       *cytube.WebSocketClient
-	mu               sync.RWMutex
-	ctx              context.Context
-	cancel           context.CancelFunc
-	eventChan        chan framework.Event
-	status           framework.PluginStatus
-	startTime        time.Time
-	reconnectAttempt int
-	lastReconnect    time.Time
-	eventHandlers    map[string]eventHandler
-	lastMediaUpdate  time.Time
+	config        *Config
+	eventBus      framework.EventBus
+	roomManager   *RoomManager
+	mu            sync.RWMutex
+	ctx           context.Context
+	cancel        context.CancelFunc
+	status        framework.PluginStatus
+	startTime     time.Time
+	eventHandlers map[string]eventHandler
 }
 
 // eventHandler is a function that processes a specific event type
@@ -90,25 +84,21 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	// Store event bus reference
 	p.eventBus = bus
 
-	// Create event channel for Cytube events
-	p.eventChan = make(chan framework.Event, 100)
+	// Create room manager
+	p.roomManager = NewRoomManager(bus)
 
-	// Initialize Cytube client
-	cytubeClient, err := cytube.NewWebSocketClient(p.config.Cytube.Channel, p.eventChan)
-	if err != nil {
-		p.status.LastError = fmt.Errorf("failed to create Cytube client: %w", err)
-		return p.status.LastError
+	// Add all configured rooms
+	for _, room := range p.config.Rooms {
+		if err := p.roomManager.AddRoom(room); err != nil {
+			p.status.LastError = fmt.Errorf("failed to add room '%s': %w", room.ID, err)
+			return p.status.LastError
+		}
 	}
-	p.cytubeConn = cytubeClient
 
 	// Initialize event handlers
 	p.initEventHandlers()
 
-	// Set up Cytube event handlers
-	p.setupCytubeHandlers()
-
-	// Set up connection monitoring
-	p.setupConnectionMonitor()
+	// Note: Event handling and connection monitoring are now managed by RoomManager
 
 	// Subscribe to chat message sending
 	if err := p.eventBus.Subscribe("cytube.send", p.handleCytubeSend); err != nil {
@@ -132,21 +122,20 @@ func (p *Plugin) Initialize(eventBus framework.EventBus) error {
 
 	p.eventBus = eventBus
 
-	// Create event channel for Cytube events
-	p.eventChan = make(chan framework.Event, 100)
+	// Create room manager
+	p.roomManager = NewRoomManager(eventBus)
 
-	// Initialize Cytube client
-	cytubeClient, err := cytube.NewWebSocketClient(p.config.Cytube.Channel, p.eventChan)
-	if err != nil {
-		return fmt.Errorf("failed to create Cytube client: %w", err)
+	// Add all configured rooms
+	for _, room := range p.config.Rooms {
+		if err := p.roomManager.AddRoom(room); err != nil {
+			return fmt.Errorf("failed to add room '%s': %w", room.ID, err)
+		}
 	}
-	p.cytubeConn = cytubeClient
 
 	// Initialize event handlers
 	p.initEventHandlers()
 
-	// Set up Cytube event handlers
-	p.setupCytubeHandlers()
+	// Note: Event handling is now managed by RoomManager
 
 	// Subscribe to chat message sending
 	if err := p.eventBus.Subscribe("cytube.send", p.handleCytubeSend); err != nil {
@@ -164,40 +153,13 @@ func (p *Plugin) Start() error {
 	p.startTime = time.Now()
 	p.mu.Unlock()
 
-	// Connect to Cytube with retry logic
-	if err := p.connectWithRetry(); err != nil {
-		p.mu.Lock()
-		p.status.LastError = fmt.Errorf("failed to connect to Cytube after retries: %w", err)
-		p.mu.Unlock()
-		return p.status.LastError
-	}
+	// Start all room connections
+	p.roomManager.StartAll()
 
-	// Wait for connection to stabilize and join to complete
-	log.Printf("[Core] Waiting for connection to stabilize...")
-	time.Sleep(3 * time.Second)
+	// Start connection monitoring
+	go p.roomManager.MonitorConnections(p.ctx)
 
-	// Wait additional time to receive initialization events (including playlist)
-	// CyTube sends channel setup events (including playlist) before processing login
-	log.Printf("[Core] Waiting for channel initialization events...")
-	time.Sleep(5 * time.Second)
-
-	// Login if credentials are provided
-	if p.config.Cytube.Username != "" && p.config.Cytube.Password != "" {
-		log.Printf("[Core] Logging in as %s...", p.config.Cytube.Username)
-		if err := p.cytubeConn.Login(p.config.Cytube.Username, p.config.Cytube.Password); err != nil {
-			log.Printf("[Core] Login failed: %v", err)
-		} else {
-			log.Printf("[Core] Login successful!")
-
-			// Request playlist after successful login
-			log.Printf("[Core] Requesting playlist data...")
-			if err := p.cytubeConn.RequestPlaylist(); err != nil {
-				log.Printf("[Core] Failed to request playlist: %v", err)
-			}
-		}
-	}
-
-	log.Printf("[Core] Plugin started successfully")
+	log.Printf("[Core] Plugin started successfully with %d rooms", len(p.config.Rooms))
 	return nil
 }
 
@@ -212,11 +174,9 @@ func (p *Plugin) Stop() error {
 	// Cancel context to stop all operations
 	p.cancel()
 
-	// Disconnect from Cytube
-	if p.cytubeConn != nil {
-		if err := p.cytubeConn.Disconnect(); err != nil {
-			log.Printf("[Core] Error disconnecting from Cytube: %v", err)
-		}
+	// Stop all room connections
+	if p.roomManager != nil {
+		p.roomManager.StopAll()
 	}
 
 	log.Printf("[Core] Plugin stopped")
@@ -255,25 +215,45 @@ func (p *Plugin) handleCytubeSend(event framework.Event) error {
 	msg := dataEvent.Data.RawMessage.Message
 	log.Printf("[Core] Sending message to Cytube: %d chars", len(msg))
 
-	msgData := cytube.ChatMessageSendPayload{
-		Message: msg,
+	// Determine which room to send to
+	roomID := ""
+
+	// Check if room ID is provided in the RawMessage channel field
+	if dataEvent.Data.RawMessage.Channel != "" {
+		// Find room by channel name
+		for _, room := range p.config.Rooms {
+			if room.Enabled && room.Channel == dataEvent.Data.RawMessage.Channel {
+				roomID = room.ID
+				break
+			}
+		}
 	}
 
-	// Check if we have a connection
-	if p.cytubeConn == nil {
-		return fmt.Errorf("not connected to Cytube")
+	// If no room ID found, use the first enabled room
+	if roomID == "" && len(p.config.Rooms) > 0 {
+		for _, room := range p.config.Rooms {
+			if room.Enabled {
+				roomID = room.ID
+				break
+			}
+		}
 	}
 
-	err := p.cytubeConn.Send("chatMsg", msgData)
+	if roomID == "" {
+		return fmt.Errorf("no enabled rooms available")
+	}
+
+	// Send message to the room
+	err := p.roomManager.SendToRoom(roomID, msg)
 	if err != nil {
-		log.Printf("[Core] Failed to send message: %v", err)
+		log.Printf("[Core] Failed to send message to room '%s': %v", roomID, err)
 		return err
 	}
 
 	// Track message sent
 	metrics.CytubeMessagesSent.Inc()
 
-	log.Printf("[Core] Message sent successfully")
+	log.Printf("[Core] Message sent successfully to room '%s'", roomID)
 	return nil
 }
 
@@ -281,23 +261,32 @@ func (p *Plugin) handleCytubeSend(event framework.Event) error {
 func (p *Plugin) handlePlaylistRequest(event framework.Event) error {
 	log.Printf("[Core] Received playlist request command")
 
-	// Check if we have a connection
-	p.mu.RLock()
-	conn := p.cytubeConn
-	p.mu.RUnlock()
+	// For now, request playlist from all connected rooms
+	// In the future, we might want to specify which room
+	connections := p.roomManager.GetAllConnections()
 
-	if conn == nil {
-		return fmt.Errorf("not connected to Cytube")
+	successCount := 0
+	for roomID, conn := range connections {
+		conn.mu.RLock()
+		connected := conn.Connected
+		client := conn.Client
+		conn.mu.RUnlock()
+
+		if connected && client != nil {
+			if err := client.RequestPlaylist(); err != nil {
+				log.Printf("[Core] Failed to request playlist for room '%s': %v", roomID, err)
+			} else {
+				log.Printf("[Core] Playlist request sent for room '%s'", roomID)
+				successCount++
+			}
+		}
 	}
 
-	// Request the playlist
-	err := conn.RequestPlaylist()
-	if err != nil {
-		log.Printf("[Core] Failed to request playlist: %v", err)
-		return err
+	if successCount == 0 {
+		return fmt.Errorf("no rooms available for playlist request")
 	}
 
-	log.Printf("[Core] Playlist request sent successfully")
+	log.Printf("[Core] Playlist request sent to %d room(s)", successCount)
 	return nil
 }
 
@@ -370,10 +359,7 @@ func (p *Plugin) handleVideoChange(event framework.Event) (string, *framework.Ev
 func (p *Plugin) handleMediaUpdate(event framework.Event) (string, *framework.EventData, bool) {
 	e := event.(*framework.MediaUpdateEvent)
 
-	// Update last MediaUpdate timestamp
-	p.mu.Lock()
-	p.lastMediaUpdate = time.Now()
-	p.mu.Unlock()
+	// Note: MediaUpdate timestamps are now tracked by RoomManager per room
 
 	eventData := &framework.EventData{
 		MediaUpdate: &framework.MediaUpdateData{
@@ -414,101 +400,6 @@ func (p *Plugin) handlePlaylistArray(event framework.Event) (string, *framework.
 	return "", nil, false
 }
 
-// setupCytubeHandlers starts a goroutine to process Cytube events
-func (p *Plugin) setupCytubeHandlers() {
-	// Define known event types that should be broadcast
-	knownEventTypes := map[string]bool{
-		"chatMsg":           true,
-		"userJoin":          true,
-		"userLeave":         true,
-		"videoChange":       true,
-		"userlist":          true,
-		"setUserRank":       true,
-		"rank":              true,
-		"login":             true,
-		"addUser":           true,
-		"setPlaylistMeta":   true,
-		"playlist":          true,
-		"setCurrent":        true,
-		"usercount":         true,
-		"mediaUpdate":       true,
-		"setUserMeta":       true,
-		"setAFK":            true,
-		"setPermissions":    true,
-		"setPlaylistLocked": true,
-		"emoteList":         true,
-		"drinkCount":        true,
-		"channelCSSJS":      true,
-		"setMotd":           true,
-		"channelOpts":       true,
-		"clearVoteskipVote": true,
-		"pm":                true,
-	}
-
-	go func() {
-		for {
-			select {
-			case event := <-p.eventChan:
-				// Increment event counter
-				p.mu.Lock()
-				p.status.EventsHandled++
-				p.mu.Unlock()
-
-				// Track message received
-				metrics.CytubeMessagesReceived.Inc()
-
-				// Process event based on type
-				var eventType string
-				var eventData *framework.EventData
-				var shouldBroadcast bool
-
-				// Check if we have a specific handler for this event type
-				eventTypeName := fmt.Sprintf("%T", event)
-				if handler, ok := p.eventHandlers[eventTypeName]; ok {
-					eventType, eventData, shouldBroadcast = handler(event)
-				} else {
-					// For other events, check if they're in the known list
-					rawEventType := event.Type()
-					eventData = &framework.EventData{}
-					shouldBroadcast = knownEventTypes[rawEventType]
-
-					// Only log errors or important state changes
-					// Removed verbose event logging for cleaner output
-
-					if shouldBroadcast {
-						// Convert known raw event types to proper broadcast event types
-						eventType = fmt.Sprintf("cytube.event.%s", rawEventType)
-					} else if rawEventType != "mediaUpdate" {
-						// Log unknown events except mediaUpdate (too noisy)
-						log.Printf("[Core] Skipping broadcast of unknown event type: %s", rawEventType)
-					}
-				}
-
-				if shouldBroadcast {
-					// Create event metadata with logging tags
-					metadata := framework.NewEventMetadata("core", eventType)
-
-					// Tag Cytube events as loggable
-					if strings.HasPrefix(eventType, "cytube.event.") {
-						metadata.WithLogging("info").WithTags("cytube", "user-activity")
-					}
-
-					// Broadcast with metadata
-					if err := p.eventBus.BroadcastWithMetadata(eventType, eventData, metadata); err != nil {
-						log.Printf("[Core] Error broadcasting event %s: %v", eventType, err)
-						p.mu.Lock()
-						p.status.LastError = fmt.Errorf("broadcast error for %s: %w", eventType, err)
-						p.mu.Unlock()
-					}
-				}
-
-			case <-p.ctx.Done():
-				return
-			}
-		}
-	}()
-}
-
 // Name returns the plugin name
 func (p *Plugin) Name() string {
 	return "core"
@@ -529,124 +420,4 @@ func (p *Plugin) Status() framework.PluginStatus {
 // SupportsStream indicates if the plugin supports streaming events
 func (p *Plugin) SupportsStream() bool {
 	return false
-}
-
-// connectWithRetry attempts to connect to Cytube with exponential backoff
-func (p *Plugin) connectWithRetry() error {
-	maxRetries := 5
-	baseDelay := time.Second
-	maxDelay := 30 * time.Second
-
-	for i := 0; i < maxRetries; i++ {
-		err := p.cytubeConn.Connect()
-		if err == nil {
-			p.reconnectAttempt = 0
-			// Update connection status metric
-			metrics.CytubeConnectionStatus.Set(1)
-			// Initialize lastMediaUpdate to current time to start timeout tracking
-			p.mu.Lock()
-			p.lastMediaUpdate = time.Now()
-			p.mu.Unlock()
-			return nil
-		}
-
-		if i == maxRetries-1 {
-			return fmt.Errorf("all connection attempts failed: %w", err)
-		}
-
-		// Calculate delay with exponential backoff
-		delay := baseDelay * time.Duration(1<<uint(i))
-		if delay > maxDelay {
-			delay = maxDelay
-		}
-
-		log.Printf("[Core] Connection attempt %d/%d failed: %v. Retrying in %v...", i+1, maxRetries, err, delay)
-		p.status.RetryCount++
-		p.reconnectAttempt = i + 1
-		p.lastReconnect = time.Now()
-
-		// Use a timer with context to allow cancellation during retry
-		timer := time.NewTimer(delay)
-		select {
-		case <-timer.C:
-			// Continue to next attempt
-		case <-p.ctx.Done():
-			timer.Stop()
-			return fmt.Errorf("connection cancelled during retry: %w", p.ctx.Err())
-		}
-	}
-
-	return fmt.Errorf("should not reach here")
-}
-
-// setupConnectionMonitor monitors the Cytube connection and attempts reconnection if needed
-func (p *Plugin) setupConnectionMonitor() {
-	go func() {
-		// Check every 5 seconds for better MediaUpdate timeout detection
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				needsReconnect := false
-
-				// Check if we're still connected
-				if p.cytubeConn != nil && !p.cytubeConn.IsConnected() {
-					log.Printf("[Core] Connection lost, attempting to reconnect...")
-					needsReconnect = true
-				} else {
-					// Check for MediaUpdate timeout (15 seconds)
-					p.mu.RLock()
-					lastUpdate := p.lastMediaUpdate
-					p.mu.RUnlock()
-
-					if !lastUpdate.IsZero() && time.Since(lastUpdate) > 15*time.Second {
-						log.Printf("[Core] MediaUpdate timeout detected (last update: %v ago), triggering reconnect...", time.Since(lastUpdate))
-						needsReconnect = true
-					}
-				}
-
-				if needsReconnect {
-					p.mu.Lock()
-					p.status.State = "reconnecting"
-					p.mu.Unlock()
-
-					// Update connection status metric
-					metrics.CytubeConnectionStatus.Set(0)
-					metrics.CytubeReconnects.Inc()
-
-					if err := p.connectWithRetry(); err != nil {
-						log.Printf("[Core] Reconnection failed: %v", err)
-						p.mu.Lock()
-						p.status.State = "error"
-						p.status.LastError = err
-						p.mu.Unlock()
-					} else {
-						log.Printf("[Core] Successfully reconnected to Cytube")
-						p.mu.Lock()
-						p.status.State = "running"
-						// Reset lastMediaUpdate to avoid immediate timeout after reconnect
-						p.lastMediaUpdate = time.Now()
-						p.mu.Unlock()
-
-						// Wait for connection to stabilize and join to complete
-						log.Printf("[Core] Waiting for connection to stabilize...")
-						time.Sleep(3 * time.Second)
-
-						// Re-login if credentials are provided
-						if p.config.Cytube.Username != "" && p.config.Cytube.Password != "" {
-							if err := p.cytubeConn.Login(p.config.Cytube.Username, p.config.Cytube.Password); err != nil {
-								log.Printf("[Core] Re-login failed: %v", err)
-							} else {
-								log.Printf("[Core] Re-login successful")
-							}
-						}
-					}
-				}
-			case <-p.ctx.Done():
-				return
-			}
-		}
-	}()
 }

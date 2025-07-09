@@ -8,14 +8,17 @@ import (
 )
 
 func TestNewParser(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 	if parser.channel != "test-channel" {
 		t.Errorf("channel = %v, want %v", parser.channel, "test-channel")
+	}
+	if parser.roomID != "test-room" {
+		t.Errorf("roomID = %v, want %v", parser.roomID, "test-room")
 	}
 }
 
 func TestParseChatMessage(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	rawData := json.RawMessage(`{"username":"testuser","msg":"Hello world","rank":1,"meta":{"uid":"user123"}}`)
 	event := Event{
@@ -51,7 +54,7 @@ func TestParseChatMessage(t *testing.T) {
 }
 
 func TestParseUserJoin(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	rawData := json.RawMessage(`{"name":"newuser","rank":2}`)
 	event := Event{
@@ -79,7 +82,7 @@ func TestParseUserJoin(t *testing.T) {
 }
 
 func TestParseUserLeave(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	rawData := json.RawMessage(`{"name":"leavinguser"}`)
 	event := Event{
@@ -103,7 +106,7 @@ func TestParseUserLeave(t *testing.T) {
 }
 
 func TestParseVideoChange(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	rawData := json.RawMessage(`{"id":"dQw4w9WgXcQ","type":"youtube","duration":212,"title":"Never Gonna Give You Up"}`)
 	event := Event{
@@ -139,7 +142,7 @@ func TestParseVideoChange(t *testing.T) {
 }
 
 func TestParseVideoChangeWithStringDuration(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	// Test with duration as a string
 	rawData := json.RawMessage(`{"id":"abc123","type":"youtube","duration":"212","title":"Test Video"}`)
@@ -176,7 +179,7 @@ func TestParseVideoChangeWithStringDuration(t *testing.T) {
 }
 
 func TestParseUnknownEvent(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	rawData := json.RawMessage(`{"some":"data"}`)
 	event := Event{
@@ -216,7 +219,7 @@ func TestParseUnknownEvent(t *testing.T) {
 }
 
 func TestParseMediaUpdate(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	// Test successful parsing
 	rawData := json.RawMessage(`{"currentTime":123.45,"paused":false}`)
@@ -254,7 +257,7 @@ func TestParseMediaUpdate(t *testing.T) {
 }
 
 func TestParseMediaUpdatePaused(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	// Test with paused = true
 	rawData := json.RawMessage(`{"currentTime":0,"paused":true}`)
@@ -283,7 +286,7 @@ func TestParseMediaUpdatePaused(t *testing.T) {
 }
 
 func TestParseMediaUpdateEdgeCases(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	tests := []struct {
 		name        string
@@ -380,7 +383,7 @@ func TestParseMediaUpdateEdgeCases(t *testing.T) {
 }
 
 func TestParseInvalidJSON(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	tests := []struct {
 		name      string
@@ -412,7 +415,7 @@ func TestParseInvalidJSON(t *testing.T) {
 }
 
 func TestParseLogin(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	t.Run("successful login", func(t *testing.T) {
 		rawData := json.RawMessage(`{
@@ -486,7 +489,7 @@ func TestParseLogin(t *testing.T) {
 }
 
 func TestParseAddUser(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	rawData := json.RawMessage(`{
 		"name": "newuser",
@@ -529,7 +532,7 @@ func TestParseAddUser(t *testing.T) {
 }
 
 func TestParseChannelMeta(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	rawData := json.RawMessage(`{
 		"field": "title",
@@ -571,7 +574,7 @@ func TestParseChannelMeta(t *testing.T) {
 }
 
 func TestParsePlaylist(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	t.Run("add items", func(t *testing.T) {
 		rawData := json.RawMessage(`{
@@ -672,7 +675,7 @@ func TestParsePlaylist(t *testing.T) {
 }
 
 func TestParseGenericEvent(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	t.Run("object data", func(t *testing.T) {
 		rawData := json.RawMessage(`{
@@ -744,7 +747,7 @@ func TestParseGenericEvent(t *testing.T) {
 }
 
 func TestParseSetPlaylistMeta(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	rawData := json.RawMessage(`{
 		"count": 699,
@@ -778,7 +781,7 @@ func TestParseSetPlaylistMeta(t *testing.T) {
 }
 
 func TestParseUserCount(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	rawData := json.RawMessage(`2`)
 	event := Event{
@@ -802,7 +805,7 @@ func TestParseUserCount(t *testing.T) {
 }
 
 func TestParseSetUserRank(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	rawData := json.RawMessage(`{
 		"name": "***REMOVED***",
@@ -832,7 +835,7 @@ func TestParseSetUserRank(t *testing.T) {
 }
 
 func TestParseSetPlaylistLocked(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	t.Run("locked true", func(t *testing.T) {
 		rawData := json.RawMessage(`true`)
@@ -880,7 +883,7 @@ func TestParseSetPlaylistLocked(t *testing.T) {
 }
 
 func TestParseSetPermissions(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	rawData := json.RawMessage(`{
 		"seeplaylist": -1,
@@ -916,7 +919,7 @@ func TestParseSetPermissions(t *testing.T) {
 }
 
 func TestParseSetMotd(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	t.Run("empty motd", func(t *testing.T) {
 		rawData := json.RawMessage(`""`)
@@ -964,7 +967,7 @@ func TestParseSetMotd(t *testing.T) {
 }
 
 func TestParseChannelOpts(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	rawData := json.RawMessage(`{
 		"allow_voteskip": true,
@@ -1006,7 +1009,7 @@ func TestParseChannelOpts(t *testing.T) {
 }
 
 func TestParseChannelCSSJS(t *testing.T) {
-	parser := NewParser("test-channel")
+	parser := NewParser("test-channel", "test-room")
 
 	rawData := json.RawMessage(`{
 		"css": ".custom { color: red; }",

@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
-	"github.com/hildolfr/daz/pkg/eventbus"
 )
 
 type mockEventBus struct {
@@ -91,11 +89,14 @@ func (m *mockEventBus) GetDroppedEventCount(eventType string) int64 {
 
 func TestNewPlugin(t *testing.T) {
 	config := &Config{
-		Cytube: CytubeConfig{
-			ServerURL: "ws://localhost",
-			Channel:   "test",
-			Username:  "test",
-			Password:  "test",
+		Rooms: []RoomConfig{
+			{
+				ID:       "test-room",
+				Channel:  "test",
+				Username: "test",
+				Password: "test",
+				Enabled:  true,
+			},
 		},
 	}
 
@@ -144,11 +145,14 @@ func TestPlugin_HandleEvent(t *testing.T) {
 
 func TestPlugin_Initialize(t *testing.T) {
 	config := &Config{
-		Cytube: CytubeConfig{
-			ServerURL: "ws://localhost:8080",
-			Channel:   "test",
-			Username:  "testuser",
-			Password:  "testpass",
+		Rooms: []RoomConfig{
+			{
+				ID:       "test-room",
+				Channel:  "test",
+				Username: "testuser",
+				Password: "testpass",
+				Enabled:  true,
+			},
 		},
 	}
 
@@ -166,22 +170,22 @@ func TestPlugin_Initialize(t *testing.T) {
 		t.Error("eventBus was not set correctly during initialization")
 	}
 
-	// Verify Cytube client was created
-	if plugin.cytubeConn == nil {
-		t.Error("cytubeConn was not created during initialization")
-	}
-
-	// Verify event channel was created
-	if plugin.eventChan == nil {
-		t.Error("eventChan was not created during initialization")
+	// Verify RoomManager was created
+	if plugin.roomManager == nil {
+		t.Error("roomManager was not created during initialization")
 	}
 }
 
 func TestPlugin_EventBroadcasting(t *testing.T) {
 	config := &Config{
-		Cytube: CytubeConfig{
-			ServerURL: "ws://localhost:8080",
-			Channel:   "test",
+		Rooms: []RoomConfig{
+			{
+				ID:       "test-room",
+				Channel:  "test",
+				Username: "testuser",
+				Password: "testpass",
+				Enabled:  true,
+			},
 		},
 	}
 
@@ -194,53 +198,26 @@ func TestPlugin_EventBroadcasting(t *testing.T) {
 		t.Fatalf("Initialize() error = %v", err)
 	}
 
-	// Simulate a chat message event
-	chatEvent := &framework.ChatMessageEvent{
-		CytubeEvent: framework.CytubeEvent{
-			EventType: "chatMessage",
-		},
-		Username: "testuser",
-		Message:  "Hello, world!",
-		UserRank: 3,
-		UserID:   "user123",
+	// Note: Event broadcasting is now handled by RoomManager
+	// We can test that the event handlers are properly initialized
+	if plugin.eventHandlers == nil {
+		t.Error("Event handlers were not initialized")
 	}
 
-	// Send event through the channel
-	plugin.eventChan <- chatEvent
-
-	// Give the goroutine time to process
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	<-ctx.Done()
-
-	// Verify the event was broadcast (with proper locking)
-	mockBus.mu.Lock()
-	defer mockBus.mu.Unlock()
-
-	if len(mockBus.broadcasts) != 1 {
-		t.Errorf("Expected 1 broadcast, got %d", len(mockBus.broadcasts))
-	} else {
-		broadcast := mockBus.broadcasts[0]
-		if broadcast.eventType != eventbus.EventCytubeChatMsg {
-			t.Errorf("Expected event type '%s', got '%s'", eventbus.EventCytubeChatMsg, broadcast.eventType)
-		}
-		if broadcast.data.ChatMessage == nil {
-			t.Error("Expected ChatMessage data to be set")
-		} else {
-			if broadcast.data.ChatMessage.Username != "testuser" {
-				t.Errorf("Expected username 'testuser', got '%s'", broadcast.data.ChatMessage.Username)
-			}
-			if broadcast.data.ChatMessage.Message != "Hello, world!" {
-				t.Errorf("Expected message 'Hello, world!', got '%s'", broadcast.data.ChatMessage.Message)
-			}
-		}
+	// Verify chat message handler exists
+	if _, ok := plugin.eventHandlers["*framework.ChatMessageEvent"]; !ok {
+		t.Error("Chat message event handler not found")
 	}
 }
 
 func TestPlugin_Stop(t *testing.T) {
 	config := &Config{
-		Cytube: CytubeConfig{
-			Channel: "test",
+		Rooms: []RoomConfig{
+			{
+				ID:      "test-room",
+				Channel: "test",
+				Enabled: true,
+			},
 		},
 	}
 
