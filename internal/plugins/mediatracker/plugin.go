@@ -32,6 +32,14 @@ type Plugin struct {
 
 	// Plugin status tracking
 	status framework.PluginStatus
+
+	// Deduplication tracking per channel
+	lastPlaylistInfo map[string]*playlistInfo
+}
+
+type playlistInfo struct {
+	time  time.Time
+	count int
 }
 
 // Config holds mediatracker plugin configuration
@@ -68,6 +76,7 @@ func New() framework.Plugin {
 			Name:  "mediatracker",
 			State: "initialized",
 		},
+		lastPlaylistInfo: make(map[string]*playlistInfo),
 	}
 }
 
@@ -103,6 +112,7 @@ func NewPlugin(config *Config) *Plugin {
 			Name:  "mediatracker",
 			State: "initialized",
 		},
+		lastPlaylistInfo: make(map[string]*playlistInfo),
 	}
 }
 
@@ -509,7 +519,7 @@ func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error 
 
 	case "full":
 		// Replace entire queue with new items
-		log.Printf("[MediaTracker] Starting to process full playlist with %d items", len(queueData.Items))
+		log.Printf("[MediaTracker] Starting to process full playlist with %d items (queue event)", len(queueData.Items))
 		startTime := time.Now()
 
 		// First clear existing queue
@@ -950,80 +960,38 @@ func constructMediaURL(mediaID, mediaType string) string {
 
 // handlePlaylistEvent processes playlist events to populate the media library
 func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
-	// First check if this is a DataEvent wrapper
-	if dataEvent, ok := event.(*framework.DataEvent); ok {
-		// Check if it contains a raw event
-		if dataEvent.Data != nil && dataEvent.Data.RawEvent != nil {
-			// Extract the actual PlaylistArrayEvent from the RawEvent
-			if playlistArray, ok := dataEvent.Data.RawEvent.(*framework.PlaylistArrayEvent); ok {
-				log.Printf("[MediaTracker] Starting to process full playlist with %d items", len(playlistArray.Items))
-				startTime := time.Now()
+	// When RawEvent is set in EventData, the event bus delivers the raw event directly
+	// So we only need to check for direct event types, not wrapped in DataEvent
 
-				// Process all items in batches to avoid overwhelming the database
-				batchSize := 50
-				for i := 0; i < len(playlistArray.Items); i += batchSize {
-					end := i + batchSize
-					if end > len(playlistArray.Items) {
-						end = len(playlistArray.Items)
-					}
+	// Check if it's a PlaylistArrayEvent (full playlist load)
+	if playlistArray, ok := event.(*framework.PlaylistArrayEvent); ok {
+		// Deduplication: ignore duplicate playlist events within 2 seconds for the same channel
+		channel := playlistArray.ChannelName
+		if channel == "" {
+			channel = p.config.Channel
+		}
 
-					batch := playlistArray.Items[i:end]
+		p.mu.Lock()
+		if p.lastPlaylistInfo == nil {
+			p.lastPlaylistInfo = make(map[string]*playlistInfo)
+		}
 
-					// Use bulk insert for better performance
-					if err := p.bulkAddPlaylistToLibrary(batch, p.config.Channel); err != nil {
-						log.Printf("[MediaTracker] Failed to bulk add playlist items to library: %v", err)
-						// Fall back to individual inserts on bulk failure
-						for _, item := range batch {
-							var metadata interface{}
-							if item.Metadata != nil {
-								metadata = item.Metadata
-							}
-							if err := p.addToLibrary(
-								item.MediaID,
-								item.MediaType,
-								item.Title,
-								item.Duration,
-								item.QueuedBy,
-								p.config.Channel,
-								metadata,
-							); err != nil {
-								log.Printf("[MediaTracker] Failed to add playlist item to library: %v", err)
-							}
-						}
-					}
-
-					// Also update the queue table
-					for _, item := range batch {
-						if err := p.insertQueueItem(p.config.Channel, &framework.QueueItem{
-							Position:  item.Position,
-							MediaID:   item.MediaID,
-							MediaType: item.MediaType,
-							Title:     item.Title,
-							Duration:  item.Duration,
-							QueuedBy:  item.QueuedBy,
-							QueuedAt:  time.Now().Unix(),
-						}); err != nil {
-							log.Printf("[MediaTracker] Failed to update queue: %v", err)
-						}
-					}
-				}
-
-				log.Printf("[MediaTracker] Finished processing %d playlist items in %v", len(playlistArray.Items), time.Since(startTime))
-				return nil
-			}
-
-			// Check if it's a PlaylistEvent in the RawEvent
-			if playlistEvent, ok := dataEvent.Data.RawEvent.(*framework.PlaylistEvent); ok {
-				log.Printf("[MediaTracker] Received playlist modification event: %s", playlistEvent.Action)
-				// Existing playlist modification handling can be added here if needed
+		if lastInfo, exists := p.lastPlaylistInfo[channel]; exists {
+			if time.Since(lastInfo.time) < 2*time.Second && lastInfo.count == len(playlistArray.Items) {
+				p.mu.Unlock()
+				log.Printf("[MediaTracker] Ignoring duplicate playlist event for channel %s (%d items, %v since last)",
+					channel, len(playlistArray.Items), time.Since(lastInfo.time))
 				return nil
 			}
 		}
-	}
 
-	// Fallback: Check if it's a direct PlaylistArrayEvent (shouldn't happen with current implementation, but kept for compatibility)
-	if playlistArray, ok := event.(*framework.PlaylistArrayEvent); ok {
-		log.Printf("[MediaTracker] Starting to process full playlist with %d items (direct event)", len(playlistArray.Items))
+		p.lastPlaylistInfo[channel] = &playlistInfo{
+			time:  time.Now(),
+			count: len(playlistArray.Items),
+		}
+		p.mu.Unlock()
+
+		log.Printf("[MediaTracker] Starting to process full playlist with %d items (playlist event)", len(playlistArray.Items))
 		startTime := time.Now()
 
 		// Process all items in batches to avoid overwhelming the database
@@ -1079,10 +1047,11 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 		return nil
 	}
 
-	// Handle other playlist event types (add/remove/move)
+	// Check if it's a PlaylistEvent (playlist modification - add/remove/move)
 	if playlistEvent, ok := event.(*framework.PlaylistEvent); ok {
 		log.Printf("[MediaTracker] Received playlist modification event: %s", playlistEvent.Action)
 		// Existing playlist modification handling can be added here if needed
+		return nil
 	}
 
 	return nil
