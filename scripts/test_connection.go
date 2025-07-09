@@ -17,7 +17,7 @@ func main() {
 	dbHost := flag.String("db-host", "localhost", "PostgreSQL host")
 	dbPort := flag.Int("db-port", 5432, "PostgreSQL port")
 	dbName := flag.String("db-name", "daz", "Database name")
-	dbUser := flag.String("db-user", "***REMOVED***", "Database user")
+	dbUser := flag.String("db-user", "", "Database user")
 	dbPass := flag.String("db-pass", "", "Database password")
 	since := flag.Duration("since", 1*time.Hour, "Show messages from last N duration")
 	flag.Parse()

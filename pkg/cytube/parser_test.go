@@ -970,7 +970,7 @@ func TestParseChannelOpts(t *testing.T) {
 		"allow_voteskip": true,
 		"voteskip_ratio": 0.5,
 		"afk_timeout": 600,
-		"pagetitle": "***REMOVED***",
+		"pagetitle": "RIFFTRAX_MST3K",
 		"chat_antiflood": false,
 		"chat_antiflood_params": {
 			"burst": 4,
@@ -1000,8 +1000,8 @@ func TestParseChannelOpts(t *testing.T) {
 	if opt, ok := optsEvent.Options["voteskip_ratio"]; !ok || opt.FloatValue != 0.5 || opt.ValueType != "float" {
 		t.Errorf("Options[voteskip_ratio] = %v, want FloatValue=0.5, ValueType=float", opt)
 	}
-	if opt, ok := optsEvent.Options["pagetitle"]; !ok || opt.StringValue != "***REMOVED***" || opt.ValueType != "string" {
-		t.Errorf("Options[pagetitle] = %v, want StringValue=***REMOVED***, ValueType=string", opt)
+	if opt, ok := optsEvent.Options["pagetitle"]; !ok || opt.StringValue != "RIFFTRAX_MST3K" || opt.ValueType != "string" {
+		t.Errorf("Options[pagetitle] = %v, want StringValue=RIFFTRAX_MST3K, ValueType=string", opt)
 	}
 }
 

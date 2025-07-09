@@ -9,7 +9,10 @@ Type=simple
 User=daz
 Group=daz
 WorkingDirectory=/opt/daz
-ExecStart=/opt/daz/daz -channel=***REMOVED***
+
+# ExecStart will be configured via override.conf or environment file
+ExecStart=/opt/daz/daz
+
 Restart=on-failure
 RestartSec=10
 
@@ -26,6 +29,8 @@ CPUQuota=50%
 
 # Environment
 Environment="DAZ_LOG_DIR=/opt/daz/logs"
+# Load environment variables from file
+EnvironmentFile=-/etc/daz/env
 
 # Logging
 StandardOutput=journal

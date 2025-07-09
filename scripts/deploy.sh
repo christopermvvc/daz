@@ -89,8 +89,11 @@ deploy_systemd() {
     
     # Configure service
     echo "Configuring service..."
-    read -p "Enter Cytube channel name [***REMOVED***]: " CHANNEL
-    CHANNEL=${CHANNEL:-***REMOVED***}
+    read -p "Enter Cytube channel name: " CHANNEL
+    if [ -z "$CHANNEL" ]; then
+        echo "Error: Channel name is required"
+        exit 1
+    fi
     
     # Create override file
     mkdir -p /etc/systemd/system/daz.service.d

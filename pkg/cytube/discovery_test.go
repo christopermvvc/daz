@@ -141,7 +141,7 @@ func TestDiscoverServer_Integration(t *testing.T) {
 	}
 
 	// Test with a known channel
-	url, err := DiscoverServer("***REMOVED***")
+	url, err := DiscoverServer("RIFFTRAX_MST3K")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
