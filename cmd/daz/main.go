@@ -18,6 +18,7 @@ import (
 	"github.com/hildolfr/daz/internal/metrics"
 	"github.com/hildolfr/daz/internal/plugins/analytics"
 	"github.com/hildolfr/daz/internal/plugins/commands/about"
+	"github.com/hildolfr/daz/internal/plugins/commands/debug"
 	"github.com/hildolfr/daz/internal/plugins/commands/help"
 	"github.com/hildolfr/daz/internal/plugins/commands/uptime"
 	"github.com/hildolfr/daz/internal/plugins/eventfilter"
@@ -146,6 +147,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 		{"mediatracker", mediatracker.New()},
 		{"analytics", analytics.New()},
 		{"about", about.New()},
+		{"debug", debug.New()},
 		{"help", help.New()},
 		{"uptime", uptime.New()},
 	}

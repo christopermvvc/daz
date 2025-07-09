@@ -32,6 +32,10 @@ type EventData struct {
 
 	// For generic key-value data
 	KeyValue map[string]string `json:"key_value,omitempty"`
+
+	// For raw event passthrough - allows passing original events without transformation
+	RawEvent     Event  `json:"-"`                        // Don't serialize, this is for internal event bus use only
+	RawEventType string `json:"raw_event_type,omitempty"` // Identifies the type of raw event
 }
 
 // ChatMessageData represents chat message specific data
@@ -72,6 +76,7 @@ type VideoChangeData struct {
 	VideoType string `json:"video_type"`
 	Duration  int    `json:"duration"`
 	Title     string `json:"title"`
+	Channel   string `json:"channel"`
 }
 
 // QueueItem represents a single item in the queue

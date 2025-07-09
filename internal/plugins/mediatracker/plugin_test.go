@@ -222,7 +222,7 @@ func TestPluginStart(t *testing.T) {
 	}
 
 	// Check that tables were created during Start
-	expectedTables := 3 // plays, queue, stats
+	expectedTables := 4 // plays, queue, stats, library
 	if len(bus.execCalls) != expectedTables {
 		t.Errorf("Expected %d table creation calls during Start, got %d", expectedTables, len(bus.execCalls))
 	}

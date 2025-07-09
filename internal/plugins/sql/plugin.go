@@ -276,6 +276,11 @@ func (p *Plugin) connectDatabase() error {
 		return fmt.Errorf("failed to open stdlib connection: %w", err)
 	}
 
+	// Set connection pool settings for stdlib
+	db.SetMaxOpenConns(p.config.Database.MaxConnections)
+	db.SetMaxIdleConns(p.config.Database.MaxConnections / 2)
+	db.SetConnMaxLifetime(time.Duration(p.config.Database.MaxConnLifetime) * time.Second)
+
 	if err := db.PingContext(ctx); err != nil {
 		pool.Close()
 		if closeErr := db.Close(); closeErr != nil {
@@ -307,6 +312,10 @@ func (p *Plugin) initializeSchema(ctx context.Context) error {
 			timestamp TIMESTAMP NOT NULL,
 			username VARCHAR(100),
 			message TEXT,
+			video_id VARCHAR(255),
+			video_type VARCHAR(50),
+			title TEXT,
+			duration INTEGER,
 			raw_data JSONB NOT NULL,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
@@ -353,6 +362,12 @@ func (p *Plugin) initializeSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_plugin_logs_plugin ON daz_plugin_logs (plugin_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_plugin_logs_event ON daz_plugin_logs (event_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_plugin_logs_timestamp ON daz_plugin_logs (timestamp)`,
+
+		// Migrations to add missing columns
+		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS video_id VARCHAR(255)`,
+		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS video_type VARCHAR(50)`,
+		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS title TEXT`,
+		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS duration INTEGER`,
 	}
 
 	for _, query := range queries {
@@ -546,6 +561,7 @@ func (p *Plugin) extractFieldsForRule(rule LoggerRule, data *framework.EventData
 		result.VideoType = data.VideoChange.VideoType
 		result.Title = data.VideoChange.Title
 		result.Duration = data.VideoChange.Duration
+		result.Channel = data.VideoChange.Channel
 	}
 
 	// If specific fields are requested, create a new LogFields with only those fields

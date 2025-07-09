@@ -145,6 +145,23 @@ type PlaylistEvent struct {
 	ItemCount int         `json:"item_count"`
 }
 
+// PlaylistArrayEvent represents a full playlist sent as an array
+type PlaylistArrayEvent struct {
+	CytubeEvent
+	Items []PlaylistItem `json:"items"`
+}
+
+// PlaylistItem represents a single item in the playlist
+type PlaylistItem struct {
+	MediaID   string                 `json:"media_id"`
+	MediaType string                 `json:"media_type"`
+	Title     string                 `json:"title"`
+	Duration  int                    `json:"duration"`
+	QueuedBy  string                 `json:"queued_by"`
+	Position  int                    `json:"position"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+}
+
 // FieldValue represents a parsed field value from a generic event
 type FieldValue struct {
 	String  string  `json:"string,omitempty"`

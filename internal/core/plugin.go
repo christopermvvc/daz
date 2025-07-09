@@ -116,6 +116,12 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 		return p.status.LastError
 	}
 
+	// Subscribe to playlist request command
+	if err := p.eventBus.Subscribe("cytube.command.requestPlaylist", p.handlePlaylistRequest); err != nil {
+		p.status.LastError = fmt.Errorf("failed to subscribe to playlist request command: %w", err)
+		return p.status.LastError
+	}
+
 	return nil
 }
 
@@ -170,6 +176,11 @@ func (p *Plugin) Start() error {
 	log.Printf("[Core] Waiting for connection to stabilize...")
 	time.Sleep(3 * time.Second)
 
+	// Wait additional time to receive initialization events (including playlist)
+	// CyTube sends channel setup events (including playlist) before processing login
+	log.Printf("[Core] Waiting for channel initialization events...")
+	time.Sleep(5 * time.Second)
+
 	// Login if credentials are provided
 	if p.config.Cytube.Username != "" && p.config.Cytube.Password != "" {
 		log.Printf("[Core] Logging in as %s...", p.config.Cytube.Username)
@@ -177,6 +188,12 @@ func (p *Plugin) Start() error {
 			log.Printf("[Core] Login failed: %v", err)
 		} else {
 			log.Printf("[Core] Login successful!")
+
+			// Request playlist after successful login
+			log.Printf("[Core] Requesting playlist data...")
+			if err := p.cytubeConn.RequestPlaylist(); err != nil {
+				log.Printf("[Core] Failed to request playlist: %v", err)
+			}
 		}
 	}
 
@@ -260,6 +277,30 @@ func (p *Plugin) handleCytubeSend(event framework.Event) error {
 	return nil
 }
 
+// handlePlaylistRequest handles requests to fetch the playlist
+func (p *Plugin) handlePlaylistRequest(event framework.Event) error {
+	log.Printf("[Core] Received playlist request command")
+
+	// Check if we have a connection
+	p.mu.RLock()
+	conn := p.cytubeConn
+	p.mu.RUnlock()
+
+	if conn == nil {
+		return fmt.Errorf("not connected to Cytube")
+	}
+
+	// Request the playlist
+	err := conn.RequestPlaylist()
+	if err != nil {
+		log.Printf("[Core] Failed to request playlist: %v", err)
+		return err
+	}
+
+	log.Printf("[Core] Playlist request sent successfully")
+	return nil
+}
+
 // initEventHandlers initializes the map of event handlers
 func (p *Plugin) initEventHandlers() {
 	p.eventHandlers = map[string]eventHandler{
@@ -269,6 +310,7 @@ func (p *Plugin) initEventHandlers() {
 		"*framework.VideoChangeEvent":    p.handleVideoChange,
 		"*framework.MediaUpdateEvent":    p.handleMediaUpdate,
 		"*framework.PrivateMessageEvent": p.handlePrivateMessage,
+		"*framework.PlaylistArrayEvent":  p.handlePlaylistArray,
 	}
 }
 
@@ -319,6 +361,7 @@ func (p *Plugin) handleVideoChange(event framework.Event) (string, *framework.Ev
 			VideoType: e.VideoType,
 			Duration:  e.Duration,
 			Title:     e.Title,
+			Channel:   e.ChannelName,
 		},
 	}
 	return eventbus.EventCytubeVideoChange, eventData, true
@@ -353,6 +396,22 @@ func (p *Plugin) handlePrivateMessage(event framework.Event) (string, *framework
 		},
 	}
 	return eventbus.EventCytubePM, eventData, true
+}
+
+func (p *Plugin) handlePlaylistArray(event framework.Event) (string, *framework.EventData, bool) {
+	// For PlaylistArrayEvent, we need to pass the raw event through
+	if _, ok := event.(*framework.PlaylistArrayEvent); ok {
+		// Create EventData with raw event passthrough
+		eventData := &framework.EventData{
+			RawEvent:     event,
+			RawEventType: "PlaylistArrayEvent",
+		}
+
+		return "cytube.event.playlist", eventData, true
+	}
+
+	// Fallback
+	return "", nil, false
 }
 
 // setupCytubeHandlers starts a goroutine to process Cytube events
@@ -412,6 +471,9 @@ func (p *Plugin) setupCytubeHandlers() {
 					rawEventType := event.Type()
 					eventData = &framework.EventData{}
 					shouldBroadcast = knownEventTypes[rawEventType]
+
+					// Only log errors or important state changes
+					// Removed verbose event logging for cleaner output
 
 					if shouldBroadcast {
 						// Convert known raw event types to proper broadcast event types

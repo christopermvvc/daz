@@ -30,10 +30,8 @@ func (p *Parser) ParseEvent(event Event) (framework.Event, error) {
 		Metadata:    make(map[string]string),
 	}
 
-	// Log all events to help find timing/sync data
-	if event.Type == "mediaUpdate" || event.Type == "setCurrent" {
-		log.Printf("[CyTube Parser] Received %s event with data: %s", event.Type, string(event.Data))
-	}
+	// Only log important events or errors
+	// Remove verbose logging for production
 
 	switch event.Type {
 	case "chatMsg":
@@ -49,8 +47,6 @@ func (p *Parser) ParseEvent(event Event) (framework.Event, error) {
 	case "mediaUpdate":
 		return p.parseMediaUpdate(baseEvent, event.Data)
 	case "setCurrent":
-		// Log the raw data to understand the structure
-		log.Printf("[CyTube Parser] setCurrent event data: %s", string(event.Data))
 		return &baseEvent, nil
 	case "login":
 		return p.parseLogin(baseEvent, event.Data)
@@ -82,12 +78,15 @@ func (p *Parser) ParseEvent(event Event) (framework.Event, error) {
 		return p.parseSetAFK(baseEvent, event.Data)
 	case "clearVoteskipVote":
 		return p.parseClearVoteskipVote(baseEvent, event.Data)
+	case "queue":
+		return p.parseQueueEvent(baseEvent, event.Data)
+	case "delete":
+		return p.parseDeleteEvent(baseEvent, event.Data)
+	case "moveVideo":
+		return p.parseMoveVideoEvent(baseEvent, event.Data)
+	case "queueFail":
+		return p.parseQueueFailEvent(baseEvent, event.Data)
 	default:
-		// Log unknown events that might contain timing data
-		if len(event.Type) > 0 && event.Type != "rank" && event.Type != "userlist" &&
-			event.Type != "emoteList" && event.Type != "drinkCount" {
-			log.Printf("[CyTube Parser] Unknown event type '%s' with data: %s", event.Type, string(event.Data))
-		}
 		// Use generic event handler for unknown types
 		return p.parseGenericEvent(baseEvent, event.Type, event.Data)
 	}
@@ -262,7 +261,7 @@ type PlaylistArrayItem struct {
 	QueueBy string      `json:"queueby"`
 }
 
-func (p *Parser) parsePlaylist(base framework.CytubeEvent, data json.RawMessage) (*framework.PlaylistEvent, error) {
+func (p *Parser) parsePlaylist(base framework.CytubeEvent, data json.RawMessage) (framework.Event, error) {
 	// First, try to detect if it's an array or object
 	trimmed := string(data)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
@@ -272,30 +271,36 @@ func (p *Parser) parsePlaylist(base framework.CytubeEvent, data json.RawMessage)
 			return nil, fmt.Errorf("unmarshal playlist array: %w", err)
 		}
 
-		// Convert array items to QueueItem
-		queueItems := make([]framework.QueueItem, len(items))
+		// Convert array items to PlaylistItem
+		playlistItems := make([]framework.PlaylistItem, len(items))
 		for i, item := range items {
-			queueItems[i] = framework.QueueItem{
+			// Parse metadata if present
+			var metadata map[string]interface{}
+			if len(item.Media.Meta) > 0 {
+				if err := json.Unmarshal(item.Media.Meta, &metadata); err != nil {
+					// Log error but continue processing
+					log.Printf("[CyTube Parser] Failed to parse metadata for item %s: %v", item.Media.ID, err)
+				}
+			}
+
+			playlistItems[i] = framework.PlaylistItem{
 				Position:  i,
 				MediaID:   item.Media.ID,
 				MediaType: item.Media.Type,
 				Title:     item.Media.Title,
 				Duration:  item.Media.Seconds,
 				QueuedBy:  item.QueueBy,
-				QueuedAt:  time.Now().Unix(),
+				Metadata:  metadata,
 			}
 		}
 
-		event := &framework.PlaylistEvent{
+		event := &framework.PlaylistArrayEvent{
 			CytubeEvent: base,
-			Action:      "load", // Initial load
-			Items:       queueItems,
-			Position:    0,
-			ItemCount:   len(items),
+			Items:       playlistItems,
 		}
 
 		// Add metadata
-		base.Metadata["action"] = "load"
+		base.Metadata["event_subtype"] = "array"
 		base.Metadata["item_count"] = fmt.Sprintf("%d", len(items))
 
 		return event, nil
@@ -769,4 +774,133 @@ func (p *Parser) parsePM(base framework.CytubeEvent, data json.RawMessage) (*fra
 	base.Metadata["timestamp"] = fmt.Sprintf("%d", pm.Time)
 
 	return event, nil
+}
+
+func (p *Parser) parseQueueEvent(base framework.CytubeEvent, data json.RawMessage) (framework.Event, error) {
+	// Queue events can be similar to playlist events
+	// Try to parse as PlaylistPayload first
+	var queue PlaylistPayload
+	if err := json.Unmarshal(data, &queue); err != nil {
+		// If that fails, log and return generic event
+		log.Printf("[CyTube Parser] Failed to parse queue event as PlaylistPayload: %v", err)
+		return p.parseGenericEvent(base, "queue", data)
+	}
+
+	// Convert to playlist event format
+	queueItems := make([]framework.QueueItem, len(queue.Items))
+	for i, item := range queue.Items {
+		queueItems[i] = framework.QueueItem{
+			Position:  queue.Position + i,
+			MediaID:   item.MediaID,
+			MediaType: item.Type,
+			Title:     item.Title,
+			Duration:  item.Duration,
+			QueuedBy:  item.AddedBy,
+			QueuedAt:  time.Now().Unix(),
+		}
+	}
+
+	event := &framework.PlaylistEvent{
+		CytubeEvent: base,
+		Action:      "queue", // Mark as queue action
+		Items:       queueItems,
+		Position:    queue.Position,
+		User:        queue.User,
+		ItemCount:   len(queue.Items),
+	}
+
+	// Add metadata
+	base.Metadata["action"] = "queue"
+	base.Metadata["user"] = queue.User
+	base.Metadata["item_count"] = fmt.Sprintf("%d", len(queue.Items))
+
+	return event, nil
+}
+
+func (p *Parser) parseDeleteEvent(base framework.CytubeEvent, data json.RawMessage) (framework.Event, error) {
+	// Delete events typically contain position/uid of deleted item
+	var deleteData struct {
+		Position int         `json:"position"`
+		UID      interface{} `json:"uid"`
+	}
+
+	if err := json.Unmarshal(data, &deleteData); err != nil {
+		log.Printf("[CyTube Parser] Failed to parse delete event: %v", err)
+		return p.parseGenericEvent(base, "delete", data)
+	}
+
+	event := &framework.PlaylistEvent{
+		CytubeEvent: base,
+		Action:      "delete",
+		Position:    deleteData.Position,
+		ItemCount:   0, // No items in delete
+	}
+
+	// Add metadata
+	base.Metadata["action"] = "delete"
+	base.Metadata["position"] = fmt.Sprintf("%d", deleteData.Position)
+	if deleteData.UID != nil {
+		base.Metadata["uid"] = fmt.Sprintf("%v", deleteData.UID)
+	}
+
+	return event, nil
+}
+
+func (p *Parser) parseMoveVideoEvent(base framework.CytubeEvent, data json.RawMessage) (framework.Event, error) {
+	// Move events contain from and to positions
+	var moveData struct {
+		From int `json:"from"`
+		To   int `json:"to"`
+	}
+
+	if err := json.Unmarshal(data, &moveData); err != nil {
+		log.Printf("[CyTube Parser] Failed to parse moveVideo event: %v", err)
+		return p.parseGenericEvent(base, "moveVideo", data)
+	}
+
+	event := &framework.PlaylistEvent{
+		CytubeEvent: base,
+		Action:      "move",
+		FromPos:     moveData.From,
+		ToPos:       moveData.To,
+		ItemCount:   0, // No items in move
+	}
+
+	// Add metadata
+	base.Metadata["action"] = "move"
+	base.Metadata["from_pos"] = fmt.Sprintf("%d", moveData.From)
+	base.Metadata["to_pos"] = fmt.Sprintf("%d", moveData.To)
+
+	return event, nil
+}
+
+func (p *Parser) parseQueueFailEvent(base framework.CytubeEvent, data json.RawMessage) (framework.Event, error) {
+	// Queue fail events contain error information
+	var failData struct {
+		Message string `json:"msg"`
+		Link    string `json:"link"`
+		ID      string `json:"id"`
+	}
+
+	if err := json.Unmarshal(data, &failData); err != nil {
+		// Try simple string message
+		var msg string
+		if err2 := json.Unmarshal(data, &msg); err2 == nil {
+			base.Metadata["error_message"] = msg
+			return &base, nil
+		}
+		log.Printf("[CyTube Parser] Failed to parse queueFail event: %v", err)
+		return p.parseGenericEvent(base, "queueFail", data)
+	}
+
+	// Add metadata
+	base.Metadata["error_message"] = failData.Message
+	if failData.Link != "" {
+		base.Metadata["failed_link"] = failData.Link
+	}
+	if failData.ID != "" {
+		base.Metadata["failed_id"] = failData.ID
+	}
+
+	return &base, nil
 }

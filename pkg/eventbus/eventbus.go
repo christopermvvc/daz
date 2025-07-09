@@ -156,8 +156,17 @@ func (eb *EventBus) SetSQLHandlers(queryHandler, execHandler framework.EventHand
 
 // Broadcast sends an event to all subscribers of the event type
 func (eb *EventBus) Broadcast(eventType string, data *framework.EventData) error {
-	// Create a DataEvent to carry the EventData
-	event := framework.NewDataEvent(eventType, data)
+	var event framework.Event
+
+	// Check if this is a raw event passthrough
+	if data != nil && data.RawEvent != nil {
+		// Use the raw event directly - this preserves events like PlaylistArrayEvent
+		event = data.RawEvent
+		// Debug logging removed for cleaner output
+	} else {
+		// Create a DataEvent to carry the EventData
+		event = framework.NewDataEvent(eventType, data)
+	}
 
 	msg := &eventMessage{
 		Event: event,
@@ -628,17 +637,26 @@ func (a *sqlRowsAdapter) Columns() ([]string, error) {
 
 // BroadcastWithMetadata broadcasts an event with metadata
 func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
-	// Create enhanced event data
-	enhanced := &framework.EnhancedEventData{
-		EventData: data,
-		Metadata:  metadata,
-	}
+	var event framework.Event
 
-	// Wrap in DataEvent for compatibility
-	event := &framework.DataEvent{
-		EventType: eventType,
-		EventTime: metadata.Timestamp,
-		Data:      enhanced.EventData,
+	// Check if this is a raw event passthrough
+	if data != nil && data.RawEvent != nil {
+		// Use the raw event directly
+		event = data.RawEvent
+		// Debug logging removed for cleaner output
+	} else {
+		// Create enhanced event data
+		enhanced := &framework.EnhancedEventData{
+			EventData: data,
+			Metadata:  metadata,
+		}
+
+		// Wrap in DataEvent for compatibility
+		event = &framework.DataEvent{
+			EventType: eventType,
+			EventTime: metadata.Timestamp,
+			Data:      enhanced.EventData,
+		}
 	}
 
 	// Create event message

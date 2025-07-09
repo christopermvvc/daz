@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -199,6 +200,12 @@ func (p *Plugin) Start() error {
 		return fmt.Errorf("failed to subscribe to stats requests: %w", err)
 	}
 
+	// Subscribe to playlist events to populate library from initial playlist load
+	if err := p.eventBus.Subscribe("cytube.event.playlist", p.handlePlaylistEvent); err != nil {
+		p.status.LastError = err
+		return fmt.Errorf("failed to subscribe to playlist events: %w", err)
+	}
+
 	// Start periodic stats updater
 	p.wg.Add(1)
 	go p.updateStats()
@@ -321,8 +328,32 @@ func (p *Plugin) createTables() error {
 		ON daz_mediatracker_stats(channel, play_count DESC);
 	`
 
+	// Media library table - tracks all unique media by URL
+	libraryTableSQL := `
+	CREATE TABLE IF NOT EXISTS daz_mediatracker_library (
+		id BIGSERIAL PRIMARY KEY,
+		url TEXT UNIQUE NOT NULL,
+		media_id VARCHAR(255) NOT NULL,
+		media_type VARCHAR(50) NOT NULL,
+		title TEXT NOT NULL,
+		duration INTEGER,
+		first_seen TIMESTAMP NOT NULL,
+		last_played TIMESTAMP,
+		play_count INTEGER DEFAULT 0,
+		added_by VARCHAR(100),
+		channel VARCHAR(100) NOT NULL,
+		metadata JSONB,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(media_id, media_type)
+	);
+	
+	CREATE INDEX IF NOT EXISTS idx_library_url ON daz_mediatracker_library(url);
+	CREATE INDEX IF NOT EXISTS idx_library_media ON daz_mediatracker_library(media_id, media_type);
+	CREATE INDEX IF NOT EXISTS idx_library_channel ON daz_mediatracker_library(channel);
+	`
+
 	// Execute table creation
-	for _, sql := range []string{playsTableSQL, queueTableSQL, statsTableSQL} {
+	for _, sql := range []string{playsTableSQL, queueTableSQL, statsTableSQL, libraryTableSQL} {
 		if err := p.eventBus.Exec(sql); err != nil {
 			return fmt.Errorf("failed to create table: %w", err)
 		}
@@ -375,6 +406,19 @@ func (p *Plugin) handleMediaChange(event framework.Event) error {
 		StartedAt: now,
 	}
 	p.mu.Unlock()
+
+	// Add to library (will update play count if already exists)
+	if err := p.addToLibrary(
+		media.VideoID,
+		media.VideoType,
+		media.Title,
+		media.Duration,
+		"", // addedBy unknown for now
+		p.config.Channel,
+		nil, // metadata
+	); err != nil {
+		log.Printf("[MediaTracker] Error adding to library: %v", err)
+	}
 
 	// Record new media play
 	playSQL := `
@@ -465,6 +509,9 @@ func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error 
 
 	case "full":
 		// Replace entire queue with new items
+		log.Printf("[MediaTracker] Starting to process full playlist with %d items", len(queueData.Items))
+		startTime := time.Now()
+
 		// First clear existing queue
 		if err := p.eventBus.Exec(
 			"DELETE FROM daz_mediatracker_queue WHERE channel = $1",
@@ -473,12 +520,14 @@ func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error 
 			return fmt.Errorf("failed to clear queue: %w", err)
 		}
 
-		// Then insert all new items
-		for _, item := range queueData.Items {
-			if err := p.insertQueueItem(channel, &item); err != nil {
-				log.Printf("[MediaTracker] Failed to insert queue item: %v", err)
+		// Bulk insert all new items
+		if len(queueData.Items) > 0 {
+			if err := p.bulkInsertQueueItems(channel, queueData.Items); err != nil {
+				return fmt.Errorf("failed to bulk insert queue items: %w", err)
 			}
 		}
+
+		log.Printf("[MediaTracker] Finished processing %d playlist items in %v", len(queueData.Items), time.Since(startTime))
 
 	case "add":
 		// Add item at position
@@ -536,6 +585,19 @@ func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error 
 func (p *Plugin) insertQueueItem(channel string, item *framework.QueueItem) error {
 	queuedAt := time.Unix(item.QueuedAt, 0)
 
+	// Add to library when items are queued
+	if err := p.addToLibrary(
+		item.MediaID,
+		item.MediaType,
+		item.Title,
+		item.Duration,
+		item.QueuedBy,
+		channel,
+		nil, // metadata
+	); err != nil {
+		log.Printf("[MediaTracker] Error adding queued item to library: %v", err)
+	}
+
 	return p.eventBus.Exec(`
 		INSERT INTO daz_mediatracker_queue 
 		(channel, position, media_id, media_type, title, duration, queued_by, queued_at)
@@ -555,6 +617,98 @@ func (p *Plugin) insertQueueItem(channel string, item *framework.QueueItem) erro
 		framework.SQLParam{Value: item.Duration},
 		framework.SQLParam{Value: item.QueuedBy},
 		framework.SQLParam{Value: queuedAt})
+}
+
+// bulkInsertQueueItems performs a bulk insert of queue items to minimize database operations
+func (p *Plugin) bulkInsertQueueItems(channel string, items []framework.QueueItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	// Build the SQL for bulk insert
+	var sqlStr strings.Builder
+	sqlStr.WriteString(`
+		INSERT INTO daz_mediatracker_queue 
+		(channel, position, media_id, media_type, title, duration, queued_by, queued_at)
+		VALUES `)
+
+	// Build value placeholders and collect all parameters
+	var params []framework.SQLParam
+	for i, item := range items {
+		if i > 0 {
+			sqlStr.WriteString(", ")
+		}
+		base := i * 8
+		sqlStr.WriteString(fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8))
+
+		queuedAt := time.Unix(item.QueuedAt, 0)
+		params = append(params,
+			framework.SQLParam{Value: channel},
+			framework.SQLParam{Value: item.Position},
+			framework.SQLParam{Value: item.MediaID},
+			framework.SQLParam{Value: item.MediaType},
+			framework.SQLParam{Value: item.Title},
+			framework.SQLParam{Value: item.Duration},
+			framework.SQLParam{Value: item.QueuedBy},
+			framework.SQLParam{Value: queuedAt},
+		)
+	}
+
+	// Execute the bulk insert
+	if err := p.eventBus.Exec(sqlStr.String(), params...); err != nil {
+		return fmt.Errorf("bulk insert failed: %w", err)
+	}
+
+	// Bulk add to library (single operation for all items)
+	if err := p.bulkAddToLibrary(channel, items); err != nil {
+		log.Printf("[MediaTracker] Error bulk adding to library: %v", err)
+	}
+
+	log.Printf("[MediaTracker] Bulk inserted %d queue items", len(items))
+	return nil
+}
+
+// bulkAddToLibrary adds multiple items to the library in a single operation
+func (p *Plugin) bulkAddToLibrary(channel string, items []framework.QueueItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	var sqlStr strings.Builder
+	sqlStr.WriteString(`
+		INSERT INTO daz_mediatracker_library 
+		(channel, media_id, media_type, title, duration, added_by, added_at, play_count)
+		VALUES `)
+
+	var params []framework.SQLParam
+	now := time.Now()
+
+	for i, item := range items {
+		if i > 0 {
+			sqlStr.WriteString(", ")
+		}
+		base := i * 8
+		sqlStr.WriteString(fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d, $%d, 0)",
+			base+1, base+2, base+3, base+4, base+5, base+6, base+7))
+
+		params = append(params,
+			framework.SQLParam{Value: channel},
+			framework.SQLParam{Value: item.MediaID},
+			framework.SQLParam{Value: item.MediaType},
+			framework.SQLParam{Value: item.Title},
+			framework.SQLParam{Value: item.Duration},
+			framework.SQLParam{Value: item.QueuedBy},
+			framework.SQLParam{Value: now},
+		)
+	}
+
+	sqlStr.WriteString(` ON CONFLICT (channel, media_id) DO UPDATE SET
+		title = EXCLUDED.title,
+		duration = EXCLUDED.duration,
+		last_queued = EXCLUDED.added_at`)
+
+	return p.eventBus.Exec(sqlStr.String(), params...)
 }
 
 // handleNowPlayingRequest handles requests for current media info
@@ -668,20 +822,18 @@ func (p *Plugin) endMediaPlay(media *MediaState, endTime time.Time) error {
 		return fmt.Errorf("failed to end media play: %w", err)
 	}
 
-	// Update total duration in stats if completed
-	if completed {
-		statsSQL := `
-			UPDATE daz_mediatracker_stats 
-			SET total_duration = total_duration + $1
-			WHERE channel = $2 AND media_id = $3
-		`
-		err = p.eventBus.Exec(statsSQL,
-			framework.SQLParam{Value: int(duration.Seconds())},
-			framework.SQLParam{Value: p.config.Channel},
-			framework.SQLParam{Value: media.ID})
-		if err != nil {
-			return fmt.Errorf("failed to update total duration: %w", err)
-		}
+	// Update total duration in stats with actual watched duration for all videos
+	statsSQL := `
+		UPDATE daz_mediatracker_stats 
+		SET total_duration = total_duration + $1
+		WHERE channel = $2 AND media_id = $3
+	`
+	err = p.eventBus.Exec(statsSQL,
+		framework.SQLParam{Value: int(duration.Seconds())},
+		framework.SQLParam{Value: p.config.Channel},
+		framework.SQLParam{Value: media.ID})
+	if err != nil {
+		return fmt.Errorf("failed to update total duration: %w", err)
 	}
 
 	return nil
@@ -766,4 +918,280 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%d:%02d:%02d", hours, minutes, seconds)
 	}
 	return fmt.Sprintf("%d:%02d", minutes, seconds)
+}
+
+// constructMediaURL builds a URL from media ID and type
+func constructMediaURL(mediaID, mediaType string) string {
+	switch mediaType {
+	case "yt", "youtube":
+		return fmt.Sprintf("https://www.youtube.com/watch?v=%s", mediaID)
+	case "gd", "googledrive":
+		return fmt.Sprintf("https://drive.google.com/file/d/%s/view", mediaID)
+	case "vm", "vimeo":
+		return fmt.Sprintf("https://vimeo.com/%s", mediaID)
+	case "dm", "dailymotion":
+		return fmt.Sprintf("https://www.dailymotion.com/video/%s", mediaID)
+	case "sc", "soundcloud":
+		// SoundCloud URLs are more complex, this is a simplified version
+		return fmt.Sprintf("https://soundcloud.com/tracks/%s", mediaID)
+	case "li", "livestream":
+		// Livestream/Twitch
+		return fmt.Sprintf("https://www.twitch.tv/videos/%s", mediaID)
+	case "tw", "twitch":
+		return fmt.Sprintf("https://www.twitch.tv/videos/%s", mediaID)
+	case "cu", "custom":
+		// Custom/direct URLs might already be the full URL
+		return mediaID
+	default:
+		// For unknown types, return a generic format
+		return fmt.Sprintf("%s:%s", mediaType, mediaID)
+	}
+}
+
+// handlePlaylistEvent processes playlist events to populate the media library
+func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
+	// First check if this is a DataEvent wrapper
+	if dataEvent, ok := event.(*framework.DataEvent); ok {
+		// Check if it contains a raw event
+		if dataEvent.Data != nil && dataEvent.Data.RawEvent != nil {
+			// Extract the actual PlaylistArrayEvent from the RawEvent
+			if playlistArray, ok := dataEvent.Data.RawEvent.(*framework.PlaylistArrayEvent); ok {
+				log.Printf("[MediaTracker] Starting to process full playlist with %d items", len(playlistArray.Items))
+				startTime := time.Now()
+
+				// Process all items in batches to avoid overwhelming the database
+				batchSize := 50
+				for i := 0; i < len(playlistArray.Items); i += batchSize {
+					end := i + batchSize
+					if end > len(playlistArray.Items) {
+						end = len(playlistArray.Items)
+					}
+
+					batch := playlistArray.Items[i:end]
+
+					// Use bulk insert for better performance
+					if err := p.bulkAddPlaylistToLibrary(batch, p.config.Channel); err != nil {
+						log.Printf("[MediaTracker] Failed to bulk add playlist items to library: %v", err)
+						// Fall back to individual inserts on bulk failure
+						for _, item := range batch {
+							var metadata interface{}
+							if item.Metadata != nil {
+								metadata = item.Metadata
+							}
+							if err := p.addToLibrary(
+								item.MediaID,
+								item.MediaType,
+								item.Title,
+								item.Duration,
+								item.QueuedBy,
+								p.config.Channel,
+								metadata,
+							); err != nil {
+								log.Printf("[MediaTracker] Failed to add playlist item to library: %v", err)
+							}
+						}
+					}
+
+					// Also update the queue table
+					for _, item := range batch {
+						if err := p.insertQueueItem(p.config.Channel, &framework.QueueItem{
+							Position:  item.Position,
+							MediaID:   item.MediaID,
+							MediaType: item.MediaType,
+							Title:     item.Title,
+							Duration:  item.Duration,
+							QueuedBy:  item.QueuedBy,
+							QueuedAt:  time.Now().Unix(),
+						}); err != nil {
+							log.Printf("[MediaTracker] Failed to update queue: %v", err)
+						}
+					}
+				}
+
+				log.Printf("[MediaTracker] Finished processing %d playlist items in %v", len(playlistArray.Items), time.Since(startTime))
+				return nil
+			}
+
+			// Check if it's a PlaylistEvent in the RawEvent
+			if playlistEvent, ok := dataEvent.Data.RawEvent.(*framework.PlaylistEvent); ok {
+				log.Printf("[MediaTracker] Received playlist modification event: %s", playlistEvent.Action)
+				// Existing playlist modification handling can be added here if needed
+				return nil
+			}
+		}
+	}
+
+	// Fallback: Check if it's a direct PlaylistArrayEvent (shouldn't happen with current implementation, but kept for compatibility)
+	if playlistArray, ok := event.(*framework.PlaylistArrayEvent); ok {
+		log.Printf("[MediaTracker] Starting to process full playlist with %d items (direct event)", len(playlistArray.Items))
+		startTime := time.Now()
+
+		// Process all items in batches to avoid overwhelming the database
+		batchSize := 50
+		for i := 0; i < len(playlistArray.Items); i += batchSize {
+			end := i + batchSize
+			if end > len(playlistArray.Items) {
+				end = len(playlistArray.Items)
+			}
+
+			batch := playlistArray.Items[i:end]
+
+			// Use bulk insert for better performance
+			if err := p.bulkAddPlaylistToLibrary(batch, p.config.Channel); err != nil {
+				log.Printf("[MediaTracker] Failed to bulk add playlist items to library: %v", err)
+				// Fall back to individual inserts on bulk failure
+				for _, item := range batch {
+					var metadata interface{}
+					if item.Metadata != nil {
+						metadata = item.Metadata
+					}
+					if err := p.addToLibrary(
+						item.MediaID,
+						item.MediaType,
+						item.Title,
+						item.Duration,
+						item.QueuedBy,
+						p.config.Channel,
+						metadata,
+					); err != nil {
+						log.Printf("[MediaTracker] Failed to add playlist item to library: %v", err)
+					}
+				}
+			}
+
+			// Also update the queue table
+			for _, item := range batch {
+				if err := p.insertQueueItem(p.config.Channel, &framework.QueueItem{
+					Position:  item.Position,
+					MediaID:   item.MediaID,
+					MediaType: item.MediaType,
+					Title:     item.Title,
+					Duration:  item.Duration,
+					QueuedBy:  item.QueuedBy,
+					QueuedAt:  time.Now().Unix(),
+				}); err != nil {
+					log.Printf("[MediaTracker] Failed to update queue: %v", err)
+				}
+			}
+		}
+
+		log.Printf("[MediaTracker] Finished processing %d playlist items in %v", len(playlistArray.Items), time.Since(startTime))
+		return nil
+	}
+
+	// Handle other playlist event types (add/remove/move)
+	if playlistEvent, ok := event.(*framework.PlaylistEvent); ok {
+		log.Printf("[MediaTracker] Received playlist modification event: %s", playlistEvent.Action)
+		// Existing playlist modification handling can be added here if needed
+	}
+
+	return nil
+}
+
+// addToLibrary adds a media item to the library if it doesn't already exist
+func (p *Plugin) addToLibrary(mediaID, mediaType, title string, duration int, addedBy, channel string, metadata interface{}) error {
+	url := constructMediaURL(mediaID, mediaType)
+
+	// Convert metadata to JSON
+	var metaJSON interface{}
+	if metadata != nil {
+		metaJSON = metadata
+	}
+
+	query := `
+		INSERT INTO daz_mediatracker_library 
+		(url, media_id, media_type, title, duration, first_seen, added_by, channel, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (url) DO UPDATE SET
+			last_played = CASE 
+				WHEN EXCLUDED.channel = daz_mediatracker_library.channel 
+				THEN CURRENT_TIMESTAMP 
+				ELSE daz_mediatracker_library.last_played 
+			END,
+			play_count = CASE 
+				WHEN EXCLUDED.channel = daz_mediatracker_library.channel 
+				THEN daz_mediatracker_library.play_count + 1
+				ELSE daz_mediatracker_library.play_count
+			END
+	`
+
+	err := p.eventBus.Exec(query,
+		framework.SQLParam{Value: url},
+		framework.SQLParam{Value: mediaID},
+		framework.SQLParam{Value: mediaType},
+		framework.SQLParam{Value: title},
+		framework.SQLParam{Value: duration},
+		framework.SQLParam{Value: time.Now()},
+		framework.SQLParam{Value: addedBy},
+		framework.SQLParam{Value: channel},
+		framework.SQLParam{Value: metaJSON})
+	if err != nil {
+		return fmt.Errorf("failed to add to library: %w", err)
+	}
+
+	return nil
+}
+
+// bulkAddPlaylistToLibrary adds multiple playlist items to the library in a single query for better performance
+func (p *Plugin) bulkAddPlaylistToLibrary(items []framework.PlaylistItem, channel string) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	// Build bulk insert query
+	valueStrings := make([]string, 0, len(items))
+	valueArgs := make([]framework.SQLParam, 0, len(items)*9)
+
+	for i, item := range items {
+		valueStrings = append(valueStrings, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			i*9+1, i*9+2, i*9+3, i*9+4, i*9+5, i*9+6, i*9+7, i*9+8, i*9+9,
+		))
+
+		url := constructMediaURL(item.MediaID, item.MediaType)
+
+		// Convert metadata to JSON
+		var metaJSON interface{}
+		if item.Metadata != nil {
+			if data, err := json.Marshal(item.Metadata); err == nil {
+				metaJSON = data
+			}
+		}
+
+		valueArgs = append(valueArgs,
+			framework.SQLParam{Value: url},
+			framework.SQLParam{Value: item.MediaID},
+			framework.SQLParam{Value: item.MediaType},
+			framework.SQLParam{Value: item.Title},
+			framework.SQLParam{Value: item.Duration},
+			framework.SQLParam{Value: time.Now()},
+			framework.SQLParam{Value: item.QueuedBy},
+			framework.SQLParam{Value: channel},
+			framework.SQLParam{Value: metaJSON},
+		)
+	}
+
+	query := fmt.Sprintf(`
+		INSERT INTO daz_mediatracker_library 
+		(url, media_id, media_type, title, duration, first_seen, added_by, channel, metadata)
+		VALUES %s
+		ON CONFLICT (url) DO UPDATE SET
+			last_played = CASE 
+				WHEN EXCLUDED.channel = daz_mediatracker_library.channel 
+				THEN CURRENT_TIMESTAMP 
+				ELSE daz_mediatracker_library.last_played 
+			END,
+			play_count = CASE 
+				WHEN EXCLUDED.channel = daz_mediatracker_library.channel 
+				THEN daz_mediatracker_library.play_count + 1 
+				ELSE daz_mediatracker_library.play_count 
+			END
+	`, strings.Join(valueStrings, ","))
+
+	if err := p.eventBus.Exec(query, valueArgs...); err != nil {
+		return fmt.Errorf("bulk insert failed: %w", err)
+	}
+
+	// Successfully bulk added items to library
+	return nil
 }

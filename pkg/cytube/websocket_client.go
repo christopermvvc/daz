@@ -413,6 +413,11 @@ func (c *WebSocketClient) Send(eventType string, data EventPayload) error {
 		return fmt.Errorf("failed to format message: %w", err)
 	}
 
+	// Only log important messages, not all traffic
+	if eventType == "requestPlaylist" || eventType == "login" {
+		log.Printf("[WebSocket] Sending %s command", eventType)
+	}
+
 	select {
 	case c.writeChan <- []byte(message):
 		return nil
@@ -454,6 +459,17 @@ func (c *WebSocketClient) IsConnected() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.connected
+}
+
+// RequestPlaylist sends a request to get the full playlist
+func (c *WebSocketClient) RequestPlaylist() error {
+	// Check if connected first
+	if !c.IsConnected() {
+		return fmt.Errorf("not connected")
+	}
+
+	// Send an empty object for playlist request
+	return c.Send("requestPlaylist", nil)
 }
 
 // SetReconnectConfig updates the reconnection configuration
