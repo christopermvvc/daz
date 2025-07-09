@@ -142,6 +142,11 @@ func (p *Plugin) Initialize(eventBus framework.EventBus) error {
 		return fmt.Errorf("failed to subscribe to cytube send events: %w", err)
 	}
 
+	// Subscribe to private message sending
+	if err := p.eventBus.Subscribe("cytube.send.pm", p.handleCytubeSendPM); err != nil {
+		return fmt.Errorf("failed to subscribe to cytube send pm events: %w", err)
+	}
+
 	return nil
 }
 
@@ -218,29 +223,22 @@ func (p *Plugin) handleCytubeSend(event framework.Event) error {
 	// Determine which room to send to
 	roomID := ""
 
-	// Check if room ID is provided in the RawMessage channel field
-	if dataEvent.Data.RawMessage.Channel != "" {
-		// Find room by channel name
-		for _, room := range p.config.Rooms {
-			if room.Enabled && room.Channel == dataEvent.Data.RawMessage.Channel {
-				roomID = room.ID
-				break
-			}
-		}
+	// Channel must be provided to know where to send the message
+	channel := dataEvent.Data.RawMessage.Channel
+	if channel == "" {
+		return fmt.Errorf("no channel specified for message")
 	}
 
-	// If no room ID found, use the first enabled room
-	if roomID == "" && len(p.config.Rooms) > 0 {
-		for _, room := range p.config.Rooms {
-			if room.Enabled {
-				roomID = room.ID
-				break
-			}
+	// Find room by channel name
+	for _, room := range p.config.Rooms {
+		if room.Enabled && room.Channel == channel {
+			roomID = room.ID
+			break
 		}
 	}
 
 	if roomID == "" {
-		return fmt.Errorf("no enabled rooms available")
+		return fmt.Errorf("channel '%s' not found in configured rooms", channel)
 	}
 
 	// Send message to the room
@@ -254,6 +252,68 @@ func (p *Plugin) handleCytubeSend(event framework.Event) error {
 	metrics.CytubeMessagesSent.Inc()
 
 	log.Printf("[Core] Message sent successfully to room '%s'", roomID)
+	return nil
+}
+
+// handleCytubeSendPM handles private message send requests
+func (p *Plugin) handleCytubeSendPM(event framework.Event) error {
+	// Extract data event
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok {
+		return fmt.Errorf("invalid event type for cytube send pm")
+	}
+
+	// Check for PM data
+	if dataEvent.Data == nil || dataEvent.Data.PrivateMessage == nil {
+		log.Printf("[Core] No PrivateMessage in event data")
+		return nil
+	}
+
+	// Get PM details
+	pm := dataEvent.Data.PrivateMessage
+	toUser := pm.ToUser
+	msg := pm.Message
+	channel := pm.Channel
+
+	log.Printf("[Core] Sending PM to user '%s': %d chars", toUser, len(msg))
+
+	// Determine which room to send to
+	roomID := ""
+
+	// Channel must be provided to know where to send the PM
+	if channel == "" {
+		return fmt.Errorf("no channel specified for PM")
+	}
+
+	// Find room by channel name
+	for _, room := range p.config.Rooms {
+		if room.Enabled && room.Channel == channel {
+			roomID = room.ID
+			break
+		}
+	}
+
+	if roomID == "" {
+		return fmt.Errorf("channel '%s' not found in configured rooms", channel)
+	}
+
+	// Send PM to the room
+	err := p.roomManager.SendPMToRoom(roomID, toUser, msg)
+	if err != nil {
+		log.Printf("[Core] Failed to send PM to room '%s': %v", roomID, err)
+		return err
+	}
+
+	// Get the actual channel name for logging
+	channelName := ""
+	for _, room := range p.config.Rooms {
+		if room.ID == roomID {
+			channelName = room.Channel
+			break
+		}
+	}
+
+	log.Printf("[Core] PM sent successfully to user '%s' in channel '%s'", toUser, channelName)
 	return nil
 }
 

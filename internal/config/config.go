@@ -206,17 +206,21 @@ func (c *Config) Validate() error {
 		}
 		enabledRooms++
 
-		if room.ID == "" {
-			return fmt.Errorf("room[%d]: ID is required", i)
+		if room.Channel == "" {
+			return fmt.Errorf("room[%d]: channel is required", i)
 		}
+
+		// Use channel as identifier if ID is not set
+		identifier := room.ID
+		if identifier == "" {
+			identifier = room.Channel
+		}
+
 		if room.Username == "" {
-			return fmt.Errorf("room[%d] '%s': username is required", i, room.ID)
+			return fmt.Errorf("room[%d] '%s': username is required", i, identifier)
 		}
 		if room.Password == "" {
-			return fmt.Errorf("room[%d] '%s': password is required", i, room.ID)
-		}
-		if room.Channel == "" {
-			return fmt.Errorf("room[%d] '%s': channel is required", i, room.ID)
+			return fmt.Errorf("room[%d] '%s': password is required", i, identifier)
 		}
 	}
 

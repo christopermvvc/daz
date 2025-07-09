@@ -124,7 +124,7 @@ func (p *Plugin) registerCommand() {
 	// Send registration event to command router
 	regEvent := &framework.EventData{
 		PluginRequest: &framework.PluginRequest{
-			To:   "commandrouter",
+			To:   "eventfilter",
 			From: p.name,
 			Type: "register",
 			Data: &framework.RequestData{

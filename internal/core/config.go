@@ -19,6 +19,11 @@ type RoomConfig struct {
 // SetDefaults applies default values to config
 func (c *Config) SetDefaults() {
 	for i := range c.Rooms {
+		// Auto-generate room ID from channel name if not provided
+		if c.Rooms[i].ID == "" && c.Rooms[i].Channel != "" {
+			c.Rooms[i].ID = c.Rooms[i].Channel
+		}
+
 		if c.Rooms[i].ReconnectAttempts == 0 {
 			c.Rooms[i].ReconnectAttempts = 10
 		}

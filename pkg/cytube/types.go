@@ -330,6 +330,12 @@ type PrivateMessagePayload struct {
 	To       string                 `json:"to"`
 }
 
+// PrivateMessageSendPayload represents outgoing private message data
+type PrivateMessageSendPayload struct {
+	Name string `json:"name"`
+	Msg  string `json:"msg"`
+}
+
 // EventPayload is an interface for all event payloads that can be sent
 type EventPayload interface {
 	// IsEventPayload is a marker method to ensure only valid event types implement this
@@ -337,22 +343,23 @@ type EventPayload interface {
 }
 
 // Implement EventPayload for existing payload types
-func (ChannelJoinData) IsEventPayload()        {}
-func (LoginData) IsEventPayload()              {}
-func (ChatMessagePayload) IsEventPayload()     {}
-func (ChatMessageSendPayload) IsEventPayload() {}
-func (UserPayload) IsEventPayload()            {}
-func (MediaPayload) IsEventPayload()           {}
-func (MediaUpdatePayload) IsEventPayload()     {}
-func (LoginPayload) IsEventPayload()           {}
-func (AddUserPayload) IsEventPayload()         {}
-func (MetaPayload) IsEventPayload()            {}
-func (PlaylistPayload) IsEventPayload()        {}
-func (SetPlaylistMetaPayload) IsEventPayload() {}
-func (SetUserRankPayload) IsEventPayload()     {}
-func (SetPermissionsPayload) IsEventPayload()  {}
-func (ChannelOptsPayload) IsEventPayload()     {}
-func (ChannelCSSJSPayload) IsEventPayload()    {}
+func (ChannelJoinData) IsEventPayload()           {}
+func (LoginData) IsEventPayload()                 {}
+func (ChatMessagePayload) IsEventPayload()        {}
+func (ChatMessageSendPayload) IsEventPayload()    {}
+func (PrivateMessageSendPayload) IsEventPayload() {}
+func (UserPayload) IsEventPayload()               {}
+func (MediaPayload) IsEventPayload()              {}
+func (MediaUpdatePayload) IsEventPayload()        {}
+func (LoginPayload) IsEventPayload()              {}
+func (AddUserPayload) IsEventPayload()            {}
+func (MetaPayload) IsEventPayload()               {}
+func (PlaylistPayload) IsEventPayload()           {}
+func (SetPlaylistMetaPayload) IsEventPayload()    {}
+func (SetUserRankPayload) IsEventPayload()        {}
+func (SetPermissionsPayload) IsEventPayload()     {}
+func (ChannelOptsPayload) IsEventPayload()        {}
+func (ChannelCSSJSPayload) IsEventPayload()       {}
 
 // GenericEventData represents parsed generic event data with common fields
 type GenericEventData struct {

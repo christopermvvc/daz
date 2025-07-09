@@ -48,6 +48,15 @@ func (rm *RoomManager) AddRoom(room RoomConfig) error {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
+	// Auto-generate room ID from channel name if not provided
+	if room.ID == "" {
+		if room.Channel == "" {
+			return fmt.Errorf("room channel cannot be empty")
+		}
+		room.ID = room.Channel
+		log.Printf("[RoomManager] Auto-generated room ID '%s' from channel name", room.ID)
+	}
+
 	if !room.Enabled {
 		log.Printf("[RoomManager] Room '%s' is disabled, skipping", room.ID)
 		return nil
@@ -190,12 +199,28 @@ func (rm *RoomManager) processRoomEvents(roomID string) {
 				conn.mu.Unlock()
 			}
 
-			// Broadcast to event bus
+			// Broadcast to event bus with proper event type prefix
+			eventType := fmt.Sprintf("cytube.event.%s", event.Type())
 			eventData := &framework.EventData{
-				RawEvent:     event,
 				RawEventType: event.Type(),
 			}
-			if err := rm.eventBus.Broadcast(event.Type(), eventData); err != nil {
+
+			// For chat messages, populate the ChatMessage field
+			if chatEvent, ok := event.(*framework.ChatMessageEvent); ok && event.Type() == "chatMsg" {
+				eventData.ChatMessage = &framework.ChatMessageData{
+					Username:    chatEvent.Username,
+					Message:     chatEvent.Message,
+					UserRank:    chatEvent.UserRank,
+					UserID:      chatEvent.UserID,
+					Channel:     chatEvent.ChannelName,
+					MessageTime: chatEvent.MessageTime,
+				}
+			} else {
+				// For non-chat events, pass the raw event
+				eventData.RawEvent = event
+			}
+
+			if err := rm.eventBus.Broadcast(eventType, eventData); err != nil {
 				log.Printf("[RoomManager] Room '%s': Failed to broadcast event: %v", roomID, err)
 			}
 		}
@@ -302,6 +327,36 @@ func (rm *RoomManager) SendToRoom(roomID string, message string) error {
 		Message: message,
 	}
 	return conn.Client.Send("chatMsg", chatData)
+}
+
+// SendPMToRoom sends a private message to a specific user in a room
+func (rm *RoomManager) SendPMToRoom(roomID string, toUser string, message string) error {
+	rm.mu.RLock()
+	conn, exists := rm.connections[roomID]
+	rm.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("room '%s' not found", roomID)
+	}
+
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+
+	if !conn.Connected {
+		return fmt.Errorf("room '%s' is not connected", roomID)
+	}
+
+	// Send PM using the cytube protocol
+	pmData := cytube.PrivateMessageSendPayload{
+		Name: toUser,
+		Msg:  message,
+	}
+
+	// Debug log with actual channel name
+	log.Printf("[RoomManager] Sending PM via websocket - Channel: '%s', To: '%s', Message length: %d",
+		conn.Room.Channel, toUser, len(message))
+
+	return conn.Client.Send("pm", pmData)
 }
 
 // MonitorConnections monitors all connections and reconnects if needed

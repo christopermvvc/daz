@@ -68,7 +68,12 @@ func main() {
 	for _, room := range cfg.Core.Rooms {
 		if room.Enabled {
 			enabledRooms++
-			fmt.Printf("Room '%s': Joining channel %s", room.ID, room.Channel)
+			// Use channel name if ID is empty (it will be auto-generated later)
+			identifier := room.ID
+			if identifier == "" {
+				identifier = room.Channel
+			}
+			fmt.Printf("Room '%s': Joining channel %s", identifier, room.Channel)
 			if room.Username != "" {
 				fmt.Printf(" as %s", room.Username)
 			}

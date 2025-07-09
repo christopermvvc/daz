@@ -330,6 +330,9 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 
 	chatData := dataEvent.Data.ChatMessage
 
+	log.Printf("[EventFilter] Received chat message: '%s' from user: %s (prefix: '%s')",
+		chatData.Message, chatData.Username, p.config.CommandPrefix)
+
 	// Check if message is a command
 	if strings.HasPrefix(chatData.Message, p.config.CommandPrefix) {
 		p.handleCommand(dataEvent, *chatData)

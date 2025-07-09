@@ -354,7 +354,8 @@ func TestHandleCommand(t *testing.T) {
 				Command: &framework.CommandData{
 					Name: "help",
 					Params: map[string]string{
-						"channel": "test-channel",
+						"channel":  "test-channel",
+						"username": "testuser",
 					},
 				},
 			},
@@ -397,7 +398,7 @@ func TestHandleCommand(t *testing.T) {
 	var broadcast broadcastCall
 	found := false
 	for _, b := range bus.broadcasts {
-		if b.eventType == "cytube.send" {
+		if b.eventType == "cytube.send.pm" {
 			broadcast = b
 			found = true
 			break
@@ -405,10 +406,14 @@ func TestHandleCommand(t *testing.T) {
 	}
 	bus.mu.Unlock()
 	if !found {
-		t.Errorf("Expected cytube.send broadcast not found in %d broadcasts", broadcastCount)
+		t.Errorf("Expected cytube.send.pm broadcast not found in %d broadcasts", broadcastCount)
 		return
 	}
-	if broadcast.data.RawMessage == nil {
-		t.Error("Expected RawMessage data")
+	if broadcast.data.PrivateMessage == nil {
+		t.Error("Expected PrivateMessage data")
+	}
+	// Verify PM is sent to the requesting user
+	if broadcast.data.PrivateMessage.ToUser != "testuser" {
+		t.Errorf("Expected PM to user 'testuser', got '%s'", broadcast.data.PrivateMessage.ToUser)
 	}
 }

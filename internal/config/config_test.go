@@ -304,7 +304,7 @@ func TestValidate(t *testing.T) {
 			errMsg:  "at least one room must be configured",
 		},
 		{
-			name: "room missing ID",
+			name: "room missing ID is valid",
 			modify: func(c *Config) {
 				c.Core.Rooms = []RoomConfig{
 					{
@@ -319,8 +319,7 @@ func TestValidate(t *testing.T) {
 				c.Core.Database.Password = "dbpass"
 				c.Core.Database.Database = "testdb"
 			},
-			wantErr: true,
-			errMsg:  "room[0]: ID is required",
+			wantErr: false,
 		},
 		{
 			name: "room missing username",
@@ -377,7 +376,7 @@ func TestValidate(t *testing.T) {
 				c.Core.Database.Database = "testdb"
 			},
 			wantErr: true,
-			errMsg:  "room[0] 'room1': channel is required",
+			errMsg:  "room[0]: channel is required",
 		},
 		{
 			name: "no enabled rooms",
