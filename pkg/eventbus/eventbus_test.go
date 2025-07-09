@@ -61,7 +61,9 @@ func TestEventBus_RegisterPlugin(t *testing.T) {
 	// Mock plugin
 	var plugin framework.Plugin // nil is fine for registration test
 
-	eb.RegisterPlugin("test-plugin", plugin)
+	if err := eb.RegisterPlugin("test-plugin", plugin); err != nil {
+		t.Fatalf("RegisterPlugin failed: %v", err)
+	}
 
 	// Verify plugin was registered
 	eb.plugMu.RLock()
@@ -335,13 +337,13 @@ func TestEventBus_SQLHandlers(t *testing.T) {
 	}()
 
 	// Test Query without handler
-	_, err := eb.Query("SELECT 1", nil)
+	_, err := eb.Query("SELECT 1")
 	if err == nil {
 		t.Error("Query should fail without handler")
 	}
 
 	// Test Exec without handler
-	err = eb.Exec("INSERT INTO test VALUES (1)", nil)
+	err = eb.Exec("INSERT INTO test VALUES (1)")
 	if err == nil {
 		t.Error("Exec should fail without handler")
 	}
@@ -356,13 +358,13 @@ func TestEventBus_SQLHandlers(t *testing.T) {
 	eb.SetSQLHandlers(queryHandler, execHandler)
 
 	// Test Query with handler (will still fail due to placeholder implementation)
-	_, err = eb.Query("SELECT 1", nil)
+	_, err = eb.Query("SELECT 1")
 	if err == nil {
 		t.Error("Query should fail with placeholder implementation")
 	}
 
 	// Test Exec with handler
-	err = eb.Exec("INSERT INTO test VALUES (1)", nil)
+	err = eb.Exec("INSERT INTO test VALUES (1)")
 	if err != nil {
 		t.Errorf("Exec failed: %v", err)
 	}

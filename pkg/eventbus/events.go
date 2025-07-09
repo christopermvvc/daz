@@ -4,9 +4,11 @@ package eventbus
 const (
 	// Cytube events
 	EventCytubeChatMsg     = "cytube.event.chatMsg"
+	EventCytubePM          = "cytube.event.pm"
 	EventCytubeUserJoin    = "cytube.event.userJoin"
 	EventCytubeUserLeave   = "cytube.event.userLeave"
 	EventCytubeVideoChange = "cytube.event.changeMedia"
+	EventCytubeMediaUpdate = "cytube.mediaUpdate"
 	EventCytubeConnect     = "cytube.event.connect"
 	EventCytubeDisconnect  = "cytube.event.disconnect"
 

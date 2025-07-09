@@ -22,9 +22,10 @@ type Plugin struct {
 	mu       sync.RWMutex
 
 	// Shutdown management
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	readyChan chan struct{}
 
 	// In-memory user state cache
 	users map[string]*UserState
@@ -37,8 +38,10 @@ type Plugin struct {
 type Config struct {
 	// The channel to track users for
 	Channel string `json:"channel"`
+	// How long to wait before marking a user as inactive (in minutes)
+	InactivityTimeoutMinutes int `json:"inactivity_timeout_minutes"`
 	// How long to wait before marking a user as inactive
-	InactivityTimeout time.Duration `json:"inactivity_timeout"`
+	InactivityTimeout time.Duration
 }
 
 // UserState tracks current state of a user
@@ -57,11 +60,27 @@ func New() framework.Plugin {
 		config: &Config{
 			InactivityTimeout: 30 * time.Minute,
 		},
-		users: make(map[string]*UserState),
+		users:     make(map[string]*UserState),
+		readyChan: make(chan struct{}),
 		status: framework.PluginStatus{
 			Name:  "usertracker",
 			State: "initialized",
 		},
+	}
+}
+
+// Dependencies returns the list of plugins this plugin depends on
+func (p *Plugin) Dependencies() []string {
+	return []string{"sql"} // UserTracker depends on SQL plugin for database operations
+}
+
+// Ready returns true when the plugin is ready to accept requests
+func (p *Plugin) Ready() bool {
+	select {
+	case <-p.readyChan:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -75,9 +94,10 @@ func NewPlugin(config *Config) *Plugin {
 	}
 
 	return &Plugin{
-		name:   "usertracker",
-		config: config,
-		users:  make(map[string]*UserState),
+		name:      "usertracker",
+		config:    config,
+		users:     make(map[string]*UserState),
+		readyChan: make(chan struct{}),
 		status: framework.PluginStatus{
 			Name:  "usertracker",
 			State: "initialized",
@@ -98,6 +118,10 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 		if err := json.Unmarshal(config, &cfg); err != nil {
 			return fmt.Errorf("failed to parse config: %w", err)
 		}
+		// Convert minutes to duration
+		if cfg.InactivityTimeoutMinutes > 0 {
+			cfg.InactivityTimeout = time.Duration(cfg.InactivityTimeoutMinutes) * time.Minute
+		}
 		p.config = &cfg
 	}
 
@@ -106,6 +130,11 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 		p.config = &Config{
 			InactivityTimeout: 30 * time.Minute,
 		}
+	}
+
+	// Ensure we have a valid timeout
+	if p.config.InactivityTimeout <= 0 {
+		p.config.InactivityTimeout = 30 * time.Minute
 	}
 
 	// Set default channel if not specified
@@ -171,6 +200,10 @@ func (p *Plugin) Start() error {
 	p.running = true
 	p.status.State = "running"
 	p.status.Uptime = time.Since(time.Now())
+
+	// Signal that the plugin is ready
+	close(p.readyChan)
+
 	log.Println("[UserTracker] Started user tracking")
 	return nil
 }
@@ -299,7 +332,12 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 			(channel, username, rank, joined_at, last_activity, is_active)
 		VALUES ($1, $2, $3, $4, $5, TRUE)
 	`
-	err := p.eventBus.Exec(sessionSQL, channel, userJoin.Username, userJoin.UserRank, now, now)
+	err := p.eventBus.Exec(sessionSQL,
+		framework.SQLParam{Value: channel},
+		framework.SQLParam{Value: userJoin.Username},
+		framework.SQLParam{Value: userJoin.UserRank},
+		framework.SQLParam{Value: now},
+		framework.SQLParam{Value: now})
 	if err != nil {
 		log.Printf("[UserTracker] Error recording user join: %v", err)
 	}
@@ -311,7 +349,11 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 		VALUES ($1, $2, 'join', $3, $4)
 	`
 	metadata := fmt.Sprintf(`{"rank": %d}`, userJoin.UserRank)
-	err = p.eventBus.Exec(historySQL, channel, userJoin.Username, now, metadata)
+	err = p.eventBus.Exec(historySQL,
+		framework.SQLParam{Value: channel},
+		framework.SQLParam{Value: userJoin.Username},
+		framework.SQLParam{Value: now},
+		framework.SQLParam{Value: metadata})
 	if err != nil {
 		log.Printf("[UserTracker] Error recording join history: %v", err)
 	}
@@ -350,7 +392,10 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 		SET left_at = $1, is_active = FALSE, last_activity = $1
 		WHERE channel = $2 AND username = $3 AND is_active = TRUE
 	`
-	err := p.eventBus.Exec(sessionSQL, now, channel, userLeave.Username)
+	err := p.eventBus.Exec(sessionSQL,
+		framework.SQLParam{Value: now},
+		framework.SQLParam{Value: channel},
+		framework.SQLParam{Value: userLeave.Username})
 	if err != nil {
 		log.Printf("[UserTracker] Error recording user leave: %v", err)
 	}
@@ -361,7 +406,10 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 			(channel, username, event_type, timestamp)
 		VALUES ($1, $2, 'leave', $3)
 	`
-	err = p.eventBus.Exec(historySQL, channel, userLeave.Username, now)
+	err = p.eventBus.Exec(historySQL,
+		framework.SQLParam{Value: channel},
+		framework.SQLParam{Value: userLeave.Username},
+		framework.SQLParam{Value: now})
 	if err != nil {
 		log.Printf("[UserTracker] Error recording leave history: %v", err)
 	}
@@ -394,7 +442,10 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		SET last_activity = $1
 		WHERE channel = $2 AND username = $3 AND is_active = TRUE
 	`
-	err := p.eventBus.Exec(updateSQL, now, chat.Channel, chat.Username)
+	err := p.eventBus.Exec(updateSQL,
+		framework.SQLParam{Value: now},
+		framework.SQLParam{Value: chat.Channel},
+		framework.SQLParam{Value: chat.Username})
 	if err != nil {
 		log.Printf("[UserTracker] Error updating activity: %v", err)
 	}
@@ -506,7 +557,8 @@ func (p *Plugin) doCleanup() {
 		SET is_active = FALSE
 		WHERE is_active = TRUE AND last_activity < $1
 	`
-	err := p.eventBus.Exec(updateSQL, cutoffTime)
+	err := p.eventBus.Exec(updateSQL,
+		framework.SQLParam{Value: cutoffTime})
 	if err != nil {
 		log.Printf("[UserTracker] Error cleaning up inactive sessions: %v", err)
 	}

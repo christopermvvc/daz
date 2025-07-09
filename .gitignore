@@ -90,3 +90,54 @@ debug.test
 
 # Interface replacement summary (may contain implementation details)
 INTERFACE_REPLACEMENT_SUMMARY.md
+
+# Architectural documents (project-specific)
+daz-architecture-doc.md
+daz-architecture-doc-revisions.md
+
+# Archive files and folders
+daz-docs-archive/
+*.tar
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.zip
+*.rar
+*.7z
+
+# Temporary documentation
+PROGRESS.md
+TODO.md
+*_SUMMARY.md
+*_STATUS.md
+fixpm.md
+nextfix.md
+cytube_event_log.txt
+cytube-events-discovered.txt
+
+# Profiling and benchmark files
+*.prof
+*.mem
+*.cpu
+*.bench
+coverage.html
+coverage.txt
+
+# Process and runtime files
+*.pid
+*.sock
+*.socket
+*.lock
+
+# Patch and diff files
+*.patch
+*.diff
+*.orig
+*.rej
+
+# Additional test outputs
+*_test.log
+
+# Event discovery outputs
+*-discovered.txt
+*_discovered.txt

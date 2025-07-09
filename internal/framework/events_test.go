@@ -55,7 +55,7 @@ func TestSQLRequest(t *testing.T) {
 	req := &SQLRequest{
 		ID:        "req123",
 		Query:     "SELECT * FROM users WHERE id = $1",
-		Params:    []interface{}{123},
+		Params:    []SQLParam{{Value: 123}},
 		Timeout:   5 * time.Second,
 		RequestBy: "test-plugin",
 	}

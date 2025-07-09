@@ -116,6 +116,10 @@ func (p *Plugin) Status() framework.PluginStatus {
 	}
 }
 
+func (p *Plugin) Name() string {
+	return "about"
+}
+
 func (p *Plugin) registerCommand() {
 	// Send registration event to command router
 	regEvent := &framework.EventData{

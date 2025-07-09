@@ -93,6 +93,10 @@ func (p *Plugin) Status() framework.PluginStatus {
 	}
 }
 
+func (p *Plugin) Name() string {
+	return "uptime"
+}
+
 func (p *Plugin) registerCommand() {
 	// Send registration event to command router
 	regEvent := &framework.EventData{
@@ -145,7 +149,6 @@ func (p *Plugin) handleUptimeCommand(req *framework.PluginRequest) {
 	message := formatUptime(uptime)
 
 	// Skip database query for now due to sync query limitations
-	// TODO: Implement async query pattern or direct DB access
 
 	p.sendResponse(req, message)
 }

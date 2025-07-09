@@ -41,6 +41,10 @@ func (m *mockPlugin) Status() PluginStatus {
 	}
 }
 
+func (m *mockPlugin) Name() string {
+	return "mock"
+}
+
 func TestPluginInterface(t *testing.T) {
 	var _ Plugin = &mockPlugin{}
 

@@ -36,6 +36,10 @@ func (m *mockPlugin) Status() framework.PluginStatus {
 	}
 }
 
+func (m *mockPlugin) Name() string {
+	return "mock"
+}
+
 func TestNewPluginRegistry(t *testing.T) {
 	pr := NewPluginRegistry()
 	if pr == nil {

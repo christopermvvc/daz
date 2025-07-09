@@ -8,8 +8,8 @@ tmux kill-session -t "$SESSION_NAME" 2>/dev/null
 
 # Build if needed
 if [ ! -f "bin/daz" ]; then
-    echo "Building Daz..."
-    make build
+    echo "Binary not found. Running centralized build..."
+    ./scripts/build-daz.sh
 fi
 
 # Create new session and run

@@ -1,6 +1,9 @@
 package uptime
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -61,11 +64,11 @@ func (m *mockEventBus) Send(target string, eventType string, data *framework.Eve
 	return nil
 }
 
-func (m *mockEventBus) Query(sql string, params ...interface{}) (framework.QueryResult, error) {
+func (m *mockEventBus) Query(sql string, params ...framework.SQLParam) (framework.QueryResult, error) {
 	return m.queryResult, nil
 }
 
-func (m *mockEventBus) Exec(sql string, params ...interface{}) error {
+func (m *mockEventBus) Exec(sql string, params ...framework.SQLParam) error {
 	return nil
 }
 
@@ -78,6 +81,46 @@ func (m *mockEventBus) Subscribe(eventType string, handler framework.EventHandle
 
 func (m *mockEventBus) SetSQLHandlers(queryHandler, execHandler framework.EventHandler) {
 	// Mock implementation - can be empty
+}
+
+func (m *mockEventBus) GetDroppedEventCounts() map[string]int64 {
+	return make(map[string]int64)
+}
+
+func (m *mockEventBus) GetDroppedEventCount(eventType string) int64 {
+	return 0
+}
+
+func (m *mockEventBus) QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error) {
+	return nil, fmt.Errorf("sync queries not supported in mock")
+}
+
+func (m *mockEventBus) ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error) {
+	return nil, fmt.Errorf("sync exec not supported in mock")
+}
+
+func (m *mockEventBus) BroadcastWithMetadata(eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
+	return m.Broadcast(eventType, data)
+}
+
+func (m *mockEventBus) SendWithMetadata(target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
+	return m.Send(target, eventType, data)
+}
+
+func (m *mockEventBus) Request(ctx context.Context, target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) (*framework.EventData, error) {
+	return nil, fmt.Errorf("request not supported in mock")
+}
+
+func (m *mockEventBus) DeliverResponse(correlationID string, response *framework.EventData, err error) {
+	// Mock implementation - can be empty
+}
+
+func (m *mockEventBus) RegisterPlugin(name string, plugin framework.Plugin) error {
+	return nil
+}
+
+func (m *mockEventBus) UnregisterPlugin(name string) error {
+	return nil
 }
 
 type mockQueryResult struct {
@@ -230,7 +273,10 @@ func TestStatus(t *testing.T) {
 	}
 
 	// Test running status
-	plugin.Start()
+	err = plugin.Start()
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
 	status = plugin.Status()
 	if status.State != "running" {
 		t.Errorf("Status.State = %s, want running", status.State)
@@ -283,8 +329,23 @@ func TestHandleCommand(t *testing.T) {
 	}
 
 	// Wait for async handler to complete - it will broadcast the response
-	// Give it a moment to process since it's async
-	time.Sleep(100 * time.Millisecond)
+	// Wait for async handler to complete using channel notification
+	select {
+	case <-bus.sendNotify:
+		// Handler completed
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Timeout waiting for async handler")
+	}
+
+	// Allow a brief moment for the broadcast to be recorded
+	done := make(chan struct{})
+	go func() {
+		timer := time.NewTimer(10 * time.Millisecond)
+		defer timer.Stop()
+		<-timer.C
+		close(done)
+	}()
+	<-done
 
 	// Check that a response was broadcast (not sent)
 	bus.mu.Lock()

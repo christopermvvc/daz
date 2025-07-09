@@ -2,10 +2,10 @@ package core
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,7 +20,6 @@ type Plugin struct {
 	config           *Config
 	eventBus         framework.EventBus
 	cytubeConn       *cytube.WebSocketClient
-	sqlModule        *SQLModule
 	mu               sync.RWMutex
 	ctx              context.Context
 	cancel           context.CancelFunc
@@ -90,14 +89,6 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	// Store event bus reference
 	p.eventBus = bus
 
-	// Initialize SQL module
-	sqlModule, err := NewSQLModule(p.config.Database, bus)
-	if err != nil {
-		p.status.LastError = fmt.Errorf("failed to initialize SQL module: %w", err)
-		return p.status.LastError
-	}
-	p.sqlModule = sqlModule
-
 	// Create event channel for Cytube events
 	p.eventChan = make(chan framework.Event, 100)
 
@@ -118,25 +109,11 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	// Set up connection monitoring
 	p.setupConnectionMonitor()
 
-	// Subscribe to SQL events
-	if err := p.eventBus.Subscribe("sql.exec", p.handleSQLExec); err != nil {
-		p.status.LastError = fmt.Errorf("failed to subscribe to SQL exec events: %w", err)
-		return p.status.LastError
-	}
-
-	if err := p.eventBus.Subscribe("sql.query", p.handleSQLQuery); err != nil {
-		p.status.LastError = fmt.Errorf("failed to subscribe to SQL query events: %w", err)
-		return p.status.LastError
-	}
-
 	// Subscribe to chat message sending
 	if err := p.eventBus.Subscribe("cytube.send", p.handleCytubeSend); err != nil {
 		p.status.LastError = fmt.Errorf("failed to subscribe to cytube send events: %w", err)
 		return p.status.LastError
 	}
-
-	// Register ourselves as the SQL handler for the EventBus
-	p.eventBus.SetSQLHandlers(p.handleSQLQuery, p.handleSQLExec)
 
 	return nil
 }
@@ -147,13 +124,6 @@ func (p *Plugin) Initialize(eventBus framework.EventBus) error {
 	defer p.mu.Unlock()
 
 	p.eventBus = eventBus
-
-	// Initialize SQL module
-	sqlModule, err := NewSQLModule(p.config.Database, eventBus)
-	if err != nil {
-		return fmt.Errorf("failed to initialize SQL module: %w", err)
-	}
-	p.sqlModule = sqlModule
 
 	// Create event channel for Cytube events
 	p.eventChan = make(chan framework.Event, 100)
@@ -171,22 +141,10 @@ func (p *Plugin) Initialize(eventBus framework.EventBus) error {
 	// Set up Cytube event handlers
 	p.setupCytubeHandlers()
 
-	// Subscribe to SQL events
-	if err := p.eventBus.Subscribe("sql.exec", p.handleSQLExec); err != nil {
-		return fmt.Errorf("failed to subscribe to SQL exec events: %w", err)
-	}
-
-	if err := p.eventBus.Subscribe("sql.query", p.handleSQLQuery); err != nil {
-		return fmt.Errorf("failed to subscribe to SQL query events: %w", err)
-	}
-
 	// Subscribe to chat message sending
 	if err := p.eventBus.Subscribe("cytube.send", p.handleCytubeSend); err != nil {
 		return fmt.Errorf("failed to subscribe to cytube send events: %w", err)
 	}
-
-	// Register ourselves as the SQL handler for the EventBus
-	p.eventBus.SetSQLHandlers(p.handleSQLQuery, p.handleSQLExec)
 
 	return nil
 }
@@ -195,12 +153,6 @@ func (p *Plugin) Initialize(eventBus framework.EventBus) error {
 func (p *Plugin) Start() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	// Start SQL module
-	if err := p.sqlModule.Start(); err != nil {
-		p.status.LastError = fmt.Errorf("failed to start SQL module: %w", err)
-		return p.status.LastError
-	}
 
 	// Update status
 	p.status.State = "running"
@@ -244,13 +196,6 @@ func (p *Plugin) Stop() error {
 		}
 	}
 
-	// Stop SQL module
-	if p.sqlModule != nil {
-		if err := p.sqlModule.Stop(); err != nil {
-			log.Printf("[Core] Error stopping SQL module: %v", err)
-		}
-	}
-
 	log.Printf("[Core] Plugin stopped")
 	return nil
 }
@@ -266,86 +211,6 @@ func (p *Plugin) HandleEvent(event framework.Event) error {
 }
 
 // handleSQLExec handles SQL exec requests from other plugins
-func (p *Plugin) handleSQLExec(event framework.Event) error {
-	// Check if this is a DataEvent which carries EventData
-	dataEvent, ok := event.(*framework.DataEvent)
-	if !ok {
-		return nil
-	}
-
-	if dataEvent.Data == nil || dataEvent.Data.SQLRequest == nil {
-		return nil
-	}
-
-	req := dataEvent.Data.SQLRequest
-
-	// Check if this is a synchronous exec
-	if req.IsSync && req.ResponseCh != "" {
-		// Execute the query
-		err := p.sqlModule.HandleSQLExec(p.ctx, *req)
-
-		// Deliver the response through the EventBus
-		if eventBus, ok := p.eventBus.(interface {
-			DeliverExecResponse(string, sql.Result, error)
-		}); ok {
-			// For now, we'll return an error since we can't pass the result directly
-			// This needs to be enhanced to serialize the exec result
-			eventBus.DeliverExecResponse(req.ID, nil, fmt.Errorf("sync exec requires result serialization"))
-		}
-		return err
-	}
-
-	// For async exec, just execute and return
-	return p.sqlModule.HandleSQLExec(p.ctx, *req)
-}
-
-// handleSQLQuery handles SQL query requests from other plugins
-func (p *Plugin) handleSQLQuery(event framework.Event) error {
-	// Check if this is a DataEvent which carries EventData
-	dataEvent, ok := event.(*framework.DataEvent)
-	if !ok {
-		return nil
-	}
-
-	if dataEvent.Data == nil || dataEvent.Data.SQLRequest == nil {
-		return nil
-	}
-
-	req := dataEvent.Data.SQLRequest
-
-	// Check if this is a synchronous query
-	if req.IsSync && req.ResponseCh != "" {
-		// For sync queries, we need to use the standard database/sql connection
-		// because the EventBus expects *sql.Rows, not pgx.Rows
-
-		// Get the database connection from sql module
-		db := p.sqlModule.GetDB()
-		if db == nil {
-			if eventBus, ok := p.eventBus.(interface {
-				DeliverQueryResponse(string, *sql.Rows, error)
-			}); ok {
-				eventBus.DeliverQueryResponse(req.ID, nil, fmt.Errorf("database connection not available"))
-			}
-			return fmt.Errorf("database connection not available")
-		}
-
-		// Execute the query using standard database/sql
-		rows, err := db.QueryContext(p.ctx, req.Query, req.Params...)
-
-		// Deliver the response through the EventBus
-		if eventBus, ok := p.eventBus.(interface {
-			DeliverQueryResponse(string, *sql.Rows, error)
-		}); ok {
-			eventBus.DeliverQueryResponse(req.ID, rows, err)
-		}
-
-		return nil
-	}
-
-	// For async queries, just execute and return
-	_, err := p.sqlModule.HandleSQLRequest(p.ctx, *req)
-	return err
-}
 
 // handleCytubeSend handles requests to send messages to Cytube
 func (p *Plugin) handleCytubeSend(event framework.Event) error {
@@ -367,8 +232,8 @@ func (p *Plugin) handleCytubeSend(event framework.Event) error {
 	msg := dataEvent.Data.RawMessage.Message
 	log.Printf("[Core] Sending message to Cytube: %d chars", len(msg))
 
-	msgData := map[string]string{
-		"msg": msg,
+	msgData := cytube.ChatMessageSendPayload{
+		Message: msg,
 	}
 
 	// Check if we have a connection
@@ -392,10 +257,12 @@ func (p *Plugin) handleCytubeSend(event framework.Event) error {
 // initEventHandlers initializes the map of event handlers
 func (p *Plugin) initEventHandlers() {
 	p.eventHandlers = map[string]eventHandler{
-		"*framework.ChatMessageEvent": p.handleChatMessage,
-		"*framework.UserJoinEvent":    p.handleUserJoin,
-		"*framework.UserLeaveEvent":   p.handleUserLeave,
-		"*framework.VideoChangeEvent": p.handleVideoChange,
+		"*framework.ChatMessageEvent":    p.handleChatMessage,
+		"*framework.UserJoinEvent":       p.handleUserJoin,
+		"*framework.UserLeaveEvent":      p.handleUserLeave,
+		"*framework.VideoChangeEvent":    p.handleVideoChange,
+		"*framework.MediaUpdateEvent":    p.handleMediaUpdate,
+		"*framework.PrivateMessageEvent": p.handlePrivateMessage,
 	}
 }
 
@@ -404,11 +271,12 @@ func (p *Plugin) handleChatMessage(event framework.Event) (string, *framework.Ev
 	e := event.(*framework.ChatMessageEvent)
 	eventData := &framework.EventData{
 		ChatMessage: &framework.ChatMessageData{
-			Username: e.Username,
-			Message:  e.Message,
-			UserRank: e.UserRank,
-			UserID:   e.UserID,
-			Channel:  e.ChannelName,
+			Username:    e.Username,
+			Message:     e.Message,
+			UserRank:    e.UserRank,
+			UserID:      e.UserID,
+			Channel:     e.ChannelName,
+			MessageTime: e.MessageTime,
 		},
 	}
 	return eventbus.EventCytubeChatMsg, eventData, true
@@ -450,6 +318,31 @@ func (p *Plugin) handleVideoChange(event framework.Event) (string, *framework.Ev
 	return eventbus.EventCytubeVideoChange, eventData, true
 }
 
+func (p *Plugin) handleMediaUpdate(event framework.Event) (string, *framework.EventData, bool) {
+	e := event.(*framework.MediaUpdateEvent)
+	eventData := &framework.EventData{
+		MediaUpdate: &framework.MediaUpdateData{
+			CurrentTime: e.CurrentTime,
+			Paused:      e.Paused,
+		},
+	}
+	return eventbus.EventCytubeMediaUpdate, eventData, true
+}
+
+func (p *Plugin) handlePrivateMessage(event framework.Event) (string, *framework.EventData, bool) {
+	e := event.(*framework.PrivateMessageEvent)
+	eventData := &framework.EventData{
+		PrivateMessage: &framework.PrivateMessageData{
+			FromUser:    e.FromUser,
+			ToUser:      e.ToUser,
+			Message:     e.Message,
+			MessageTime: e.MessageTime,
+			Channel:     e.ChannelName,
+		},
+	}
+	return eventbus.EventCytubePM, eventData, true
+}
+
 // setupCytubeHandlers starts a goroutine to process Cytube events
 func (p *Plugin) setupCytubeHandlers() {
 	// Define known event types that should be broadcast
@@ -467,6 +360,7 @@ func (p *Plugin) setupCytubeHandlers() {
 		"playlist":          true,
 		"setCurrent":        true,
 		"usercount":         true,
+		"mediaUpdate":       true,
 		"setUserMeta":       true,
 		"setAFK":            true,
 		"setPermissions":    true,
@@ -476,6 +370,8 @@ func (p *Plugin) setupCytubeHandlers() {
 		"channelCSSJS":      true,
 		"setMotd":           true,
 		"channelOpts":       true,
+		"clearVoteskipVote": true,
+		"pm":                true,
 	}
 
 	go func() {
@@ -490,14 +386,6 @@ func (p *Plugin) setupCytubeHandlers() {
 				// Track message received
 				metrics.CytubeMessagesReceived.Inc()
 
-				// Log event to database
-				if err := p.sqlModule.LogEvent(p.ctx, event); err != nil {
-					log.Printf("[Core] Error logging event %s: %v", event.Type(), err)
-					p.mu.Lock()
-					p.status.LastError = fmt.Errorf("SQL log error: %w", err)
-					p.mu.Unlock()
-				}
-
 				// Process event based on type
 				var eventType string
 				var eventData *framework.EventData
@@ -509,18 +397,30 @@ func (p *Plugin) setupCytubeHandlers() {
 					eventType, eventData, shouldBroadcast = handler(event)
 				} else {
 					// For other events, check if they're in the known list
-					eventType = event.Type()
+					rawEventType := event.Type()
 					eventData = &framework.EventData{}
-					shouldBroadcast = knownEventTypes[eventType]
+					shouldBroadcast = knownEventTypes[rawEventType]
 
-					if !shouldBroadcast && eventType != "mediaUpdate" {
+					if shouldBroadcast {
+						// Convert known raw event types to proper broadcast event types
+						eventType = fmt.Sprintf("cytube.event.%s", rawEventType)
+					} else if rawEventType != "mediaUpdate" {
 						// Log unknown events except mediaUpdate (too noisy)
-						log.Printf("[Core] Skipping broadcast of unknown event type: %s", eventType)
+						log.Printf("[Core] Skipping broadcast of unknown event type: %s", rawEventType)
 					}
 				}
 
 				if shouldBroadcast {
-					if err := p.eventBus.Broadcast(eventType, eventData); err != nil {
+					// Create event metadata with logging tags
+					metadata := framework.NewEventMetadata("core", eventType)
+
+					// Tag Cytube events as loggable
+					if strings.HasPrefix(eventType, "cytube.event.") {
+						metadata.WithLogging("info").WithTags("cytube", "user-activity")
+					}
+
+					// Broadcast with metadata
+					if err := p.eventBus.BroadcastWithMetadata(eventType, eventData, metadata); err != nil {
 						log.Printf("[Core] Error broadcasting event %s: %v", eventType, err)
 						p.mu.Lock()
 						p.status.LastError = fmt.Errorf("broadcast error for %s: %w", eventType, err)

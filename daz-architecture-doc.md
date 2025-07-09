@@ -6,9 +6,11 @@
 
 ## Core Architecture Principles
 
-- **Plugin-Based Modularity**: All functionality except core loading implemented as plugins
-- **Event-Driven Communication**: Asynchronous message passing via Go channels  
-- **Persistent Data Storage**: PostgreSQL-only storage with no in-memory dependencies
+- **EventBus-First Architecture**: EventBus is the primary communication backbone, starting before all plugins
+- **Plugin-Based Modularity**: All functionality including SQL implemented as plugins
+- **Event-Driven Communication**: Bidirectional message passing via enhanced EventBus with request/response patterns
+- **Selective Persistence**: Plugins explicitly request data logging through SQL plugin
+- **Tagged Data Flow**: All events carry metadata for routing, logging, and correlation
 - **Graceful Degradation**: System continues operating with failed components when possible
 - **Restart Resilience**: Minimal data loss on service restarts
 
@@ -17,35 +19,46 @@
 ### Component Hierarchy
 
 ```
-┌─────────────────────────────────────┐
-│             Daz Core                │
-│  ┌─────────────┬─────────────────┐  │
-│  │   Cytube    │   SQL Module    │  │
-│  │  Connection │   (PostgreSQL)  │  │
-│  └─────────────┴─────────────────┘  │
-└─────────────────┬───────────────────┘
-                  │ Event Bus (Go Channels)
-                  │
-          ┌───────┼───────┐
-          │       │       │
-     ┌────▼────┐ ┌─▼─┐ ┌───▼────┐
-     │  Event  │ │...│ │Feature │
-     │ Filter  │ │   │ │Plugins │
-     └─────────┘ └───┘ └────────┘
+┌─────────────────────────────────────────────────┐
+│                  Event Bus                      │
+│         (Primary Communication System)          │
+│    • Request/Response Infrastructure            │
+│    • Event Tagging & Routing                    │
+│    • Bidirectional Communication                │
+└────────────┬────────────┬────────────┬──────────┘
+             │            │            │
+     ┌───────▼──────┐ ┌───▼────┐ ┌────▼─────┐
+     │ SQL Plugin   │ │  Core  │ │  Event   │
+     │              │ │ Plugin │ │  Filter  │
+     │ • Database   │ │        │ │          │
+     │ • Logger     │ │ Cytube │ │ Command  │
+     │   Middleware │ │  Conn  │ │  Router  │
+     └──────────────┘ └────────┘ └──────────┘
+              │                          │
+              └────────┬─────────────────┘
+                      │
+               ┌──────▼──────┐
+               │   Feature   │
+               │   Plugins   │
+               └─────────────┘
 ```
 
 ### Startup Sequence
 
-1. **Core Plugin**: Cytube connection + SQL module initialization
-2. **EventFilter Plugin**: Event filtering, routing, and command processing
-3. **Feature Plugins**: All other plugins (custom commands, analytics, etc.)
+1. **EventBus Initialization**: Primary communication system with request/response support
+2. **SQL Plugin**: Standalone database service with logger middleware
+3. **Core Plugin**: Cytube connection only (no embedded SQL)
+4. **EventFilter Plugin**: Event filtering, routing, and command processing
+5. **Feature Plugins**: All other plugins (custom commands, analytics, etc.)
 
 ### Data Flow
 
 ```
-Cytube API → Core Plugin → Event Bus → EventFilter → Target Plugins
-                     ↓
-              SQL Module (logging)
+Cytube API → Core Plugin → Event Bus (Tagged Events) → SQL Plugin (Logger Middleware)
+                                 ↓                            ↓
+                           EventFilter                  Selective Logging
+                                 ↓
+                          Target Plugins
 ```
 
 ## Core Components
@@ -68,28 +81,56 @@ Cytube API → Core Plugin → Event Bus → EventFilter → Target Plugins
 - Thread-safe message writing with mutex protection
 - Automatic ping/pong handling for connection keepalive
 
-**SQL Module**:
-- PostgreSQL connection management with connection pooling
-- Raw SQL query execution via event bus
-- Input/output validation for data integrity
-- Per-plugin schema management with standardized patterns
+**Note**: SQL functionality has been moved to a standalone SQL Plugin (see section 3.5)
 
 ### 3. Event Bus System
 
-**Implementation**: Asynchronous Go channels with configurable buffers
+**Implementation**: Enhanced asynchronous message passing with bidirectional support
+
+**Core Features**:
+- Configurable channel buffers with pattern-based sizing
+- Request/Response infrastructure with correlation IDs
+- Event tagging and metadata for routing decisions
+- Priority-based message handling
+- Non-blocking sends with dropped event metrics
 
 **Message Types**:
-- `cytube.event.*` - Events from Cytube channel
-- `sql.request` - Database query requests  
-- `sql.response` - Database query results
-- `plugin.request.*` - Inter-plugin communication
+- `cytube.event.*` - Tagged events from Cytube channel
+- `sql.query` - Database query requests with responses
+- `sql.exec` - Database execute requests with responses
+- `log.request` - Explicit logging requests to SQL plugin
+- `log.batch` - Batch logging for performance
+- `plugin.request.*` - Inter-plugin communication with reply-to
+- `plugin.response.*` - Response messages with correlation
 
 **Communication Patterns**:
-- **Broadcast**: Core → All plugins (Cytube events)
-- **Direct Forwarding**: EventFilter → Specific plugins
-- **Request/Response**: Plugin ↔ SQL module
+- **Tagged Broadcast**: Events carry metadata for selective processing
+- **Request/Response**: Full bidirectional communication with timeouts
+- **Direct Messaging**: Targeted plugin-to-plugin communication
+- **Logger Middleware**: SQL plugin selectively logs based on rules
 
-### 4. EventFilter Plugin
+### 4. SQL Plugin
+
+- **Purpose**: Standalone database service with selective logging
+- **Architecture**: Completely decoupled from Core plugin
+- **Functionality**:
+  - PostgreSQL connection pooling and management
+  - Query/Execute request handling via EventBus
+  - Logger middleware for selective event logging
+  - Configuration-driven logging rules
+  - Batch logging support for performance
+- **Logger Middleware**:
+  - Pattern-based event subscriptions
+  - Transform functions for custom logging
+  - Dynamic rule configuration
+  - Selective field extraction
+- **Database Operations**:
+  - Synchronous queries with correlation
+  - Transaction support
+  - Schema management per plugin
+  - Connection health monitoring
+
+### 5. EventFilter Plugin
 
 - **Purpose**: Unified event filtering, routing, and command processing
 - **Functionality**: 
@@ -124,8 +165,9 @@ Cytube API → Core Plugin → Event Bus → EventFilter → Target Plugins
 
 - **Non-blocking**: Drop events for slow plugins rather than blocking
 - **No Replay**: Simple event loss rather than complex buffering
-- **EventFilter Failure**: Pause all event processing except SQL logging
-- **Core Continuity**: Core always runs for SQL logging (chat history)
+- **EventFilter Failure**: Pause command processing but continue event flow
+- **SQL Plugin Failure**: Events continue flowing, logging degrades gracefully
+- **Selective Logging**: Only configured events are logged to database
 
 ## Configuration Management
 
@@ -138,23 +180,45 @@ Cytube API → Core Plugin → Event Bus → EventFilter → Target Plugins
       "channel": "your-channel-name",
       "reconnect_attempts": 10,
       "cooldown_minutes": 30
-    },
-    "database": {
-      "host": "localhost",
-      "port": 5432,
-      "database": "daz",
-      "user": "***REMOVED***",
-      "password": "secure_password"
     }
   },
   "event_bus": {
     "buffer_sizes": {
       "cytube.event": 1000,
-      "sql.request": 100,
+      "sql.query": 100,
+      "sql.exec": 100,
+      "log.request": 500,
       "plugin.request": 50
-    }
+    },
+    "request_timeout": "30s",
+    "enable_metrics": true
   },
   "plugins": {
+    "sql": {
+      "enabled": true,
+      "database": {
+        "host": "localhost",
+        "port": 5432,
+        "database": "daz",
+        "user": "***REMOVED***",
+        "password": "secure_password",
+        "max_connections": 25,
+        "connection_timeout": "10s"
+      },
+      "logger_rules": [
+        {
+          "event_pattern": "cytube.event.chatMsg",
+          "enabled": true,
+          "table": "daz_chat_log",
+          "fields": ["username", "message", "timestamp"]
+        },
+        {
+          "event_pattern": "cytube.event.user*",
+          "enabled": true,
+          "table": "***REMOVED***_activity"
+        }
+      ]
+    },
     "filter": {
       "enabled": true,
       "command_prefix": "!"
@@ -193,18 +257,44 @@ type Plugin interface {
 }
 
 type EventBus interface {
-    // Core broadcasting
-    Broadcast(eventType string, data interface{}) error
+    // Core broadcasting with tagged events
+    Broadcast(eventType string, data *EventData) error
     
     // Direct plugin communication
-    Send(target string, eventType string, data interface{}) error
+    Send(target string, eventType string, data *EventData) error
     
-    // SQL operations
-    Query(sql string, params ...interface{}) (QueryResult, error)
-    Exec(sql string, params ...interface{}) error
+    // Request/Response pattern
+    Request(ctx context.Context, target string, eventType string, data *EventData) (*EventData, error)
     
     // Event subscription
     Subscribe(eventType string, handler EventHandler) error
+    
+    // Plugin lifecycle
+    RegisterPlugin(name string, plugin Plugin) error
+    UnregisterPlugin(name string) error
+}
+
+// Enhanced event data with metadata
+type EventData struct {
+    // Event metadata
+    CorrelationID string
+    Source        string
+    Target        string
+    Timestamp     time.Time
+    Priority      int
+    
+    // Logging metadata
+    Loggable      bool
+    LogLevel      string
+    Tags          []string
+    
+    // Event payload
+    Type          string
+    Data          interface{}
+    
+    // Request/Response
+    ReplyTo       string
+    Timeout       time.Duration
 }
 ```
 
@@ -271,9 +361,10 @@ type UserLeaveEvent struct {
 }
 ```
 
-### SQL Communication
+### SQL Plugin Communication
 
 ```go
+// Database operations
 type SQLRequest struct {
     ID        string          `json:"id"`
     Query     string          `json:"query"`
@@ -288,6 +379,27 @@ type SQLResponse struct {
     Error     error           `json:"error,omitempty"`
     Rows      []byte          `json:"rows,omitempty"`    // Raw result data
     RowCount  int64           `json:"row_count,omitempty"`
+}
+
+// Logger middleware operations
+type LogRequest struct {
+    Event      *EventData               `json:"event"`
+    Table      string                   `json:"table,omitempty"`
+    Fields     map[string]interface{}   `json:"fields,omitempty"`
+    Transform  bool                     `json:"transform"`
+}
+
+type LogBatchRequest struct {
+    Events     []*EventData             `json:"events"`
+    Table      string                   `json:"table"`
+    BatchSize  int                      `json:"batch_size"`
+}
+
+type LoggerRule struct {
+    EventPattern string                  `json:"event_pattern"`
+    Enabled      bool                    `json:"enabled"`
+    Table        string                  `json:"table"`
+    Fields       []string                `json:"fields"`
 }
 ```
 
@@ -328,49 +440,88 @@ type PluginResponse struct {
 - Authentication requires 2-second delay between channel join and login
 - All interface{} usage replaced with concrete types for type safety
 
-### Phase 2: SQL Integration (Week 2) ✅ COMPLETE
+### Phase 2: SQL Plugin Architecture (Week 2) 🔄 REDESIGNED
 - [x] PostgreSQL connection management with pgx driver
-- [x] SQL module within core plugin using concrete types
-- [x] Basic event logging to database (chat messages, user activity, media changes)
+- [ ] SQL plugin as standalone component (no longer embedded in Core)
+- [ ] Logger middleware pattern for selective event logging
+- [ ] Configuration-driven logging rules
+- [ ] Batch logging support for performance
 - [x] Schema migration system with versioned migrations
 - [x] Raw SQL query handling with parameterized queries
 
+**Architectural Changes:**
+- SQL functionality extracted from Core plugin into standalone SQL plugin
+- EventBus-based communication replaces direct method calls
+- Selective logging based on configuration rules
+- Logger middleware subscribes to specific event patterns
+- Plugins explicitly request logging via log.request events
+- Bidirectional communication for all SQL operations
+
+### Phase 3: Enhanced Event Bus (Week 3) 🔄 ENHANCED
+- [x] Go channel-based message passing
+- [x] Message type routing (dot notation)
+- [x] Configurable buffer sizes
+- [x] Non-blocking event distribution
+- [x] Plugin registration system
+- [ ] Request/Response infrastructure with correlation IDs
+- [ ] Event tagging and metadata system
+- [ ] Priority-based message handling
+- [ ] Bidirectional communication patterns
+- [ ] Response routing and timeout handling
+
+**Enhancement Notes:**
+- EventBus now starts first before all plugins
+- Added full request/response pattern support
+- Event metadata includes source, target, correlation ID, tags
+- Logger-specific routing based on event tags
+- Support for synchronous and asynchronous operations
+- Enhanced metrics for monitoring dropped events
+
+### Phase 4: Filter Plugin (Week 4) ✅ COMPLETE
+- [x] Event analysis and routing logic
+- [x] Direct message forwarding
+- [x] Command detection and parsing
+- [x] Error handling for routing failures
+- [x] Configuration-based routing rules
+
 **Implementation Notes:**
-- Successfully implemented with pgx v5 for PostgreSQL connectivity
-- Core plugin integrates both Cytube connection and SQL module
-- Event persistence working for all chat messages with JSONB storage
-- Connection pooling configured with max connections and timeouts
-- Schema includes indexes on timestamp, channel, and username
-- Tested live with real Cytube connection - captured and stored 8 messages
-- Login functionality added to core plugin with proper 2-second delay
+- Merged filter and commandrouter plugins into unified EventFilter plugin
+- Event routing with wildcard pattern matching (e.g., `cytube.event.*`)
+- Command detection with configurable prefix (default: "!")
+- Command registry with permissions and alias support
+- Error handling with logging for failed routes
+- Database-backed configuration with `daz_eventfilter_*` tables
 
-### Phase 3: Event Bus (Week 3)
-- [ ] Go channel-based message passing
-- [ ] Message type routing (dot notation)
-- [ ] Configurable buffer sizes
-- [ ] Non-blocking event distribution
-- [ ] Plugin registration system
+### Phase 5: Plugin Framework (Week 5-6) ⚠️ MOSTLY COMPLETE
+- [x] Standardized plugin interface
+- [x] Plugin lifecycle management
+- [x] Inter-plugin communication
+- [~] Health monitoring system (partial)
+- [x] Example plugins (commands, logging)
 
-### Phase 4: Filter Plugin (Week 4)
-- [ ] Event analysis and routing logic
-- [ ] Direct message forwarding
-- [ ] Command detection and parsing
-- [ ] Error handling for routing failures
-- [ ] Configuration-based routing rules
+**Implementation Notes:**
+- Standard Plugin interface with Init, Start, Stop, HandleEvent, Status methods
+- Proper lifecycle management with graceful shutdown
+- Inter-plugin messaging via EventBus Send() and Broadcast()
+- Multiple working plugins: about, help, uptime, usertracker, mediatracker, analytics
+- Health monitoring framework exists but needs metrics collection implementation
 
-### Phase 5: Plugin Framework (Week 5-6)
-- [ ] Standardized plugin interface
-- [ ] Plugin lifecycle management
-- [ ] Inter-plugin communication
-- [ ] Health monitoring system
-- [ ] Example plugins (commands, logging)
-
-### Phase 6: Production Hardening (Week 7-8)
-- [ ] Comprehensive error handling
+### Phase 6: Production Hardening (Week 7-8) ⚠️ IN PROGRESS
+- [~] Comprehensive error handling (improved)
 - [ ] Performance optimization
-- [ ] Monitoring and metrics
-- [ ] Documentation and tests
-- [ ] Deployment scripts
+- [~] Monitoring and metrics (basic metrics added)
+- [~] Documentation and tests (good coverage)
+- [x] Deployment scripts
+
+**Implementation Notes:**
+- Fixed ignored errors in WebSocket disconnect handling
+- Added dropped event tracking and metrics to EventBus
+- Test coverage: Most packages >50%, core components >70%
+- Created deployment options:
+  - Docker with docker-compose.yml
+  - Systemd service with security hardening
+  - Unified deploy.sh script for both methods
+- Basic metrics: Dropped event counts available via GetDroppedEventCounts()
 
 ## Technical Implementation Details
 
@@ -507,12 +658,29 @@ func (p *CommandPlugin) handleCommand(event *framework.ChatMessageEvent) error {
         return nil
     }
     
+    // Log command execution
+    p.bus.Send("sql", "log.request", &framework.EventData{
+        Source: "command",
+        Loggable: true,
+        LogLevel: "info",
+        Tags: []string{"command", cmd},
+        Data: map[string]interface{}{
+            "command": cmd,
+            "user": event.Username,
+            "args": parts[1:],
+        },
+    })
+    
     response := handler(event, parts[1:])
     if response != "" {
-        // Send response back through core
-        return p.bus.Send("core", "cytube.send_message", map[string]string{
-            "message": response,
-            "channel": event.ChannelName,
+        // Send response back through core with metadata
+        return p.bus.Send("core", "cytube.send_message", &framework.EventData{
+            Source: "command",
+            Target: "core",
+            Data: map[string]string{
+                "message": response,
+                "channel": event.ChannelName,
+            },
         })
     }
     
@@ -527,22 +695,38 @@ func init() {
 
 ## Database Schema Examples
 
-### Core Tables
+### SQL Plugin Tables
 
 ```sql
--- Connection retry tracking
-CREATE TABLE daz_core_connection_state (
+-- Logger configuration
+CREATE TABLE daz_sql_logger_rules (
     id SERIAL PRIMARY KEY,
-    connection_type VARCHAR(50) NOT NULL,
-    last_attempt TIMESTAMP NOT NULL,
-    retry_count INT DEFAULT 0,
-    in_cooldown BOOLEAN DEFAULT FALSE,
-    cooldown_until TIMESTAMP,
-    UNIQUE(connection_type)
+    event_pattern VARCHAR(255) NOT NULL,
+    enabled BOOLEAN DEFAULT TRUE,
+    table_name VARCHAR(255) NOT NULL,
+    fields TEXT[], -- Array of field names to extract
+    transform_function VARCHAR(255),
+    priority INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW(),
+    INDEX idx_pattern (event_pattern)
 );
 
--- Event log for chat history
-CREATE TABLE daz_core_chat_log (
+-- Generic event log (for events without specific tables)
+CREATE TABLE daz_sql_event_log (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMP NOT NULL,
+    event_type VARCHAR(255) NOT NULL,
+    source_plugin VARCHAR(100),
+    correlation_id VARCHAR(100),
+    event_data JSONB NOT NULL,
+    tags TEXT[],
+    INDEX idx_timestamp (timestamp),
+    INDEX idx_event_type (event_type),
+    INDEX idx_tags USING GIN (tags)
+);
+
+-- Chat history (populated by logger middleware)
+CREATE TABLE daz_chat_log (
     id BIGSERIAL PRIMARY KEY,
     timestamp TIMESTAMP NOT NULL,
     channel VARCHAR(255) NOT NULL,

@@ -1,7 +1,7 @@
 .PHONY: build run test fmt lint clean
 
 build:
-	go build -o bin/daz cmd/daz/main.go
+	@./scripts/build-daz.sh
 
 run: build
 	./bin/daz

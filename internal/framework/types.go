@@ -7,7 +7,8 @@ import (
 // EventData represents all possible data types that can be sent through the event bus
 type EventData struct {
 	// For chat messages
-	ChatMessage *ChatMessageData `json:"chat_message,omitempty"`
+	ChatMessage    *ChatMessageData    `json:"chat_message,omitempty"`
+	PrivateMessage *PrivateMessageData `json:"private_message,omitempty"`
 
 	// For user events
 	UserJoin  *UserJoinData  `json:"user_join,omitempty"`
@@ -15,6 +16,8 @@ type EventData struct {
 
 	// For video events
 	VideoChange *VideoChangeData `json:"video_change,omitempty"`
+	QueueUpdate *QueueUpdateData `json:"queue_update,omitempty"`
+	MediaUpdate *MediaUpdateData `json:"media_update,omitempty"`
 
 	// For SQL operations
 	SQLRequest  *SQLRequest  `json:"sql_request,omitempty"`
@@ -33,22 +36,34 @@ type EventData struct {
 
 // ChatMessageData represents chat message specific data
 type ChatMessageData struct {
-	Username string `json:"username"`
-	Message  string `json:"message"`
-	UserRank int    `json:"user_rank"`
-	UserID   string `json:"user_id"`
-	Channel  string `json:"channel"`
+	Username    string `json:"username"`
+	Message     string `json:"message"`
+	UserRank    int    `json:"user_rank"`
+	UserID      string `json:"user_id"`
+	Channel     string `json:"channel"`
+	MessageTime int64  `json:"message_time"`
+}
+
+// PrivateMessageData represents private message specific data
+type PrivateMessageData struct {
+	FromUser    string `json:"from_user"`
+	ToUser      string `json:"to_user"`
+	Message     string `json:"message"`
+	MessageTime int64  `json:"message_time"`
+	Channel     string `json:"channel"`
 }
 
 // UserJoinData represents user join event data
 type UserJoinData struct {
 	Username string `json:"username"`
 	UserRank int    `json:"user_rank"`
+	Channel  string `json:"channel,omitempty"`
 }
 
 // UserLeaveData represents user leave event data
 type UserLeaveData struct {
 	Username string `json:"username"`
+	Channel  string `json:"channel,omitempty"`
 }
 
 // VideoChangeData represents video change event data
@@ -57,6 +72,32 @@ type VideoChangeData struct {
 	VideoType string `json:"video_type"`
 	Duration  int    `json:"duration"`
 	Title     string `json:"title"`
+}
+
+// QueueItem represents a single item in the queue
+type QueueItem struct {
+	Position  int    `json:"position"`
+	MediaID   string `json:"media_id"`
+	MediaType string `json:"media_type"`
+	Title     string `json:"title"`
+	Duration  int    `json:"duration"`
+	QueuedBy  string `json:"queued_by"`
+	QueuedAt  int64  `json:"queued_at"` // Unix timestamp
+}
+
+// QueueUpdateData represents queue update event data
+type QueueUpdateData struct {
+	Channel     string      `json:"channel"`
+	Action      string      `json:"action"` // "add", "remove", "move", "clear", "full"
+	Items       []QueueItem `json:"items,omitempty"`
+	Position    int         `json:"position,omitempty"`     // For add/remove/move
+	NewPosition int         `json:"new_position,omitempty"` // For move
+}
+
+// MediaUpdateData represents media synchronization update data
+type MediaUpdateData struct {
+	CurrentTime float64 `json:"currentTime"`
+	Paused      bool    `json:"paused"`
 }
 
 // RawMessageData represents raw message data for sending to external systems

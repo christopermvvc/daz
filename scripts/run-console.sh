@@ -6,8 +6,8 @@ mkdir -p logs
 
 # Build if needed
 if [ ! -f "bin/daz" ]; then
-    echo "Building Daz..."
-    make build
+    echo "Binary not found. Running centralized build..."
+    ./scripts/build-daz.sh
 fi
 
 # Generate log filename with timestamp

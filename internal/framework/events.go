@@ -23,10 +23,11 @@ func (e *CytubeEvent) Timestamp() time.Time {
 
 type ChatMessageEvent struct {
 	CytubeEvent
-	Username string `json:"username"`
-	Message  string `json:"message"`
-	UserRank int    `json:"user_rank"`
-	UserID   string `json:"user_id"`
+	Username    string `json:"username"`
+	Message     string `json:"message"`
+	UserRank    int    `json:"user_rank"`
+	UserID      string `json:"user_id"`
+	MessageTime int64  `json:"message_time"`
 }
 
 type UserJoinEvent struct {
@@ -43,17 +44,41 @@ type VideoChangeEvent struct {
 	Title     string `json:"title"`
 }
 
+type MediaUpdateEvent struct {
+	CytubeEvent
+	CurrentTime float64 `json:"current_time"`
+	Paused      bool    `json:"paused"`
+}
+
 type UserLeaveEvent struct {
 	CytubeEvent
 	Username string `json:"username"`
 }
 
+type QueueEvent struct {
+	CytubeEvent
+	Action      string      `json:"action"` // "add", "remove", "move", "clear", "full"
+	Items       []QueueItem `json:"items,omitempty"`
+	Position    int         `json:"position,omitempty"`
+	NewPosition int         `json:"new_position,omitempty"`
+}
+
+// SQLParam represents a SQL parameter value that can be safely passed to queries
+// NOTE: The Value field uses `any` type because it must accept all SQL-compatible types
+// including string, int, int64, float64, bool, time.Time, []byte, and nil.
+// This is required for compatibility with database/sql driver interfaces.
+type SQLParam struct {
+	Value any `json:"value"`
+}
+
 type SQLRequest struct {
-	ID        string        `json:"id"`
-	Query     string        `json:"query"`
-	Params    []interface{} `json:"params"` // SQL params remain interface{} as per standard practice
-	Timeout   time.Duration `json:"timeout"`
-	RequestBy string        `json:"request_by"`
+	ID         string        `json:"id"`
+	Query      string        `json:"query"`
+	Params     []SQLParam    `json:"params"` // Using concrete SQLParam type
+	Timeout    time.Duration `json:"timeout"`
+	RequestBy  string        `json:"request_by"`
+	IsSync     bool          `json:"is_sync"`     // New field to indicate sync operation
+	ResponseCh string        `json:"response_ch"` // Channel ID for response delivery
 }
 
 type SQLResponse struct {
@@ -79,4 +104,138 @@ type PluginResponse struct {
 	Success bool          `json:"success"`
 	Data    *ResponseData `json:"data,omitempty"`
 	Error   string        `json:"error,omitempty"`
+}
+
+type LoginEvent struct {
+	CytubeEvent
+	Username   string   `json:"username"`
+	UserRank   int      `json:"user_rank"`
+	Success    bool     `json:"success"`
+	FailReason string   `json:"fail_reason,omitempty"`
+	IPAddress  string   `json:"ip_address,omitempty"`
+	Aliases    []string `json:"aliases,omitempty"`
+}
+
+type AddUserEvent struct {
+	CytubeEvent
+	Username   string `json:"username"`
+	UserRank   int    `json:"user_rank"`
+	AddedBy    string `json:"added_by,omitempty"`
+	Registered bool   `json:"registered"`
+	Email      string `json:"email,omitempty"`
+}
+
+type ChannelMetaEvent struct {
+	CytubeEvent
+	Field      string `json:"field"`
+	OldValue   string `json:"old_value"`
+	NewValue   string `json:"new_value"`
+	ChangedBy  string `json:"changed_by"`
+	ChangeType string `json:"change_type"`
+}
+
+type PlaylistEvent struct {
+	CytubeEvent
+	Action    string      `json:"action"`
+	Items     []QueueItem `json:"items,omitempty"`
+	Position  int         `json:"position,omitempty"`
+	FromPos   int         `json:"from_pos,omitempty"`
+	ToPos     int         `json:"to_pos,omitempty"`
+	User      string      `json:"user,omitempty"`
+	ItemCount int         `json:"item_count"`
+}
+
+// FieldValue represents a parsed field value from a generic event
+type FieldValue struct {
+	String  string  `json:"string,omitempty"`
+	Number  float64 `json:"number,omitempty"`
+	Boolean bool    `json:"boolean,omitempty"`
+	IsNull  bool    `json:"is_null,omitempty"`
+}
+
+type GenericEvent struct {
+	CytubeEvent
+	UnknownType string                `json:"unknown_type"`
+	ParsedData  map[string]FieldValue `json:"parsed_data,omitempty"`
+	RawJSON     json.RawMessage       `json:"raw_json"`
+}
+
+type SetPlaylistMetaEvent struct {
+	CytubeEvent
+	Count         int    `json:"count"`
+	RawTime       int    `json:"raw_time"`
+	FormattedTime string `json:"formatted_time"`
+}
+
+type UserCountEvent struct {
+	CytubeEvent
+	Count int `json:"count"`
+}
+
+type SetUserRankEvent struct {
+	CytubeEvent
+	Username string `json:"username"`
+	Rank     int    `json:"rank"`
+}
+
+type SetPlaylistLockedEvent struct {
+	CytubeEvent
+	Locked bool `json:"locked"`
+}
+
+type SetPermissionsEvent struct {
+	CytubeEvent
+	Permissions map[string]float64 `json:"permissions"`
+}
+
+type SetMotdEvent struct {
+	CytubeEvent
+	Motd string `json:"motd"`
+}
+
+// ChannelOption represents a single channel configuration option
+type ChannelOption struct {
+	StringValue string  `json:"string_value,omitempty"`
+	IntValue    int     `json:"int_value,omitempty"`
+	FloatValue  float64 `json:"float_value,omitempty"`
+	BoolValue   bool    `json:"bool_value,omitempty"`
+	ValueType   string  `json:"value_type"` // "string", "int", "float", "bool"
+}
+
+type ChannelOptsEvent struct {
+	CytubeEvent
+	Options map[string]ChannelOption `json:"options"`
+}
+
+type ChannelCSSJSEvent struct {
+	CytubeEvent
+	CSS     string `json:"css"`
+	CSSHash string `json:"css_hash"`
+	JS      string `json:"js"`
+	JSHash  string `json:"js_hash"`
+}
+
+type SetUserMetaEvent struct {
+	CytubeEvent
+	Username string `json:"username"`
+	AFK      bool   `json:"afk"`
+	Muted    bool   `json:"muted"`
+}
+
+type SetAFKEvent struct {
+	CytubeEvent
+	Username string `json:"username"`
+	AFK      bool   `json:"afk"`
+}
+
+type ClearVoteskipVoteEvent struct {
+	CytubeEvent
+}
+
+type PrivateMessageEvent struct {
+	CytubeEvent
+	FromUser    string `json:"from_user"`
+	ToUser      string `json:"to_user"`
+	Message     string `json:"message"`
+	MessageTime int64  `json:"message_time"`
 }

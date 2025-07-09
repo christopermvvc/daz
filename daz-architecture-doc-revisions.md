@@ -87,13 +87,264 @@ The concrete types created in Phase 1 will influence the event bus design:
 - Database schema uses `daz_eventfilter_*` prefix for all tables
 - Command Router functionality fully preserved within EventFilter
 
+**Implementation Completed**: 2025-07-07
+- Created new `internal/plugins/eventfilter/` directory
+- Merged functionality from both plugins into single codebase
+- Updated main.go to use only eventfilter plugin
+- Deleted old filter and commandrouter plugin directories
+- All tests passing with new implementation
+
+### 2025-07-07: Phase 5 Plugin Implementation
+
+#### Media Tracker Plugin
+**Purpose**: Track video plays, durations, and provide media statistics
+**Implementation**: `/internal/plugins/mediatracker/`
+
+**Features Implemented**:
+- Real-time media change tracking via `cytube.event.changeMedia` events
+- Media play history with start/end times and completion status
+- Current "now playing" status with elapsed/remaining time
+- Top played media statistics
+- PostgreSQL persistence with three tables:
+  - `daz_mediatracker_plays` - Individual play records
+  - `daz_mediatracker_queue` - Queue state (future use)
+  - `daz_mediatracker_stats` - Aggregated play counts
+
+**Integration Points**:
+- Subscribes to media change and queue events
+- Provides data via `plugin.mediatracker.nowplaying` and `plugin.mediatracker.stats` requests
+- Maintains in-memory current media state for fast queries
+
+#### Analytics Plugin
+**Purpose**: Aggregate channel statistics and provide insights
+**Implementation**: `/internal/plugins/analytics/`
+
+**Features Implemented**:
+- Real-time message and user counting
+- Hourly statistics aggregation (messages, unique users, media plays)
+- Daily statistics rollup with peak users and active hours
+- Per-user lifetime statistics tracking
+- Top chatters leaderboard
+- PostgreSQL persistence with three tables:
+  - `daz_analytics_hourly` - Hourly aggregates
+  - `daz_analytics_daily` - Daily rollups  
+  - `daz_analytics_user_stats` - Per-user statistics
+
+**Integration Points**:
+- Subscribes to chat messages for real-time tracking
+- Provides formatted stats via `plugin.analytics.stats` requests
+- Runs background aggregation tasks on configurable intervals
+
+#### Plugin Loading Order
+The current plugin initialization order in main.go:
+1. Core Plugin (Cytube connection + SQL)
+2. Filter Plugin (event filtering and command detection)
+3. UserTracker Plugin (user session tracking)
+4. MediaTracker Plugin (media play tracking)
+5. Analytics Plugin (statistics aggregation)
+6. Command Plugins (help, about, uptime)
+7. CommandRouter Plugin (command dispatch)
+
+This order ensures dependencies are satisfied:
+- Analytics depends on MediaTracker for play counts
+- Commands depend on UserTracker and MediaTracker for data
+- CommandRouter must start after all command plugins register
+
+### 2025-07-07: Configuration System Implementation
+
+#### JSON Configuration Support
+**Enhancement**: Added comprehensive configuration file support
+**Implementation**: `/internal/config/` package
+
+**Features Added**:
+- JSON configuration file loading with `-config` flag
+- Command-line flag precedence over config file values
+- Hierarchical configuration structure (core, event_bus, plugins)
+- Type-safe configuration with validation
+- Default configuration values when file not present
+
+**Configuration Structure**:
+```json
+{
+  "core": {
+    "cytube": { /* connection settings */ },
+    "database": { /* PostgreSQL settings */ }
+  },
+  "event_bus": {
+    "buffer_sizes": { /* event type buffer sizes */ }
+  },
+  "plugins": {
+    "pluginname": { /* plugin-specific config */ }
+  }
+}
+```
+
+**Benefits**:
+- Easier deployment configuration
+- No need to specify all flags on command line
+- Plugin-specific configuration sections
+- Environment-specific config files
+
+### 2025-07-07: Plugin Interface Standardization
+
+#### framework.Plugin Interface Enhancement
+**Original**: Inconsistent plugin initialization patterns
+**Enhancement**: Standardized all plugins to implement framework.Plugin interface
+
+**Changes Made**:
+1. Added `Name()` method to framework.Plugin interface
+2. All plugins now implement consistent interface:
+   - `Init(config json.RawMessage, bus EventBus) error`
+   - `Start() error`
+   - `Stop() error`
+   - `HandleEvent(event Event) error`
+   - `Status() PluginStatus`
+   - `Name() string`
+
+3. Refactored feature plugins (eventfilter, usertracker, mediatracker, analytics):
+   - Added `New()` constructor returning framework.Plugin
+   - Replaced custom `Initialize()` with standard `Init()`
+   - Removed context parameter from HandleEvent
+   - Added proper Status() implementation
+
+4. Maintained backward compatibility with deprecated methods
+
+**Plugin Loading in main.go**:
+```go
+plugins := []struct {
+    name   string
+    plugin framework.Plugin
+}{
+    {"eventfilter", eventfilter.New()},
+    {"usertracker", usertracker.New()},
+    // ... all plugins
+}
+
+for _, p := range plugins {
+    pluginConfig := cfg.GetPluginConfig(p.name)
+    p.plugin.Init(pluginConfig, bus)
+    p.plugin.Start()
+}
+```
+
+**Benefits**:
+- Consistent plugin lifecycle management
+- Configuration delivery to all plugins
+- Better monitoring with Status() method
+- Foundation for dynamic plugin loading
+- Simplified main.go initialization code
+
+### 2025-07-08: SQL Plugin Compartmentalization and EventBus Enhancement
+
+#### Major Architectural Change: SQL as Standalone Plugin
+**Original Design**: SQL module embedded within Core plugin with automatic event logging
+**New Design**: SQL as independent plugin communicating exclusively via EventBus
+
+**Rationale**: 
+1. **Separation of Concerns**: Core plugin should focus solely on Cytube connection
+2. **Selective Logging**: Not all events need database persistence
+3. **Performance**: Reduce database load with configurable logging rules
+4. **Flexibility**: Plugins can choose what to persist
+5. **True Modularity**: SQL becomes just another plugin, not a special case
+
+**Key Changes**:
+
+1. **EventBus as Primary Communication System**:
+   - EventBus now starts first, before all plugins
+   - Enhanced with request/response infrastructure
+   - Added event tagging and metadata system
+   - Full bidirectional communication support
+   - Correlation IDs for tracking requests/responses
+
+2. **SQL Plugin Architecture**:
+   - Completely decoupled from Core plugin
+   - Implements logger middleware pattern
+   - Configuration-driven logging rules
+   - Subscribes to specific event patterns
+   - Provides database services via EventBus
+
+3. **Logger Middleware Pattern**:
+   ```json
+   "logger_rules": [
+     {
+       "event_pattern": "cytube.event.chatMsg",
+       "enabled": true,
+       "table": "daz_chat_log",
+       "fields": ["username", "message", "timestamp"]
+     }
+   ]
+   ```
+
+4. **New Startup Sequence**:
+   1. EventBus initialization (with enhanced features)
+   2. SQL Plugin (database service)
+   3. Core Plugin (Cytube connection only)
+   4. EventFilter Plugin
+   5. Feature Plugins
+
+5. **Data Flow Changes**:
+   - **Before**: Cytube → Core → Direct SQL logging → EventBus → Plugins
+   - **After**: Cytube → Core → EventBus (tagged) → SQL Plugin (selective) → Other Plugins
+
+6. **EventData Enhancement**:
+   ```go
+   type EventData struct {
+       // Metadata for routing and logging
+       CorrelationID string
+       Source        string
+       Target        string
+       Timestamp     time.Time
+       Priority      int
+       
+       // Logging control
+       Loggable      bool
+       LogLevel      string
+       Tags          []string
+       
+       // Payload
+       Type          string
+       Data          interface{}
+       
+       // Request/Response
+       ReplyTo       string
+       Timeout       time.Duration
+   }
+   ```
+
+**Benefits**:
+1. **Reduced Database Load**: Only log what's needed
+2. **Better Performance**: Selective logging improves throughput
+3. **Plugin Independence**: SQL is no longer special
+4. **Flexible Logging**: Plugins can request specific logging
+5. **True Decoupling**: No direct dependencies between Core and SQL
+6. **Enhanced Communication**: Full request/response patterns
+
+**Migration Impact**:
+- Core plugin needs refactoring to remove SQL module
+- All events must be properly tagged with metadata
+- Existing plugins need updates for new EventData structure
+- SQL plugin must be extracted as standalone component
+- EventBus requires enhancement for new features
+
+**Implementation Status**: 🔄 IN PROGRESS
+- [x] Architecture design completed
+- [x] EventBus enhancement plan defined
+- [x] SQL plugin structure designed
+- [ ] Core plugin refactoring
+- [ ] SQL plugin implementation
+- [ ] EventBus enhancements
+- [ ] Plugin migrations
+- [ ] Testing and validation
+
 ## Architecture Principles Maintained
 
 Despite these revisions, the core architectural principles remain intact:
-- ✅ Plugin-based modularity
-- ✅ Event-driven communication
-- ✅ PostgreSQL persistence focus
+- ✅ Plugin-based modularity (enhanced with SQL as plugin)
+- ✅ Event-driven communication (enhanced with bidirectional support)
+- ✅ PostgreSQL persistence focus (now selective)
 - ✅ Graceful degradation
 - ✅ Restart resilience
+- ✅ Type safety (no interface{})
+- ✅ Clean, testable code
 
 All changes enhance rather than contradict the original design goals.

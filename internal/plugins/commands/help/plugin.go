@@ -107,6 +107,10 @@ func (p *Plugin) Status() framework.PluginStatus {
 	}
 }
 
+func (p *Plugin) Name() string {
+	return "help"
+}
+
 func (p *Plugin) registerCommand() {
 	// Send registration event to command router
 	regEvent := &framework.EventData{
@@ -152,7 +156,6 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 
 func (p *Plugin) handleHelpCommand(req *framework.PluginRequest) {
 	// For now, provide a static help message until async queries are implemented
-	// TODO: Implement async query pattern or direct DB access
 
 	lines := []string{
 		"Available Commands:",

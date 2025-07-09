@@ -319,7 +319,12 @@ func (c *WebSocketClient) joinChannel() error {
 		Name: c.channel,
 	}
 
-	message, err := formatSocketIOMessage(MessageTypeEvent, "joinChannel", joinData)
+	joinDataJSON, err := json.Marshal(joinData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal join data: %w", err)
+	}
+
+	message, err := formatSocketIOMessage(MessageTypeEvent, "joinChannel", joinDataJSON)
 	if err != nil {
 		return fmt.Errorf("failed to format join message: %w", err)
 	}
@@ -367,10 +372,16 @@ func (c *WebSocketClient) Disconnect() error {
 	defer c.writeMu.Unlock()
 
 	if c.conn != nil {
-		// Send disconnect message (ignore errors as connection may be closed)
-		_ = c.conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
-		_ = c.conn.WriteMessage(websocket.TextMessage, []byte("41"))
-		_ = c.conn.Close()
+		// Send disconnect message
+		if err := c.conn.SetWriteDeadline(time.Now().Add(1 * time.Second)); err != nil {
+			log.Printf("Error setting write deadline during disconnect: %v", err)
+		}
+		if err := c.conn.WriteMessage(websocket.TextMessage, []byte("41")); err != nil {
+			log.Printf("Error sending disconnect message: %v", err)
+		}
+		if err := c.conn.Close(); err != nil {
+			log.Printf("Error closing WebSocket connection: %v", err)
+		}
 		c.conn = nil
 	}
 
@@ -379,7 +390,7 @@ func (c *WebSocketClient) Disconnect() error {
 }
 
 // Send sends a message to the server
-func (c *WebSocketClient) Send(eventType string, data any) error {
+func (c *WebSocketClient) Send(eventType string, data EventPayload) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -387,7 +398,17 @@ func (c *WebSocketClient) Send(eventType string, data any) error {
 		return fmt.Errorf("not connected")
 	}
 
-	message, err := formatSocketIOMessage(MessageTypeEvent, eventType, data)
+	// Marshal data to JSON
+	var dataJSON json.RawMessage
+	if data != nil {
+		marshaled, err := json.Marshal(data)
+		if err != nil {
+			return fmt.Errorf("failed to marshal data: %w", err)
+		}
+		dataJSON = marshaled
+	}
+
+	message, err := formatSocketIOMessage(MessageTypeEvent, eventType, dataJSON)
 	if err != nil {
 		return fmt.Errorf("failed to format message: %w", err)
 	}

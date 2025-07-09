@@ -34,16 +34,20 @@ type HandshakeResponse struct {
 	MaxPayload   int      `json:"maxPayload"`
 }
 
-func formatSocketIOMessage(msgType int, event string, data any) (string, error) {
+func formatSocketIOMessage(msgType int, event string, data json.RawMessage) (string, error) {
 	// Format: 42["event_name",data]
-	eventData := []any{event}
-	if data != nil {
-		eventData = append(eventData, data)
+	// First element is the event name as a JSON string
+	eventNameJSON, err := json.Marshal(event)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal event name: %w", err)
 	}
 
-	jsonData, err := json.Marshal(eventData)
-	if err != nil {
-		return "", err
+	// Build the array manually
+	var jsonData []byte
+	if len(data) > 0 {
+		jsonData = []byte(fmt.Sprintf("[%s,%s]", eventNameJSON, data))
+	} else {
+		jsonData = []byte(fmt.Sprintf("[%s]", eventNameJSON))
 	}
 
 	return fmt.Sprintf("%s%d%s", EngineIOMessage, msgType, jsonData), nil

@@ -1,7 +1,9 @@
 package usertracker
 
 import (
+	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -50,13 +52,55 @@ func (m *MockEventBus) Send(target string, eventType string, data *framework.Eve
 	return nil
 }
 
-func (m *MockEventBus) Query(sql string, params ...interface{}) (framework.QueryResult, error) {
-	m.queries = append(m.queries, mockQuery{query: sql, params: params})
+func (m *MockEventBus) Query(sql string, params ...framework.SQLParam) (framework.QueryResult, error) {
+	// Convert SQLParam to interface{} for storage
+	interfaceParams := make([]interface{}, len(params))
+	for i, p := range params {
+		interfaceParams[i] = p.Value
+	}
+	m.queries = append(m.queries, mockQuery{query: sql, params: interfaceParams})
 	return &MockQueryResult{}, nil
 }
 
-func (m *MockEventBus) Exec(sql string, params ...interface{}) error {
-	m.execs = append(m.execs, mockExec{query: sql, params: params})
+func (m *MockEventBus) Exec(sql string, params ...framework.SQLParam) error {
+	// Convert SQLParam to interface{} for storage
+	interfaceParams := make([]interface{}, len(params))
+	for i, p := range params {
+		interfaceParams[i] = p.Value
+	}
+	m.execs = append(m.execs, mockExec{query: sql, params: interfaceParams})
+	return nil
+}
+
+func (m *MockEventBus) QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error) {
+	return nil, fmt.Errorf("sync queries not supported in mock")
+}
+
+func (m *MockEventBus) ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error) {
+	return nil, fmt.Errorf("sync exec not supported in mock")
+}
+
+func (m *MockEventBus) BroadcastWithMetadata(eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
+	return m.Broadcast(eventType, data)
+}
+
+func (m *MockEventBus) SendWithMetadata(target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
+	return m.Send(target, eventType, data)
+}
+
+func (m *MockEventBus) Request(ctx context.Context, target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) (*framework.EventData, error) {
+	return nil, fmt.Errorf("request not supported in mock")
+}
+
+func (m *MockEventBus) DeliverResponse(correlationID string, response *framework.EventData, err error) {
+	// Mock implementation - can be empty
+}
+
+func (m *MockEventBus) RegisterPlugin(name string, plugin framework.Plugin) error {
+	return nil
+}
+
+func (m *MockEventBus) UnregisterPlugin(name string) error {
 	return nil
 }
 
@@ -70,6 +114,14 @@ func (m *MockEventBus) Subscribe(eventType string, handler framework.EventHandle
 
 func (m *MockEventBus) SetSQLHandlers(queryHandler, execHandler framework.EventHandler) {
 	// Not needed for tests
+}
+
+func (m *MockEventBus) GetDroppedEventCounts() map[string]int64 {
+	return make(map[string]int64)
+}
+
+func (m *MockEventBus) GetDroppedEventCount(eventType string) int64 {
+	return 0
 }
 
 func (r *MockQueryResult) Scan(dest ...interface{}) error {
@@ -115,10 +167,6 @@ func TestPluginInitialization(t *testing.T) {
 	if plugin.Name() != "usertracker" {
 		t.Errorf("Expected plugin name 'usertracker', got '%s'", plugin.Name())
 	}
-
-	if plugin.SupportsStream() {
-		t.Error("Plugin should not support streaming")
-	}
 }
 
 func TestPluginInitialize(t *testing.T) {
@@ -130,10 +178,8 @@ func TestPluginInitialize(t *testing.T) {
 		t.Fatalf("Failed to initialize plugin: %v", err)
 	}
 
-	// Check that tables were created
-	if len(mockBus.execs) != 2 {
-		t.Errorf("Expected 2 table creation queries, got %d", len(mockBus.execs))
-	}
+	// Table creation is now deferred to Start(), not Init()
+	// So we should not expect it here
 }
 
 func TestPluginStart(t *testing.T) {
@@ -148,6 +194,11 @@ func TestPluginStart(t *testing.T) {
 	err = plugin.Start()
 	if err != nil {
 		t.Fatalf("Failed to start plugin: %v", err)
+	}
+
+	// Check that tables were created during Start
+	if len(mockBus.execs) != 2 {
+		t.Errorf("Expected 2 table creation queries during Start, got %d", len(mockBus.execs))
 	}
 
 	// Check subscriptions

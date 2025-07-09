@@ -106,7 +106,7 @@ func TestDiscoverServer(t *testing.T) {
 						t.Fatalf("failed to encode response: %v", err)
 					}
 				} else if tt.response.invalidJSON != "" {
-					w.Write([]byte(tt.response.invalidJSON))
+					_, _ = w.Write([]byte(tt.response.invalidJSON))
 				}
 			}))
 			defer ts.Close()

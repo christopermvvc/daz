@@ -37,9 +37,10 @@ type EventBus struct {
 	routerMu      sync.RWMutex
 
 	// Sync operation tracking
-	pendingQueries map[string]chan *queryResponse
-	pendingExecs   map[string]chan *execResponse
-	syncMu         sync.RWMutex
+	pendingQueries  map[string]chan *queryResponse
+	pendingExecs    map[string]chan *execResponse
+	pendingRequests map[string]chan *pluginResponse
+	syncMu          sync.RWMutex
 
 	// Mutexes for thread safety
 	chanMu sync.RWMutex
@@ -82,6 +83,12 @@ type execResponse struct {
 	err    error
 }
 
+// pluginResponse holds the response from a plugin request
+type pluginResponse struct {
+	data *framework.EventData
+	err  error
+}
+
 // Config holds event bus configuration
 type Config struct {
 	BufferSizes map[string]int
@@ -106,16 +113,17 @@ func NewEventBus(config *Config) *EventBus {
 	}
 
 	eb := &EventBus{
-		channels:       make(map[string]chan *eventMessage),
-		subscribers:    make(map[string][]subscriberInfo),
-		plugins:        make(map[string]framework.Plugin),
-		bufferSizes:    bufferSizes,
-		activeRouters:  make(map[string]bool),
-		pendingQueries: make(map[string]chan *queryResponse),
-		pendingExecs:   make(map[string]chan *execResponse),
-		droppedEvents:  make(map[string]int64),
-		ctx:            ctx,
-		cancel:         cancel,
+		channels:        make(map[string]chan *eventMessage),
+		subscribers:     make(map[string][]subscriberInfo),
+		plugins:         make(map[string]framework.Plugin),
+		bufferSizes:     bufferSizes,
+		activeRouters:   make(map[string]bool),
+		pendingQueries:  make(map[string]chan *queryResponse),
+		pendingExecs:    make(map[string]chan *execResponse),
+		pendingRequests: make(map[string]chan *pluginResponse),
+		droppedEvents:   make(map[string]int64),
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 
 	// Initialize channels for known event types
@@ -127,12 +135,17 @@ func NewEventBus(config *Config) *EventBus {
 }
 
 // RegisterPlugin registers a plugin with the event bus
-func (eb *EventBus) RegisterPlugin(name string, plugin framework.Plugin) {
+func (eb *EventBus) RegisterPlugin(name string, plugin framework.Plugin) error {
 	eb.plugMu.Lock()
 	defer eb.plugMu.Unlock()
 
+	if _, exists := eb.plugins[name]; exists {
+		return fmt.Errorf("plugin %s already registered", name)
+	}
+
 	eb.plugins[name] = plugin
 	log.Printf("[EventBus] Registered plugin: %s", name)
+	return nil
 }
 
 // SetSQLHandlers sets the SQL query and exec handlers (called by core plugin)
@@ -206,12 +219,17 @@ func (eb *EventBus) Send(target string, eventType string, data *framework.EventD
 }
 
 // Query delegates SQL queries to the core plugin
-func (eb *EventBus) Query(sql string, params ...interface{}) (framework.QueryResult, error) {
+func (eb *EventBus) Query(sql string, params ...framework.SQLParam) (framework.QueryResult, error) {
 	// Delegate to QuerySync with a 30-second timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	rows, err := eb.QuerySync(ctx, sql, params...)
+	// Convert SQLParam to interface{} for QuerySync
+	interfaceParams := make([]interface{}, len(params))
+	for i, p := range params {
+		interfaceParams[i] = p.Value
+	}
+	rows, err := eb.QuerySync(ctx, sql, interfaceParams...)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +238,7 @@ func (eb *EventBus) Query(sql string, params ...interface{}) (framework.QueryRes
 }
 
 // Exec delegates SQL exec operations to the core plugin
-func (eb *EventBus) Exec(sql string, params ...interface{}) error {
+func (eb *EventBus) Exec(sql string, params ...framework.SQLParam) error {
 	if eb.sqlExecHandler == nil {
 		return fmt.Errorf("SQL exec handler not configured")
 	}
@@ -244,6 +262,7 @@ func (eb *EventBus) Exec(sql string, params ...interface{}) error {
 }
 
 // QuerySync performs a synchronous SQL query with context support
+// Note: This method still uses interface{} to maintain compatibility with framework.EventBus interface
 func (eb *EventBus) QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error) {
 	// Generate correlation ID
 	correlationID := generateID()
@@ -264,11 +283,17 @@ func (eb *EventBus) QuerySync(ctx context.Context, sql string, params ...interfa
 		close(respCh)
 	}()
 
+	// Convert interface{} params to SQLParam for framework
+	sqlParams := make([]framework.SQLParam, len(params))
+	for i, p := range params {
+		sqlParams[i] = framework.SQLParam{Value: p}
+	}
+
 	// Create sync request
 	request := &framework.SQLRequest{
 		ID:         correlationID,
 		Query:      sql,
-		Params:     params,
+		Params:     sqlParams,
 		IsSync:     true,
 		ResponseCh: correlationID,
 		RequestBy:  "sync_query",
@@ -294,6 +319,7 @@ func (eb *EventBus) QuerySync(ctx context.Context, sql string, params ...interfa
 }
 
 // ExecSync performs a synchronous SQL exec with context support
+// Note: This method still uses interface{} to maintain compatibility with framework.EventBus interface
 func (eb *EventBus) ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error) {
 	// Generate correlation ID
 	correlationID := generateID()
@@ -314,11 +340,17 @@ func (eb *EventBus) ExecSync(ctx context.Context, sql string, params ...interfac
 		close(respCh)
 	}()
 
+	// Convert interface{} params to SQLParam for framework
+	sqlParams := make([]framework.SQLParam, len(params))
+	for i, p := range params {
+		sqlParams[i] = framework.SQLParam{Value: p}
+	}
+
 	// Create sync request
 	request := &framework.SQLRequest{
 		ID:         correlationID,
 		Query:      sql,
-		Params:     params,
+		Params:     sqlParams,
 		IsSync:     true,
 		ResponseCh: correlationID,
 		RequestBy:  "sync_exec",
@@ -370,7 +402,22 @@ func (eb *EventBus) Subscribe(eventType string, handler framework.EventHandler) 
 func (eb *EventBus) Start() error {
 	log.Println("[EventBus] Starting event routing")
 
-	// Routers are started on-demand when subscribers are added
+	// Pre-start routers for critical event types
+	criticalTypes := []string{
+		"cytube.event",
+		"sql.query",
+		"sql.exec",
+		"log.request",
+		"plugin.request",
+		"plugin.response",
+	}
+
+	for _, eventType := range criticalTypes {
+		ch := eb.getOrCreateChannel(eventType, eb.getBufferSize(eventType))
+		eb.startRouter(eventType, ch)
+	}
+
+	log.Println("[EventBus] Critical routers pre-started")
 	return nil
 }
 
@@ -577,4 +624,129 @@ func (a *sqlRowsAdapter) Close() error {
 
 func (a *sqlRowsAdapter) Columns() ([]string, error) {
 	return a.rows.Columns()
+}
+
+// BroadcastWithMetadata broadcasts an event with metadata
+func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
+	// Create enhanced event data
+	enhanced := &framework.EnhancedEventData{
+		EventData: data,
+		Metadata:  metadata,
+	}
+
+	// Wrap in DataEvent for compatibility
+	event := &framework.DataEvent{
+		EventType: eventType,
+		EventTime: metadata.Timestamp,
+		Data:      enhanced.EventData,
+	}
+
+	// Create event message
+	msg := &eventMessage{
+		Event: event,
+		Type:  eventType,
+		Data:  data,
+	}
+
+	// Route to subscribers
+	eb.subMu.RLock()
+	hasSubscribers := len(eb.subscribers[eventType]) > 0
+	eb.subMu.RUnlock()
+
+	if !hasSubscribers {
+		return nil
+	}
+
+	ch := eb.getOrCreateChannel(eventType, eb.getBufferSize(eventType))
+
+	select {
+	case ch <- msg:
+		return nil
+	default:
+		eb.metricsMu.Lock()
+		eb.droppedEvents[eventType]++
+		count := eb.droppedEvents[eventType]
+		eb.metricsMu.Unlock()
+
+		log.Printf("[EventBus] WARNING: Dropped event %s - buffer full (total dropped: %d)", eventType, count)
+		return nil
+	}
+}
+
+// SendWithMetadata sends an event directly to a plugin with metadata
+func (eb *EventBus) SendWithMetadata(target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
+	// Update metadata with target
+	metadata.Target = target
+
+	// Use BroadcastWithMetadata but route to plugin.request channel
+	return eb.BroadcastWithMetadata("plugin.request", data, metadata)
+}
+
+// Request performs a synchronous request to a plugin
+func (eb *EventBus) Request(ctx context.Context, target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) (*framework.EventData, error) {
+	// Generate correlation ID
+	correlationID := generateID()
+	metadata.CorrelationID = correlationID
+	metadata.Target = target
+	metadata.ReplyTo = "eventbus"
+
+	// Create response channel
+	respCh := make(chan *pluginResponse, 1)
+
+	// Register pending request
+	eb.syncMu.Lock()
+	eb.pendingRequests[correlationID] = respCh
+	eb.syncMu.Unlock()
+
+	// Clean up on exit
+	defer func() {
+		eb.syncMu.Lock()
+		delete(eb.pendingRequests, correlationID)
+		eb.syncMu.Unlock()
+		close(respCh)
+	}()
+
+	// Send request with metadata
+	if err := eb.SendWithMetadata(target, eventType, data, metadata); err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+
+	// Wait for response with timeout
+	select {
+	case resp := <-respCh:
+		return resp.data, resp.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("request timeout: %w", ctx.Err())
+	}
+}
+
+// DeliverResponse delivers a response to a waiting request
+func (eb *EventBus) DeliverResponse(correlationID string, response *framework.EventData, err error) {
+	eb.syncMu.RLock()
+	respCh, exists := eb.pendingRequests[correlationID]
+	eb.syncMu.RUnlock()
+
+	if exists {
+		select {
+		case respCh <- &pluginResponse{data: response, err: err}:
+			// Delivered successfully
+		default:
+			// Channel full or closed, log error
+			log.Printf("[EventBus] Failed to deliver response for %s", correlationID)
+		}
+	}
+}
+
+// UnregisterPlugin unregisters a plugin from the event bus
+func (eb *EventBus) UnregisterPlugin(name string) error {
+	eb.plugMu.Lock()
+	defer eb.plugMu.Unlock()
+
+	if _, exists := eb.plugins[name]; !exists {
+		return fmt.Errorf("plugin %s not found", name)
+	}
+
+	delete(eb.plugins, name)
+	log.Printf("[EventBus] Unregistered plugin: %s", name)
+	return nil
 }

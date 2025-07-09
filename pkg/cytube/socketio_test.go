@@ -41,7 +41,17 @@ func TestFormatSocketIOMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := formatSocketIOMessage(tt.msgType, tt.event, tt.data)
+			// Marshal the test data to json.RawMessage
+			var dataJSON json.RawMessage
+			if tt.data != nil {
+				marshaled, err := json.Marshal(tt.data)
+				if err != nil {
+					t.Fatalf("failed to marshal test data: %v", err)
+				}
+				dataJSON = marshaled
+			}
+
+			result, err := formatSocketIOMessage(tt.msgType, tt.event, dataJSON)
 			if err != nil {
 				t.Fatalf("formatSocketIOMessage() error = %v", err)
 			}
