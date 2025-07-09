@@ -52,23 +52,23 @@ func (p *PluginConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// DefaultConfig returns a Config with sensible defaults
+// DefaultConfig returns a Config with sensible defaults (no credentials)
 func DefaultConfig() *Config {
 	return &Config{
 		Core: CoreConfig{
 			Cytube: CytubeConfig{
-				Channel:           "***REMOVED***",
-				Username:          "***REMOVED***",
-				Password:          "***REMOVED***",
+				Channel:           "",
+				Username:          "",
+				Password:          "",
 				ReconnectAttempts: 10,
 				CooldownMinutes:   30,
 			},
 			Database: DatabaseConfig{
 				Host:     "localhost",
 				Port:     5432,
-				Database: "daz",
-				User:     "***REMOVED***",
-				Password: "***REMOVED***",
+				Database: "",
+				User:     "",
+				Password: "",
 			},
 		},
 		EventBus: EventBusConfig{
@@ -84,27 +84,67 @@ func DefaultConfig() *Config {
 
 // LoadFromFile loads configuration from a JSON file
 func LoadFromFile(path string) (*Config, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open config file: %w", err)
-	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			log.Printf("Failed to close config file: %v", err)
-		}
-	}()
-
 	config := DefaultConfig()
-	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(config); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %w", err)
+
+	// Load from file if it exists
+	if path != "" {
+		file, err := os.Open(path)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to open config file: %w", err)
+		}
+		if err == nil {
+			defer func() {
+				if err := file.Close(); err != nil {
+					log.Printf("Failed to close config file: %v", err)
+				}
+			}()
+
+			decoder := json.NewDecoder(file)
+			if err := decoder.Decode(config); err != nil {
+				return nil, fmt.Errorf("failed to parse config file: %w", err)
+			}
+		}
 	}
+
+	// Apply environment variable overrides
+	config.LoadFromEnv()
 
 	return config, nil
 }
 
+// LoadFromEnv loads configuration from environment variables
+func (c *Config) LoadFromEnv() {
+	if v := os.Getenv("DAZ_CYTUBE_USERNAME"); v != "" {
+		c.Core.Cytube.Username = v
+	}
+	if v := os.Getenv("DAZ_CYTUBE_PASSWORD"); v != "" {
+		c.Core.Cytube.Password = v
+	}
+	if v := os.Getenv("DAZ_CYTUBE_CHANNEL"); v != "" {
+		c.Core.Cytube.Channel = v
+	}
+	if v := os.Getenv("DAZ_DB_USER"); v != "" {
+		c.Core.Database.User = v
+	}
+	if v := os.Getenv("DAZ_DB_PASSWORD"); v != "" {
+		c.Core.Database.Password = v
+	}
+	if v := os.Getenv("DAZ_DB_NAME"); v != "" {
+		c.Core.Database.Database = v
+	}
+	if v := os.Getenv("DAZ_DB_HOST"); v != "" {
+		c.Core.Database.Host = v
+	}
+	if v := os.Getenv("DAZ_DB_PORT"); v != "" {
+		var port int
+		if _, err := fmt.Sscanf(v, "%d", &port); err == nil && port > 0 {
+			c.Core.Database.Port = port
+		}
+	}
+}
+
 // MergeWithFlags merges command-line flag values into the configuration
-// Command-line flags take precedence over config file values
+// Command-line flags take precedence over config file values and environment variables
 func (c *Config) MergeWithFlags(channel, username, password, dbHost string, dbPort int, dbName, dbUser, dbPass string) {
 	if channel != "" {
 		c.Core.Cytube.Channel = channel
@@ -142,8 +182,14 @@ func (c *Config) GetPluginConfig(name string) json.RawMessage {
 
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
+	if c.Core.Cytube.Username == "" {
+		return fmt.Errorf("CyTube username is required (set DAZ_CYTUBE_USERNAME environment variable)")
+	}
+	if c.Core.Cytube.Password == "" {
+		return fmt.Errorf("CyTube password is required (set DAZ_CYTUBE_PASSWORD environment variable)")
+	}
 	if c.Core.Cytube.Channel == "" {
-		return fmt.Errorf("cytube channel is required")
+		return fmt.Errorf("CyTube channel is required (set DAZ_CYTUBE_CHANNEL environment variable)")
 	}
 	if c.Core.Database.Host == "" {
 		return fmt.Errorf("database host is required")
@@ -152,10 +198,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("database port must be positive")
 	}
 	if c.Core.Database.Database == "" {
-		return fmt.Errorf("database name is required")
+		return fmt.Errorf("database name is required (set DAZ_DB_NAME environment variable)")
 	}
 	if c.Core.Database.User == "" {
-		return fmt.Errorf("database user is required")
+		return fmt.Errorf("database user is required (set DAZ_DB_USER environment variable)")
+	}
+	if c.Core.Database.Password == "" {
+		return fmt.Errorf("database password is required (set DAZ_DB_PASSWORD environment variable)")
 	}
 	return nil
 }

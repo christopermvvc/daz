@@ -10,9 +10,24 @@ import (
 func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig()
 
-	if config.Core.Cytube.Channel != "***REMOVED***" {
-		t.Errorf("expected default channel ***REMOVED***, got %s", config.Core.Cytube.Channel)
+	// Should have empty credentials by default
+	if config.Core.Cytube.Channel != "" {
+		t.Errorf("expected empty default channel, got %s", config.Core.Cytube.Channel)
 	}
+	if config.Core.Cytube.Username != "" {
+		t.Errorf("expected empty default username, got %s", config.Core.Cytube.Username)
+	}
+	if config.Core.Cytube.Password != "" {
+		t.Errorf("expected empty default password, got %s", config.Core.Cytube.Password)
+	}
+	if config.Core.Database.User != "" {
+		t.Errorf("expected empty default db user, got %s", config.Core.Database.User)
+	}
+	if config.Core.Database.Password != "" {
+		t.Errorf("expected empty default db password, got %s", config.Core.Database.Password)
+	}
+
+	// Should still have non-credential defaults
 	if config.Core.Database.Host != "localhost" {
 		t.Errorf("expected default host localhost, got %s", config.Core.Database.Host)
 	}
@@ -135,9 +150,13 @@ func TestLoadFromFile(t *testing.T) {
 }
 
 func TestLoadFromFile_NotFound(t *testing.T) {
-	_, err := LoadFromFile("/nonexistent/path/config.json")
-	if err == nil {
-		t.Error("expected error for nonexistent file")
+	// Should not error on non-existent file, just use defaults
+	config, err := LoadFromFile("/nonexistent/path/config.json")
+	if err != nil {
+		t.Errorf("unexpected error for nonexistent file: %v", err)
+	}
+	if config == nil {
+		t.Error("expected config with defaults for nonexistent file")
 	}
 }
 
@@ -176,8 +195,8 @@ func TestMergeWithFlags(t *testing.T) {
 	if config2.Core.Cytube.Channel != "new-channel" {
 		t.Errorf("expected channel new-channel, got %s", config2.Core.Cytube.Channel)
 	}
-	if config2.Core.Cytube.Username != "***REMOVED***" {
-		t.Errorf("expected default username ***REMOVED***, got %s", config2.Core.Cytube.Username)
+	if config2.Core.Cytube.Username != "" {
+		t.Errorf("expected empty username, got %s", config2.Core.Cytube.Username)
 	}
 	if config2.Core.Database.Port != 5432 {
 		t.Errorf("expected default port 5432, got %d", config2.Core.Database.Port)
@@ -221,22 +240,67 @@ func TestValidate(t *testing.T) {
 		errMsg  string
 	}{
 		{
-			name:    "valid config",
-			modify:  func(c *Config) {},
+			name: "valid config",
+			modify: func(c *Config) {
+				// Set all required credentials
+				c.Core.Cytube.Username = "testuser"
+				c.Core.Cytube.Password = "testpass"
+				c.Core.Cytube.Channel = "testchannel"
+				c.Core.Database.User = "dbuser"
+				c.Core.Database.Password = "dbpass"
+				c.Core.Database.Database = "testdb"
+			},
 			wantErr: false,
+		},
+		{
+			name: "missing username",
+			modify: func(c *Config) {
+				c.Core.Cytube.Username = ""
+				c.Core.Cytube.Password = "testpass"
+				c.Core.Cytube.Channel = "testchannel"
+				c.Core.Database.User = "dbuser"
+				c.Core.Database.Password = "dbpass"
+				c.Core.Database.Database = "testdb"
+			},
+			wantErr: true,
+			errMsg:  "CyTube username is required (set DAZ_CYTUBE_USERNAME environment variable)",
+		},
+		{
+			name: "missing password",
+			modify: func(c *Config) {
+				c.Core.Cytube.Username = "testuser"
+				c.Core.Cytube.Password = ""
+				c.Core.Cytube.Channel = "testchannel"
+				c.Core.Database.User = "dbuser"
+				c.Core.Database.Password = "dbpass"
+				c.Core.Database.Database = "testdb"
+			},
+			wantErr: true,
+			errMsg:  "CyTube password is required (set DAZ_CYTUBE_PASSWORD environment variable)",
 		},
 		{
 			name: "missing channel",
 			modify: func(c *Config) {
+				c.Core.Cytube.Username = "testuser"
+				c.Core.Cytube.Password = "testpass"
 				c.Core.Cytube.Channel = ""
+				c.Core.Database.User = "dbuser"
+				c.Core.Database.Password = "dbpass"
+				c.Core.Database.Database = "testdb"
 			},
 			wantErr: true,
-			errMsg:  "cytube channel is required",
+			errMsg:  "CyTube channel is required (set DAZ_CYTUBE_CHANNEL environment variable)",
 		},
 		{
 			name: "missing db host",
 			modify: func(c *Config) {
+				c.Core.Cytube.Username = "testuser"
+				c.Core.Cytube.Password = "testpass"
+				c.Core.Cytube.Channel = "testchannel"
 				c.Core.Database.Host = ""
+				c.Core.Database.User = "dbuser"
+				c.Core.Database.Password = "dbpass"
+				c.Core.Database.Database = "testdb"
 			},
 			wantErr: true,
 			errMsg:  "database host is required",
@@ -244,7 +308,13 @@ func TestValidate(t *testing.T) {
 		{
 			name: "invalid db port",
 			modify: func(c *Config) {
+				c.Core.Cytube.Username = "testuser"
+				c.Core.Cytube.Password = "testpass"
+				c.Core.Cytube.Channel = "testchannel"
 				c.Core.Database.Port = 0
+				c.Core.Database.User = "dbuser"
+				c.Core.Database.Password = "dbpass"
+				c.Core.Database.Database = "testdb"
 			},
 			wantErr: true,
 			errMsg:  "database port must be positive",
@@ -252,18 +322,41 @@ func TestValidate(t *testing.T) {
 		{
 			name: "missing db name",
 			modify: func(c *Config) {
+				c.Core.Cytube.Username = "testuser"
+				c.Core.Cytube.Password = "testpass"
+				c.Core.Cytube.Channel = "testchannel"
 				c.Core.Database.Database = ""
+				c.Core.Database.User = "dbuser"
+				c.Core.Database.Password = "dbpass"
 			},
 			wantErr: true,
-			errMsg:  "database name is required",
+			errMsg:  "database name is required (set DAZ_DB_NAME environment variable)",
 		},
 		{
 			name: "missing db user",
 			modify: func(c *Config) {
+				c.Core.Cytube.Username = "testuser"
+				c.Core.Cytube.Password = "testpass"
+				c.Core.Cytube.Channel = "testchannel"
 				c.Core.Database.User = ""
+				c.Core.Database.Password = "dbpass"
+				c.Core.Database.Database = "testdb"
 			},
 			wantErr: true,
-			errMsg:  "database user is required",
+			errMsg:  "database user is required (set DAZ_DB_USER environment variable)",
+		},
+		{
+			name: "missing db password",
+			modify: func(c *Config) {
+				c.Core.Cytube.Username = "testuser"
+				c.Core.Cytube.Password = "testpass"
+				c.Core.Cytube.Channel = "testchannel"
+				c.Core.Database.User = "dbuser"
+				c.Core.Database.Password = ""
+				c.Core.Database.Database = "testdb"
+			},
+			wantErr: true,
+			errMsg:  "database password is required (set DAZ_DB_PASSWORD environment variable)",
 		},
 	}
 

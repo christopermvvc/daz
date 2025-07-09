@@ -1,6 +1,27 @@
 #!/bin/bash
 # Run Daz in console with output logging to file
 
+# Source environment variables if .env file exists
+if [ -f .env ]; then
+    export $(cat .env | grep -v '^#' | xargs)
+fi
+
+# Validate required environment variables
+if [ -z "$DAZ_CYTUBE_USERNAME" ]; then
+    echo "Error: DAZ_CYTUBE_USERNAME environment variable is not set"
+    exit 1
+fi
+
+if [ -z "$DAZ_CYTUBE_PASSWORD" ]; then
+    echo "Error: DAZ_CYTUBE_PASSWORD environment variable is not set"
+    exit 1
+fi
+
+if [ -z "$DAZ_CYTUBE_CHANNEL" ]; then
+    echo "Error: DAZ_CYTUBE_CHANNEL environment variable is not set"
+    exit 1
+fi
+
 # Create logs directory if it doesn't exist
 mkdir -p logs
 
@@ -20,11 +41,12 @@ echo "----------------------------------------"
 
 # Run Daz and tee output to both console and log file
 ./bin/daz \
-    -channel ***REMOVED*** \
-    -username ***REMOVED*** \
-    -password ***REMOVED*** \
-    -db-host localhost \
-    -db-name daz \
-    -db-user ***REMOVED*** \
-    -db-pass ***REMOVED*** \
+    -channel "$DAZ_CYTUBE_CHANNEL" \
+    -username "$DAZ_CYTUBE_USERNAME" \
+    -password "$DAZ_CYTUBE_PASSWORD" \
+    -db-host "${DAZ_DB_HOST:-localhost}" \
+    -db-port "${DAZ_DB_PORT:-5432}" \
+    -db-user "$DAZ_DB_USER" \
+    -db-pass "$DAZ_DB_PASSWORD" \
+    -db-name "${DAZ_DB_NAME:-daz}" \
     2>&1 | tee "$LOG_FILE"

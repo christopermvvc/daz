@@ -44,17 +44,12 @@ func main() {
 
 	// Load configuration
 	var cfg *config.Config
-	if _, err := os.Stat(*configFile); err == nil {
-		// Config file exists, load it
-		log.Printf("Loading configuration from %s", *configFile)
-		cfg, err = config.LoadFromFile(*configFile)
-		if err != nil {
-			log.Fatalf("Failed to load config file: %v", err)
-		}
-	} else {
-		// No config file, use defaults
-		log.Println("No config file found, using defaults")
-		cfg = config.DefaultConfig()
+	var err error
+
+	// Always use LoadFromFile which handles env vars
+	cfg, err = config.LoadFromFile(*configFile)
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
 	// Merge command-line flags with config (flags take precedence)

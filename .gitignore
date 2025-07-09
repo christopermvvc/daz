@@ -75,6 +75,7 @@ tmp/
 temp/
 
 # Configuration files with secrets
+config.json
 config.local.json
 config.prod.json
 secrets.json
