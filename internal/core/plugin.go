@@ -29,6 +29,7 @@ type Plugin struct {
 	reconnectAttempt int
 	lastReconnect    time.Time
 	eventHandlers    map[string]eventHandler
+	lastMediaUpdate  time.Time
 }
 
 // eventHandler is a function that processes a specific event type
@@ -151,18 +152,23 @@ func (p *Plugin) Initialize(eventBus framework.EventBus) error {
 
 // Start begins the plugin operation
 func (p *Plugin) Start() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	// Update status
+	p.mu.Lock()
 	p.status.State = "running"
 	p.startTime = time.Now()
+	p.mu.Unlock()
 
 	// Connect to Cytube with retry logic
 	if err := p.connectWithRetry(); err != nil {
+		p.mu.Lock()
 		p.status.LastError = fmt.Errorf("failed to connect to Cytube after retries: %w", err)
+		p.mu.Unlock()
 		return p.status.LastError
 	}
+
+	// Wait for connection to stabilize and join to complete
+	log.Printf("[Core] Waiting for connection to stabilize...")
+	time.Sleep(3 * time.Second)
 
 	// Login if credentials are provided
 	if p.config.Cytube.Username != "" && p.config.Cytube.Password != "" {
@@ -320,6 +326,12 @@ func (p *Plugin) handleVideoChange(event framework.Event) (string, *framework.Ev
 
 func (p *Plugin) handleMediaUpdate(event framework.Event) (string, *framework.EventData, bool) {
 	e := event.(*framework.MediaUpdateEvent)
+
+	// Update last MediaUpdate timestamp
+	p.mu.Lock()
+	p.lastMediaUpdate = time.Now()
+	p.mu.Unlock()
+
 	eventData := &framework.EventData{
 		MediaUpdate: &framework.MediaUpdateData{
 			CurrentTime: e.CurrentTime,
@@ -469,6 +481,10 @@ func (p *Plugin) connectWithRetry() error {
 			p.reconnectAttempt = 0
 			// Update connection status metric
 			metrics.CytubeConnectionStatus.Set(1)
+			// Initialize lastMediaUpdate to current time to start timeout tracking
+			p.mu.Lock()
+			p.lastMediaUpdate = time.Now()
+			p.mu.Unlock()
 			return nil
 		}
 
@@ -504,15 +520,32 @@ func (p *Plugin) connectWithRetry() error {
 // setupConnectionMonitor monitors the Cytube connection and attempts reconnection if needed
 func (p *Plugin) setupConnectionMonitor() {
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		// Check every 5 seconds for better MediaUpdate timeout detection
+		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
 		for {
 			select {
 			case <-ticker.C:
+				needsReconnect := false
+
 				// Check if we're still connected
 				if p.cytubeConn != nil && !p.cytubeConn.IsConnected() {
 					log.Printf("[Core] Connection lost, attempting to reconnect...")
+					needsReconnect = true
+				} else {
+					// Check for MediaUpdate timeout (15 seconds)
+					p.mu.RLock()
+					lastUpdate := p.lastMediaUpdate
+					p.mu.RUnlock()
+
+					if !lastUpdate.IsZero() && time.Since(lastUpdate) > 15*time.Second {
+						log.Printf("[Core] MediaUpdate timeout detected (last update: %v ago), triggering reconnect...", time.Since(lastUpdate))
+						needsReconnect = true
+					}
+				}
+
+				if needsReconnect {
 					p.mu.Lock()
 					p.status.State = "reconnecting"
 					p.mu.Unlock()
@@ -531,7 +564,13 @@ func (p *Plugin) setupConnectionMonitor() {
 						log.Printf("[Core] Successfully reconnected to Cytube")
 						p.mu.Lock()
 						p.status.State = "running"
+						// Reset lastMediaUpdate to avoid immediate timeout after reconnect
+						p.lastMediaUpdate = time.Now()
 						p.mu.Unlock()
+
+						// Wait for connection to stabilize and join to complete
+						log.Printf("[Core] Waiting for connection to stabilize...")
+						time.Sleep(3 * time.Second)
 
 						// Re-login if credentials are provided
 						if p.config.Cytube.Username != "" && p.config.Cytube.Password != "" {
