@@ -68,10 +68,11 @@ func (rm *RoomManager) AddRoom(room RoomConfig) error {
 
 	// Create room connection
 	conn := &RoomConnection{
-		Room:      room,
-		Client:    client,
-		EventChan: eventChan,
-		Connected: false,
+		Room:            room,
+		Client:          client,
+		EventChan:       eventChan,
+		Connected:       false,
+		LastMediaUpdate: time.Now(), // Initialize to current time to avoid zero value
 	}
 
 	rm.connections[room.ID] = conn
@@ -92,6 +93,16 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
+
+	// Ensure we're disconnected before attempting to connect
+	if conn.Client.IsConnected() {
+		log.Printf("[RoomManager] Room '%s': Client still connected, disconnecting first", roomID)
+		if err := conn.Client.Disconnect(); err != nil {
+			log.Printf("[RoomManager] Room '%s': Error during disconnect: %v", roomID, err)
+		}
+		// Wait for disconnect to complete
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	// Connect with retry logic
 	for attempt := 0; attempt < conn.Room.ReconnectAttempts; attempt++ {
@@ -115,6 +126,7 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 
 		conn.Connected = true
 		conn.ReconnectAttempt = 0
+		conn.LastMediaUpdate = time.Now() // Reset timestamp on successful connection
 		log.Printf("[RoomManager] Room '%s': Connected successfully", roomID)
 
 		// Start event processing for this room
@@ -172,7 +184,7 @@ func (rm *RoomManager) processRoomEvents(roomID string) {
 			}
 
 			// Update last media update time for MediaUpdate events
-			if event.Type() == "cytube.event.MediaUpdate" {
+			if event.Type() == "mediaUpdate" {
 				conn.mu.Lock()
 				conn.LastMediaUpdate = time.Now()
 				conn.mu.Unlock()
@@ -326,9 +338,13 @@ func (rm *RoomManager) checkConnections() {
 		// Check if we need to reconnect
 		needsReconnect := false
 
-		if !connected {
+		// Also check the actual client connection state
+		clientConnected := conn.Client.IsConnected()
+
+		if !connected || !clientConnected {
 			needsReconnect = true
-			log.Printf("[RoomManager] Room '%s': Not connected, will attempt reconnection", roomID)
+			log.Printf("[RoomManager] Room '%s': Not connected (manager: %v, client: %v), will attempt reconnection",
+				roomID, connected, clientConnected)
 		} else if time.Since(lastMediaUpdate) > 15*time.Second {
 			needsReconnect = true
 			log.Printf("[RoomManager] Room '%s': No MediaUpdate for %v, assuming disconnected",
