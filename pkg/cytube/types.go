@@ -332,8 +332,9 @@ type PrivateMessagePayload struct {
 
 // PrivateMessageSendPayload represents outgoing private message data
 type PrivateMessageSendPayload struct {
-	Name string `json:"name"`
-	Msg  string `json:"msg"`
+	To   string                 `json:"to"`
+	Msg  string                 `json:"msg"`
+	Meta map[string]interface{} `json:"meta"`
 }
 
 // EventPayload is an interface for all event payloads that can be sent

@@ -348,8 +348,9 @@ func (rm *RoomManager) SendPMToRoom(roomID string, toUser string, message string
 
 	// Send PM using the cytube protocol
 	pmData := cytube.PrivateMessageSendPayload{
-		Name: toUser,
+		To:   toUser,
 		Msg:  message,
+		Meta: make(map[string]interface{}),
 	}
 
 	// Debug log with actual channel name
