@@ -386,7 +386,7 @@ func (p *Plugin) findMatchingEventTypes(pattern string) []string {
 	if strings.HasSuffix(pattern, "*") {
 		if strings.HasPrefix(pattern, "cytube.event.") {
 			base := strings.TrimSuffix(pattern, "*")
-			commonTypes := []string{"chatMsg", "userJoin", "userLeave", "changeMedia", "queue", "mediaUpdate", "pm"}
+			commonTypes := []string{"chatMsg", "userJoin", "userLeave", "changeMedia", "queue", "mediaUpdate", "pm", "pm.sent", "playlist"}
 			for _, t := range commonTypes {
 				eventType := base + t
 				matches = append(matches, eventType)
@@ -515,12 +515,23 @@ func (p *Plugin) logEventData(rule LoggerRule, event *framework.DataEvent) error
 		placeholders = append(placeholders, fmt.Sprintf("$%d", i))
 	}
 
-	query := fmt.Sprintf(
-		"INSERT INTO %s (%s) VALUES (%s)",
-		rule.Table,
-		strings.Join(columns, ", "),
-		strings.Join(placeholders, ", "),
-	)
+	// Build query with ON CONFLICT for chat messages to prevent duplicates
+	var query string
+	if fields.EventType == "cytube.event.chatMsg" && rule.Table == "daz_core_events" {
+		query = fmt.Sprintf(
+			"INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (channel_name, message_time, username) WHERE event_type = 'cytube.event.chatMsg' DO NOTHING",
+			rule.Table,
+			strings.Join(columns, ", "),
+			strings.Join(placeholders, ", "),
+		)
+	} else {
+		query = fmt.Sprintf(
+			"INSERT INTO %s (%s) VALUES (%s)",
+			rule.Table,
+			strings.Join(columns, ", "),
+			strings.Join(placeholders, ", "),
+		)
+	}
 
 	_, err := p.pool.Exec(ctx, query, values...)
 	if err != nil {

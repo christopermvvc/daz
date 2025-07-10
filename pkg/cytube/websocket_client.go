@@ -32,6 +32,8 @@ type WebSocketClient struct {
 	sid             string        // Socket.IO session ID
 	socketIOReady   chan struct{} // Signals when Socket.IO connection is ready
 	shutdownDone    chan struct{} // Signals when shutdown is complete
+	closeOnce       sync.Once     // Ensures channels are closed only once
+	readyOnce       sync.Once     // Ensures socketIOReady is closed only once
 }
 
 // NewWebSocketClient creates a new WebSocket client for cytube
@@ -133,16 +135,32 @@ func (c *WebSocketClient) Connect() error {
 func (c *WebSocketClient) readLoop() {
 	defer func() {
 		c.mu.Lock()
+		wasConnected := c.connected
 		c.connected = false
 		c.mu.Unlock()
+
+		// If we were connected and lost connection unexpectedly, trigger reconnection
+		if wasConnected {
+			log.Printf("WebSocket connection lost, triggering reconnection event")
+			// Send a disconnect event to notify the system
+			baseEvent := framework.CytubeEvent{
+				EventType:   "disconnect",
+				EventTime:   time.Now(),
+				ChannelName: c.channel,
+				RoomID:      c.roomID,
+				Metadata:    map[string]string{"reason": "connection_lost"},
+			}
+			select {
+			case c.eventChan <- &baseEvent:
+			case <-c.ctx.Done():
+			}
+		}
+
 		c.cancel()
 		// Signal shutdown is complete
-		select {
-		case <-c.shutdownDone:
-			// Already closed
-		default:
+		c.closeOnce.Do(func() {
 			close(c.shutdownDone)
-		}
+		})
 	}()
 
 	for {
@@ -151,6 +169,7 @@ func (c *WebSocketClient) readLoop() {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("WebSocket read error: %v", err)
 			}
+			// Connection lost - the defer will handle triggering reconnection
 			return
 		}
 
@@ -242,35 +261,34 @@ func (c *WebSocketClient) handleSocketIOMessage(message []byte) {
 	switch msg[0] {
 	case '0': // Connect
 		log.Println("Socket.IO connected")
-		// Signal that Socket.IO is ready and join channel
+		// Signal that Socket.IO is ready but don't join channel yet
+		// Channel join should happen after login
 		if c.socketIOReady != nil {
-			select {
-			case <-c.socketIOReady:
-				// Already signaled
-			default:
+			c.readyOnce.Do(func() {
 				close(c.socketIOReady)
-				go func() {
-					if err := c.joinChannel(); err != nil {
-						log.Printf("Failed to join channel: %v", err)
-					}
-				}()
-			}
+			})
 		}
 
 	case '1': // Disconnect
 		log.Println("Socket.IO disconnected")
-		// Send disconnect event
+		// Send disconnect event with connection_lost reason to trigger reconnection
 		baseEvent := framework.CytubeEvent{
 			EventType:   "disconnect",
 			EventTime:   time.Now(),
 			ChannelName: c.channel,
 			RoomID:      c.roomID,
-			Metadata:    make(map[string]string),
+			Metadata:    map[string]string{"reason": "connection_lost"},
 		}
 		select {
 		case c.eventChan <- &baseEvent:
 		case <-c.ctx.Done():
 		}
+		// Close the connection to trigger readLoop exit and reconnection
+		c.mu.Lock()
+		if c.conn != nil {
+			c.conn.Close()
+		}
+		c.mu.Unlock()
 
 	case '2': // Event
 		// Parse Socket.IO event
@@ -316,8 +334,8 @@ func (c *WebSocketClient) handleEvent(eventType string, data json.RawMessage) {
 	}
 }
 
-// joinChannel joins the specified channel
-func (c *WebSocketClient) joinChannel() error {
+// JoinChannel joins the specified channel
+func (c *WebSocketClient) JoinChannel() error {
 	joinData := ChannelJoinData{
 		Name: c.channel,
 	}

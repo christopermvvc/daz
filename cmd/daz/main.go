@@ -211,6 +211,10 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 	}
 	defer pluginManager.StopAll()
 
+	// Now that all plugins are ready, start room connections
+	log.Println("All plugins are ready, starting room connections...")
+	corePlugin.StartRoomConnections()
+
 	// Create health check service
 	healthService := health.NewService(bus)
 

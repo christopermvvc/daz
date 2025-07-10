@@ -330,6 +330,17 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 
 	chatData := dataEvent.Data.ChatMessage
 
+	// Ignore messages older than 10 seconds to prevent processing historical messages
+	// MessageTime is in milliseconds
+	if chatData.MessageTime > 0 {
+		messageAge := time.Now().UnixMilli() - chatData.MessageTime
+		if messageAge > 10000 { // 10 seconds in milliseconds
+			log.Printf("[EventFilter] Ignoring old message from %s (age: %dms)",
+				chatData.Username, messageAge)
+			return nil
+		}
+	}
+
 	log.Printf("[EventFilter] Received chat message: '%s' from user: %s (prefix: '%s')",
 		chatData.Message, chatData.Username, p.config.CommandPrefix)
 

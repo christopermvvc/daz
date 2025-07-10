@@ -13,14 +13,15 @@ import (
 
 // RoomConnection represents a connection to a single room
 type RoomConnection struct {
-	Room             RoomConfig
-	Client           *cytube.WebSocketClient
-	EventChan        chan framework.Event
-	Connected        bool
-	ReconnectAttempt int
-	LastReconnect    time.Time
-	LastMediaUpdate  time.Time
-	mu               sync.RWMutex
+	Room                RoomConfig
+	Client              *cytube.WebSocketClient
+	EventChan           chan framework.Event
+	Connected           bool
+	ReconnectAttempt    int
+	LastReconnect       time.Time
+	LastMediaUpdate     time.Time
+	reconnectInProgress bool
+	mu                  sync.RWMutex
 }
 
 // RoomManager manages multiple room connections
@@ -67,7 +68,8 @@ func (rm *RoomManager) AddRoom(room RoomConfig) error {
 	}
 
 	// Create event channel for this room
-	eventChan := make(chan framework.Event, 100)
+	// Increased buffer size to handle burst of events when connecting to multiple rooms
+	eventChan := make(chan framework.Event, 2000)
 
 	// Create WebSocket client for this room
 	client, err := cytube.NewWebSocketClient(room.Channel, room.ID, eventChan)
@@ -110,7 +112,15 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 			log.Printf("[RoomManager] Room '%s': Error during disconnect: %v", roomID, err)
 		}
 		// Wait for disconnect to complete
-		time.Sleep(100 * time.Millisecond)
+		disconnectDone := make(chan struct{})
+		go func() {
+			select {
+			case <-time.After(100 * time.Millisecond):
+			case <-rm.ctx.Done():
+			}
+			close(disconnectDone)
+		}()
+		<-disconnectDone
 	}
 
 	// Create a new client for reconnection to ensure fresh context
@@ -132,7 +142,13 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 			}
 			log.Printf("[RoomManager] Room '%s': Waiting %v before retry %d/%d",
 				roomID, waitTime, attempt+1, conn.Room.ReconnectAttempts)
-			time.Sleep(waitTime)
+			retryTimer := time.NewTimer(waitTime)
+			select {
+			case <-retryTimer.C:
+			case <-rm.ctx.Done():
+				retryTimer.Stop()
+				return fmt.Errorf("context cancelled during retry wait")
+			}
 		}
 
 		log.Printf("[RoomManager] Room '%s': Connecting to %s (attempt %d/%d)",
@@ -152,7 +168,13 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 		go rm.processRoomEvents(roomID)
 
 		// Wait for connection to stabilize
-		time.Sleep(3 * time.Second)
+		stabilizeTimer := time.NewTimer(3 * time.Second)
+		select {
+		case <-stabilizeTimer.C:
+		case <-rm.ctx.Done():
+			stabilizeTimer.Stop()
+			return fmt.Errorf("context cancelled during stabilization")
+		}
 
 		// Login if credentials provided
 		if conn.Room.Username != "" && conn.Room.Password != "" {
@@ -162,10 +184,24 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 			} else {
 				log.Printf("[RoomManager] Room '%s': Login successful", roomID)
 
-				// Request playlist after login
+				// Now join the channel after successful login
+				log.Printf("[RoomManager] Room '%s': Joining channel as authenticated user", roomID)
+				if err := conn.Client.JoinChannel(); err != nil {
+					log.Printf("[RoomManager] Room '%s': Failed to join channel: %v", roomID, err)
+					return fmt.Errorf("failed to join channel: %w", err)
+				}
+
+				// Request playlist after joining
 				if err := conn.Client.RequestPlaylist(); err != nil {
 					log.Printf("[RoomManager] Room '%s': Failed to request playlist: %v", roomID, err)
 				}
+			}
+		} else {
+			// Join channel as anonymous if no credentials
+			log.Printf("[RoomManager] Room '%s': Joining channel as anonymous user", roomID)
+			if err := conn.Client.JoinChannel(); err != nil {
+				log.Printf("[RoomManager] Room '%s': Failed to join channel: %v", roomID, err)
+				return fmt.Errorf("failed to join channel: %w", err)
 			}
 		}
 
@@ -202,6 +238,32 @@ func (rm *RoomManager) processRoomEvents(roomID string) {
 				cytubeEvent.Metadata["room_id"] = roomID
 			}
 
+			// Handle disconnect events immediately
+			if event.Type() == "disconnect" {
+				log.Printf("[RoomManager] Room '%s': Received disconnect event, marking as disconnected", roomID)
+				conn.mu.Lock()
+				conn.Connected = false
+				conn.mu.Unlock()
+
+				// Check if this was an unexpected disconnect
+				if cytubeEvent, ok := event.(*framework.CytubeEvent); ok {
+					if reason, exists := cytubeEvent.Metadata["reason"]; exists && reason == "connection_lost" {
+						log.Printf("[RoomManager] Room '%s': Connection lost unexpectedly, triggering immediate reconnection", roomID)
+						// Trigger immediate reconnection in a goroutine
+						go func() {
+							// Small delay to avoid immediate reconnection storms
+							reconnectTimer := time.NewTimer(2 * time.Second)
+							select {
+							case <-reconnectTimer.C:
+								rm.handleReconnection(roomID)
+							case <-rm.ctx.Done():
+								reconnectTimer.Stop()
+							}
+						}()
+					}
+				}
+			}
+
 			// Update last media update time for MediaUpdate events
 			if event.Type() == "mediaUpdate" {
 				conn.mu.Lock()
@@ -224,6 +286,15 @@ func (rm *RoomManager) processRoomEvents(roomID string) {
 					UserID:      chatEvent.UserID,
 					Channel:     chatEvent.ChannelName,
 					MessageTime: chatEvent.MessageTime,
+				}
+			} else if pmEvent, ok := event.(*framework.PrivateMessageEvent); ok && event.Type() == "pm" {
+				// For private messages, populate the PrivateMessage field
+				eventData.PrivateMessage = &framework.PrivateMessageData{
+					FromUser:    pmEvent.FromUser,
+					ToUser:      pmEvent.ToUser,
+					Message:     pmEvent.Message,
+					MessageTime: pmEvent.MessageTime,
+					Channel:     pmEvent.ChannelName,
 				}
 			} else {
 				// For non-chat events, pass the raw event
@@ -269,11 +340,21 @@ func (rm *RoomManager) StartAll() {
 	}
 	rm.mu.RUnlock()
 
+	// Start all rooms concurrently
+	var wg sync.WaitGroup
+	wg.Add(len(roomIDs))
+
 	for _, roomID := range roomIDs {
-		if err := rm.StartRoom(roomID); err != nil {
-			log.Printf("[RoomManager] Failed to start room '%s': %v", roomID, err)
-		}
+		go func(id string) {
+			defer wg.Done()
+			if err := rm.StartRoom(id); err != nil {
+				log.Printf("[RoomManager] Failed to start room '%s': %v", id, err)
+			}
+		}(roomID)
 	}
+
+	// Wait for all rooms to finish connecting
+	wg.Wait()
 }
 
 // StopAll stops all room connections
@@ -385,6 +466,59 @@ func (rm *RoomManager) MonitorConnections(ctx context.Context) {
 	}
 }
 
+// handleReconnection handles reconnection for a specific room
+func (rm *RoomManager) handleReconnection(roomID string) {
+	rm.mu.RLock()
+	conn, exists := rm.connections[roomID]
+	rm.mu.RUnlock()
+
+	if !exists {
+		log.Printf("[RoomManager] Room '%s': Cannot reconnect - room not found", roomID)
+		return
+	}
+
+	// Check if reconnection is already in progress
+	conn.mu.Lock()
+	if conn.reconnectInProgress {
+		conn.mu.Unlock()
+		log.Printf("[RoomManager] Room '%s': Reconnection already in progress, skipping", roomID)
+		return
+	}
+	conn.reconnectInProgress = true
+	conn.mu.Unlock()
+
+	// Ensure we clear the flag when done
+	defer func() {
+		conn.mu.Lock()
+		conn.reconnectInProgress = false
+		conn.mu.Unlock()
+	}()
+
+	// Check cooldown period
+	conn.mu.RLock()
+	timeSinceLastReconnect := time.Since(conn.LastReconnect)
+	cooldownMinutes := time.Duration(conn.Room.CooldownMinutes) * time.Minute
+	conn.mu.RUnlock()
+
+	if timeSinceLastReconnect < cooldownMinutes {
+		log.Printf("[RoomManager] Room '%s': Still in cooldown period (%v remaining)",
+			roomID, cooldownMinutes-timeSinceLastReconnect)
+		return
+	}
+
+	// Update reconnection tracking
+	conn.mu.Lock()
+	conn.Connected = false
+	conn.LastReconnect = time.Now()
+	conn.ReconnectAttempt++
+	conn.mu.Unlock()
+
+	log.Printf("[RoomManager] Room '%s': Attempting reconnection (attempt %d)", roomID, conn.ReconnectAttempt)
+	if err := rm.StartRoom(roomID); err != nil {
+		log.Printf("[RoomManager] Room '%s': Reconnection failed: %v", roomID, err)
+	}
+}
+
 // checkConnections checks all connections and reconnects if needed
 func (rm *RoomManager) checkConnections() {
 	rm.mu.RLock()
@@ -418,31 +552,8 @@ func (rm *RoomManager) checkConnections() {
 		}
 
 		if needsReconnect {
-			// Check cooldown period
-			conn.mu.RLock()
-			timeSinceLastReconnect := time.Since(conn.LastReconnect)
-			cooldownMinutes := time.Duration(conn.Room.CooldownMinutes) * time.Minute
-			conn.mu.RUnlock()
-
-			if timeSinceLastReconnect < cooldownMinutes {
-				log.Printf("[RoomManager] Room '%s': Still in cooldown period (%v remaining)",
-					roomID, cooldownMinutes-timeSinceLastReconnect)
-				continue
-			}
-
-			// Attempt reconnection
-			conn.mu.Lock()
-			conn.Connected = false
-			conn.LastReconnect = time.Now()
-			conn.ReconnectAttempt++
-			conn.mu.Unlock()
-
-			log.Printf("[RoomManager] Room '%s': Attempting reconnection", roomID)
-			go func(id string) {
-				if err := rm.StartRoom(id); err != nil {
-					log.Printf("[RoomManager] Room '%s': Reconnection failed: %v", id, err)
-				}
-			}(roomID)
+			log.Printf("[RoomManager] Room '%s': Triggering reconnection via handleReconnection", roomID)
+			go rm.handleReconnection(roomID)
 		}
 	}
 }

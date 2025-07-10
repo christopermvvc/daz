@@ -317,7 +317,8 @@ func TestHandleCommand(t *testing.T) {
 				Command: &framework.CommandData{
 					Name: "about",
 					Params: map[string]string{
-						"channel": "test-channel",
+						"channel":  "test-channel",
+						"username": "testuser",
 					},
 				},
 			},
@@ -360,11 +361,11 @@ func TestHandleCommand(t *testing.T) {
 	// Check that a response was broadcast
 	bus.mu.Lock()
 	broadcastCount := len(bus.broadcasts)
-	// Find the cytube.send broadcast
+	// Find the cytube.send.pm broadcast
 	var broadcast broadcastCall
 	found := false
 	for _, b := range bus.broadcasts {
-		if b.eventType == "cytube.send" {
+		if b.eventType == "cytube.send.pm" {
 			broadcast = b
 			found = true
 			break
@@ -372,16 +373,21 @@ func TestHandleCommand(t *testing.T) {
 	}
 	bus.mu.Unlock()
 	if !found {
-		t.Errorf("Expected cytube.send broadcast not found in %d broadcasts", broadcastCount)
+		t.Errorf("Expected cytube.send.pm broadcast not found in %d broadcasts", broadcastCount)
 		return
 	}
 
 	// Check message content
-	if broadcast.data.RawMessage == nil {
-		t.Fatal("Expected RawMessage data")
+	if broadcast.data.PrivateMessage == nil {
+		t.Fatal("Expected PrivateMessage data")
 	}
 
-	message := broadcast.data.RawMessage.Message
+	// Verify PM is sent to the correct user
+	if broadcast.data.PrivateMessage.ToUser != "testuser" {
+		t.Errorf("Expected PM to be sent to 'testuser', got '%s'", broadcast.data.PrivateMessage.ToUser)
+	}
+
+	message := broadcast.data.PrivateMessage.Message
 	if !strings.Contains(message, "Daz") {
 		t.Error("About message should contain 'Daz'")
 	}

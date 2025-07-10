@@ -158,14 +158,19 @@ func (p *Plugin) Start() error {
 	p.startTime = time.Now()
 	p.mu.Unlock()
 
-	// Start all room connections
-	p.roomManager.StartAll()
-
-	// Start connection monitoring
+	// Start connection monitoring (but don't connect yet)
 	go p.roomManager.MonitorConnections(p.ctx)
 
-	log.Printf("[Core] Plugin started successfully with %d rooms", len(p.config.Rooms))
+	log.Printf("[Core] Plugin started successfully with %d rooms configured", len(p.config.Rooms))
 	return nil
+}
+
+// StartRoomConnections starts all room connections
+// This should be called after all plugins are ready
+func (p *Plugin) StartRoomConnections() {
+	log.Printf("[Core] Starting room connections...")
+	p.roomManager.StartAll()
+	log.Printf("[Core] Room connections initiated")
 }
 
 // Stop gracefully shuts down the plugin
@@ -279,6 +284,7 @@ func (p *Plugin) handleCytubeSendPM(event framework.Event) error {
 
 	// Determine which room to send to
 	roomID := ""
+	botUsername := ""
 
 	// Channel must be provided to know where to send the PM
 	if channel == "" {
@@ -289,6 +295,7 @@ func (p *Plugin) handleCytubeSendPM(event framework.Event) error {
 	for _, room := range p.config.Rooms {
 		if room.Enabled && room.Channel == channel {
 			roomID = room.ID
+			botUsername = room.Username
 			break
 		}
 	}
@@ -314,6 +321,21 @@ func (p *Plugin) handleCytubeSendPM(event framework.Event) error {
 	}
 
 	log.Printf("[Core] PM sent successfully to user '%s' in channel '%s'", toUser, channelName)
+
+	// Log the outgoing PM to SQL
+	logEvent := framework.NewDataEvent("cytube.event.pm.sent", &framework.EventData{
+		PrivateMessage: &framework.PrivateMessageData{
+			FromUser:    botUsername,
+			ToUser:      toUser,
+			Message:     msg,
+			MessageTime: time.Now().Unix(),
+			Channel:     channelName,
+		},
+	})
+	if err := p.eventBus.Broadcast("cytube.event.pm.sent", logEvent.Data); err != nil {
+		log.Printf("[Core] Failed to log outgoing PM: %v", err)
+	}
+
 	return nil
 }
 

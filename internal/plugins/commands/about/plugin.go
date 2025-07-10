@@ -215,21 +215,20 @@ func (p *Plugin) handleAboutCommand(req *framework.PluginRequest) {
 }
 
 func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
-	// Create a simple text response to send back to chat
+	// Send response as PM to the requesting user
+	username := req.Data.Command.Params["username"]
 	channel := req.Data.Command.Params["channel"]
-	log.Printf("[About] Sending response to channel %s: %d chars", channel, len(message))
 
 	response := &framework.EventData{
-		RawMessage: &framework.RawMessageData{
+		PrivateMessage: &framework.PrivateMessageData{
+			ToUser:  username,
 			Message: message,
 			Channel: channel,
 		},
 	}
 
-	// Broadcast to cytube.send event
-	if err := p.eventBus.Broadcast("cytube.send", response); err != nil {
-		log.Printf("[ERROR] Failed to send about response: %v", err)
-	} else {
-		log.Printf("[About] Response sent successfully via cytube.send")
+	// Broadcast to cytube.send.pm event
+	if err := p.eventBus.Broadcast("cytube.send.pm", response); err != nil {
+		log.Printf("[ERROR] Failed to send about PM response: %v", err)
 	}
 }

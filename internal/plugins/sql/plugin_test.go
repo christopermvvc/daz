@@ -64,8 +64,8 @@ func TestFindMatchingEventTypes(t *testing.T) {
 	}{
 		{
 			pattern:  "cytube.event.*",
-			expected: 7,
-			contains: []string{"cytube.event.chatMsg", "cytube.event.userJoin", "cytube.event.pm"},
+			expected: 9,
+			contains: []string{"cytube.event.chatMsg", "cytube.event.userJoin", "cytube.event.pm", "cytube.event.pm.sent", "cytube.event.playlist"},
 		},
 		{
 			pattern:  "cytube.event.chatMsg",

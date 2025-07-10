@@ -201,16 +201,20 @@ func formatUptime(d time.Duration) string {
 }
 
 func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
-	// Create a simple text response to send back to chat
+	// Send response as PM to the requesting user
+	username := req.Data.Command.Params["username"]
+	channel := req.Data.Command.Params["channel"]
+
 	response := &framework.EventData{
-		RawMessage: &framework.RawMessageData{
+		PrivateMessage: &framework.PrivateMessageData{
+			ToUser:  username,
 			Message: message,
-			Channel: req.Data.Command.Params["channel"],
+			Channel: channel,
 		},
 	}
 
-	// Broadcast to cytube.send event
-	if err := p.eventBus.Broadcast("cytube.send", response); err != nil {
-		log.Printf("[ERROR] Failed to send uptime response: %v", err)
+	// Broadcast to cytube.send.pm event
+	if err := p.eventBus.Broadcast("cytube.send.pm", response); err != nil {
+		log.Printf("[ERROR] Failed to send uptime PM response: %v", err)
 	}
 }

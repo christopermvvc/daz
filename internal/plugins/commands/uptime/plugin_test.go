@@ -310,7 +310,8 @@ func TestHandleCommand(t *testing.T) {
 				Command: &framework.CommandData{
 					Name: "uptime",
 					Params: map[string]string{
-						"channel": "test-channel",
+						"channel":  "test-channel",
+						"username": "testuser",
 					},
 				},
 			},
@@ -358,16 +359,21 @@ func TestHandleCommand(t *testing.T) {
 	// Get the second broadcast (the response)
 	broadcast := bus.broadcasts[1]
 	bus.mu.Unlock()
-	if broadcast.eventType != "cytube.send" {
-		t.Errorf("Expected broadcast eventType 'cytube.send', got '%s'", broadcast.eventType)
+	if broadcast.eventType != "cytube.send.pm" {
+		t.Errorf("Expected broadcast eventType 'cytube.send.pm', got '%s'", broadcast.eventType)
 	}
 
 	// Check message content
-	if broadcast.data.RawMessage == nil {
-		t.Fatal("Expected RawMessage data")
+	if broadcast.data.PrivateMessage == nil {
+		t.Fatal("Expected PrivateMessage data")
 	}
 
-	message := broadcast.data.RawMessage.Message
+	// Verify PM is sent to the correct user
+	if broadcast.data.PrivateMessage.ToUser != "testuser" {
+		t.Errorf("Expected PM to be sent to 'testuser', got '%s'", broadcast.data.PrivateMessage.ToUser)
+	}
+
+	message := broadcast.data.PrivateMessage.Message
 	if !strings.Contains(message, "Bot uptime:") {
 		t.Error("Uptime message should contain 'Bot uptime:'")
 	}
