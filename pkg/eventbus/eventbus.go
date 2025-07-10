@@ -518,16 +518,21 @@ func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.Even
 		Metadata: metadata,
 	}
 
-	// Route to subscribers
+	// Check if there are potential subscribers (exact or pattern)
 	eb.subMu.RLock()
-	hasSubscribers := len(eb.subscribers[eventType]) > 0
+	hasExactSubscribers := len(eb.subscribers[eventType]) > 0
+	hasPatternSubscribers := len(eb.patternSubscribers) > 0
 	eb.subMu.RUnlock()
 
-	if !hasSubscribers {
+	// If no subscribers at all, return early
+	if !hasExactSubscribers && !hasPatternSubscribers {
 		return nil
 	}
 
 	queue := eb.getOrCreateQueue(eventType)
+
+	// Start router if needed
+	eb.startRouter(eventType, queue)
 
 	// Push with priority from metadata
 	priority := 0

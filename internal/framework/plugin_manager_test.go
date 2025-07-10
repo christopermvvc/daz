@@ -290,10 +290,10 @@ func TestPluginManagerStopAll(t *testing.T) {
 	}
 }
 
-func TestConvertToJSON(t *testing.T) {
+func TestPrepareConfigJSON(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    interface{}
+		input    json.RawMessage
 		expected string
 	}{
 		{
@@ -302,23 +302,20 @@ func TestConvertToJSON(t *testing.T) {
 			expected: "{}",
 		},
 		{
-			name:     "byte array",
-			input:    []byte(`{"key":"value"}`),
+			name:     "valid JSON",
+			input:    json.RawMessage(`{"key":"value"}`),
 			expected: `{"key":"value"}`,
 		},
 		{
-			name:     "map",
-			input:    map[string]string{"key": "value"},
-			expected: `{"key":"value"}`,
+			name:     "empty JSON object",
+			input:    json.RawMessage(`{}`),
+			expected: `{}`,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := convertToJSON(tt.input)
-			if err != nil {
-				t.Errorf("Unexpected error: %v", err)
-			}
+			result := prepareConfigJSON(tt.input)
 
 			if string(result) != tt.expected {
 				t.Errorf("Expected %s, got %s", tt.expected, string(result))

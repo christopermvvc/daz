@@ -65,11 +65,8 @@ func (pm *PluginManager) InitializeAll(configs map[string]json.RawMessage, event
 
 		log.Printf("Initializing %s plugin...", name)
 
-		// Convert config to JSON if needed
-		configJSON, err := convertToJSON(config)
-		if err != nil {
-			return fmt.Errorf("failed to convert config for %s: %w", name, err)
-		}
+		// Prepare config JSON
+		configJSON := prepareConfigJSON(config)
 
 		if err := plugin.Init(configJSON, eventBus); err != nil {
 			return fmt.Errorf("failed to initialize %s plugin: %w", name, err)
@@ -225,17 +222,10 @@ func (pm *PluginManager) waitForReady(pluginName string, timeout time.Duration) 
 	}
 }
 
-// convertToJSON converts various config types to JSON
-func convertToJSON(config interface{}) ([]byte, error) {
+// prepareConfigJSON ensures config is valid JSON, defaulting to empty object if nil
+func prepareConfigJSON(config json.RawMessage) json.RawMessage {
 	if config == nil {
-		return []byte("{}"), nil
+		return json.RawMessage("{}")
 	}
-
-	// If already []byte, assume it's JSON
-	if jsonBytes, ok := config.([]byte); ok {
-		return jsonBytes, nil
-	}
-
-	// Otherwise, marshal to JSON
-	return json.Marshal(config)
+	return config
 }

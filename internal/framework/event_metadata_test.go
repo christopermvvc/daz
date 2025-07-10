@@ -41,7 +41,7 @@ func TestEventMetadataChaining(t *testing.T) {
 		WithTags("tag1", "tag2").
 		WithReplyTo("reply-plugin").
 		WithTimeout(30 * time.Second).
-		WithPriority(5)
+		WithPriority(PriorityHigh)
 
 	if metadata.CorrelationID != "test-123" {
 		t.Errorf("Expected correlation ID test-123, got %s", metadata.CorrelationID)
@@ -71,8 +71,8 @@ func TestEventMetadataChaining(t *testing.T) {
 		t.Errorf("Expected timeout 30s, got %s", metadata.Timeout)
 	}
 
-	if metadata.Priority != 5 {
-		t.Errorf("Expected priority 5, got %d", metadata.Priority)
+	if metadata.Priority != PriorityHigh {
+		t.Errorf("Expected priority %d, got %d", PriorityHigh, metadata.Priority)
 	}
 }
 
@@ -137,5 +137,33 @@ func TestEnhancedEventData(t *testing.T) {
 
 	if enhanced.Metadata.EventType != "cytube.event.chatMsg" {
 		t.Error("Should be able to access metadata fields")
+	}
+}
+
+func TestWithPriorityValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    int
+		expected int
+	}{
+		{"normal priority", PriorityNormal, PriorityNormal},
+		{"high priority", PriorityHigh, PriorityHigh},
+		{"urgent priority", PriorityUrgent, PriorityUrgent},
+		{"critical priority", PriorityCritical, PriorityCritical},
+		{"below normal clamped to normal", -1, PriorityNormal},
+		{"above critical clamped to critical", 5, PriorityCritical},
+		{"very high value clamped to critical", 100, PriorityCritical},
+		{"very low value clamped to normal", -100, PriorityNormal},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			metadata := NewEventMetadata("test", "test.event")
+			metadata.WithPriority(tt.input)
+
+			if metadata.Priority != tt.expected {
+				t.Errorf("WithPriority(%d) = %d, expected %d", tt.input, metadata.Priority, tt.expected)
+			}
+		})
 	}
 }

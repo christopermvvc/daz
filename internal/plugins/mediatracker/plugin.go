@@ -988,10 +988,6 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 				log.Printf("[MediaTracker] Failed to bulk add playlist items to library: %v", err)
 				// Fall back to individual inserts on bulk failure
 				for _, item := range batch {
-					var metadata interface{}
-					if item.Metadata != nil {
-						metadata = item.Metadata
-					}
 					if err := p.addToLibrary(
 						item.MediaID,
 						item.MediaType,
@@ -999,7 +995,7 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 						item.Duration,
 						item.QueuedBy,
 						channel,
-						metadata,
+						item.Metadata,
 					); err != nil {
 						log.Printf("[MediaTracker] Failed to add playlist item to library: %v", err)
 					}
@@ -1037,12 +1033,13 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 }
 
 // addToLibrary adds a media item to the library if it doesn't already exist
-func (p *Plugin) addToLibrary(mediaID, mediaType, title string, duration int, addedBy, channel string, metadata interface{}) error {
+func (p *Plugin) addToLibrary(mediaID, mediaType, title string, duration int, addedBy, channel string, metadata *framework.MediaMetadata) error {
 	url := constructMediaURL(mediaID, mediaType)
 
 	// Convert metadata to JSON
 	var metaJSON interface{}
 	if metadata != nil {
+		// Convert MediaMetadata struct to JSON for storage
 		metaJSON = metadata
 	}
 
@@ -1141,4 +1138,135 @@ func (p *Plugin) bulkAddPlaylistToLibrary(items []framework.PlaylistItem, channe
 
 	// Successfully bulk added items to library
 	return nil
+}
+
+// parseStoredMetadata handles backward compatibility for metadata stored in different formats
+func parseStoredMetadata(data interface{}) *framework.MediaMetadata {
+	if data == nil {
+		return nil
+	}
+
+	// If it's already a MediaMetadata pointer, return it
+	if metadata, ok := data.(*framework.MediaMetadata); ok {
+		return metadata
+	}
+
+	// If it's a map, convert it
+	if mapData, ok := data.(map[string]interface{}); ok {
+		return convertMapToMediaMetadata(mapData)
+	}
+
+	// If it's a JSON byte array, unmarshal it
+	if jsonData, ok := data.([]byte); ok {
+		var metadata framework.MediaMetadata
+		if err := json.Unmarshal(jsonData, &metadata); err == nil {
+			return &metadata
+		}
+		// Try to unmarshal as a map for backward compatibility
+		var mapData map[string]interface{}
+		if err := json.Unmarshal(jsonData, &mapData); err == nil {
+			return convertMapToMediaMetadata(mapData)
+		}
+	}
+
+	// If it's a string (JSON), try to unmarshal it
+	if jsonStr, ok := data.(string); ok {
+		var metadata framework.MediaMetadata
+		if err := json.Unmarshal([]byte(jsonStr), &metadata); err == nil {
+			return &metadata
+		}
+		// Try to unmarshal as a map for backward compatibility
+		var mapData map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonStr), &mapData); err == nil {
+			return convertMapToMediaMetadata(mapData)
+		}
+	}
+
+	return nil
+}
+
+// convertMapToMediaMetadata converts a map to MediaMetadata for backward compatibility
+func convertMapToMediaMetadata(data map[string]interface{}) *framework.MediaMetadata {
+	if data == nil {
+		return nil
+	}
+
+	metadata := &framework.MediaMetadata{
+		Extra: make(map[string]interface{}),
+	}
+
+	// Helper functions
+	getString := func(key string) string {
+		if val, ok := data[key]; ok {
+			if str, ok := val.(string); ok {
+				return str
+			}
+		}
+		return ""
+	}
+
+	getInt64 := func(key string) int64 {
+		if val, ok := data[key]; ok {
+			switch v := val.(type) {
+			case float64:
+				return int64(v)
+			case int64:
+				return v
+			case int:
+				return int64(v)
+			}
+		}
+		return 0
+	}
+
+	getInt := func(key string) int {
+		return int(getInt64(key))
+	}
+
+	// Populate fields
+	metadata.Description = getString("description")
+	metadata.ThumbnailURL = getString("thumbnail")
+	metadata.UploadDate = getString("upload_date")
+	metadata.ChannelName = getString("channel")
+	metadata.ChannelID = getString("channel_id")
+	metadata.ViewCount = getInt64("view_count")
+	metadata.LikeCount = getInt64("like_count")
+	metadata.DislikeCount = getInt64("dislike_count")
+	metadata.Artist = getString("artist")
+	metadata.Album = getString("album")
+	metadata.Genre = getString("genre")
+	metadata.TrackNumber = getInt("track_number")
+	metadata.Year = getInt("year")
+
+	// Handle tags
+	if tagsVal, ok := data["tags"]; ok {
+		switch tags := tagsVal.(type) {
+		case []interface{}:
+			metadata.Tags = make([]string, 0, len(tags))
+			for _, tag := range tags {
+				if str, ok := tag.(string); ok {
+					metadata.Tags = append(metadata.Tags, str)
+				}
+			}
+		case []string:
+			metadata.Tags = tags
+		}
+	}
+
+	// Store remaining fields in Extra
+	knownFields := map[string]bool{
+		"description": true, "thumbnail": true, "upload_date": true,
+		"channel": true, "channel_id": true, "view_count": true,
+		"like_count": true, "dislike_count": true, "artist": true,
+		"album": true, "genre": true, "track_number": true,
+		"year": true, "tags": true,
+	}
+
+	for key, value := range data {
+		if !knownFields[key] {
+			metadata.Extra[key] = value
+		}
+	}
+
+	return metadata
 }

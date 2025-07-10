@@ -278,11 +278,16 @@ func (p *Parser) parsePlaylist(base framework.CytubeEvent, data json.RawMessage)
 		playlistItems := make([]framework.PlaylistItem, len(items))
 		for i, item := range items {
 			// Parse metadata if present
-			var metadata map[string]interface{}
+			var rawMetadata map[string]interface{}
+			var mediaMetadata *framework.MediaMetadata
+
 			if len(item.Media.Meta) > 0 {
-				if err := json.Unmarshal(item.Media.Meta, &metadata); err != nil {
+				if err := json.Unmarshal(item.Media.Meta, &rawMetadata); err != nil {
 					// Log error but continue processing
 					log.Printf("[CyTube Parser] Failed to parse metadata for item %s: %v", item.Media.ID, err)
+				} else if rawMetadata != nil {
+					// Convert raw metadata to MediaMetadata
+					mediaMetadata = p.convertToMediaMetadata(rawMetadata)
 				}
 			}
 
@@ -293,7 +298,7 @@ func (p *Parser) parsePlaylist(base framework.CytubeEvent, data json.RawMessage)
 				Title:     item.Media.Title,
 				Duration:  item.Media.Seconds,
 				QueuedBy:  item.QueueBy,
-				Metadata:  metadata,
+				Metadata:  mediaMetadata,
 			}
 		}
 
@@ -905,4 +910,105 @@ func (p *Parser) parseQueueFailEvent(base framework.CytubeEvent, data json.RawMe
 	}
 
 	return &base, nil
+}
+
+// convertToMediaMetadata converts raw metadata map to structured MediaMetadata
+func (p *Parser) convertToMediaMetadata(raw map[string]interface{}) *framework.MediaMetadata {
+	if raw == nil {
+		return nil
+	}
+
+	metadata := &framework.MediaMetadata{
+		Extra: make(map[string]interface{}),
+	}
+
+	// Helper function to safely get string value
+	getString := func(key string) string {
+		if val, ok := raw[key]; ok {
+			if str, ok := val.(string); ok {
+				return str
+			}
+		}
+		return ""
+	}
+
+	// Helper function to safely get int64 value
+	getInt64 := func(key string) int64 {
+		if val, ok := raw[key]; ok {
+			switch v := val.(type) {
+			case float64:
+				return int64(v)
+			case int64:
+				return v
+			case int:
+				return int64(v)
+			}
+		}
+		return 0
+	}
+
+	// Helper function to safely get int value
+	getInt := func(key string) int {
+		return int(getInt64(key))
+	}
+
+	// Common fields
+	metadata.Description = getString("description")
+	metadata.ThumbnailURL = getString("thumbnail")
+	metadata.UploadDate = getString("upload_date")
+
+	// Video-specific fields
+	metadata.ChannelName = getString("channel")
+	metadata.ChannelID = getString("channel_id")
+	metadata.ViewCount = getInt64("view_count")
+	metadata.LikeCount = getInt64("like_count")
+	metadata.DislikeCount = getInt64("dislike_count")
+
+	// Audio/Music-specific fields
+	metadata.Artist = getString("artist")
+	metadata.Album = getString("album")
+	metadata.Genre = getString("genre")
+	metadata.TrackNumber = getInt("track_number")
+	metadata.Year = getInt("year")
+
+	// Handle tags array
+	if tagsVal, ok := raw["tags"]; ok {
+		switch tags := tagsVal.(type) {
+		case []interface{}:
+			metadata.Tags = make([]string, 0, len(tags))
+			for _, tag := range tags {
+				if str, ok := tag.(string); ok {
+					metadata.Tags = append(metadata.Tags, str)
+				}
+			}
+		case []string:
+			metadata.Tags = tags
+		}
+	}
+
+	// Store any remaining fields in Extra
+	knownFields := map[string]bool{
+		"description": true, "thumbnail": true, "upload_date": true,
+		"channel": true, "channel_id": true, "view_count": true,
+		"like_count": true, "dislike_count": true, "artist": true,
+		"album": true, "genre": true, "track_number": true,
+		"year": true, "tags": true,
+	}
+
+	for key, value := range raw {
+		if !knownFields[key] {
+			metadata.Extra[key] = value
+		}
+	}
+
+	// Only return metadata if it has some content
+	hasContent := metadata.Description != "" || metadata.ThumbnailURL != "" ||
+		metadata.ChannelName != "" || metadata.Artist != "" ||
+		len(metadata.Tags) > 0 || len(metadata.Extra) > 0
+
+	if !hasContent {
+		return nil
+	}
+
+	return metadata
 }

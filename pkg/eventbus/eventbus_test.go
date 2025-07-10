@@ -364,3 +364,246 @@ func BenchmarkEventBus_ConcurrentBroadcast(b *testing.B) {
 		}
 	})
 }
+
+func TestEventBus_SubscribeWithTags(t *testing.T) {
+	eb := NewEventBus(nil)
+	defer func() {
+		if err := eb.Stop(); err != nil {
+			t.Errorf("Stop failed: %v", err)
+		}
+	}()
+
+	// Track which handlers received events
+	handler1Received := make(chan bool, 1)
+	handler2Received := make(chan bool, 1)
+	handler3Received := make(chan bool, 1)
+
+	// Handler 1: Subscribes with tags ["important", "urgent"]
+	handler1 := func(event framework.Event) error {
+		handler1Received <- true
+		return nil
+	}
+	err := eb.SubscribeWithTags("tagged.event", handler1, []string{"important", "urgent"})
+	if err != nil {
+		t.Fatalf("SubscribeWithTags failed for handler1: %v", err)
+	}
+
+	// Handler 2: Subscribes with tag ["important"]
+	handler2 := func(event framework.Event) error {
+		handler2Received <- true
+		return nil
+	}
+	err = eb.SubscribeWithTags("tagged.event", handler2, []string{"important"})
+	if err != nil {
+		t.Fatalf("SubscribeWithTags failed for handler2: %v", err)
+	}
+
+	// Handler 3: Subscribes with no tags (receives all events)
+	handler3 := func(event framework.Event) error {
+		handler3Received <- true
+		return nil
+	}
+	err = eb.SubscribeWithTags("tagged.event", handler3, nil)
+	if err != nil {
+		t.Fatalf("SubscribeWithTags failed for handler3: %v", err)
+	}
+
+	t.Run("event with both tags", func(t *testing.T) {
+		// Send event with tags ["important", "urgent"]
+		data := &framework.EventData{
+			KeyValue: map[string]string{"test": "value1"},
+		}
+		metadata := framework.NewEventMetadata("test", "tagged.event").
+			WithTags("important", "urgent")
+
+		err := eb.BroadcastWithMetadata("tagged.event", data, metadata)
+		if err != nil {
+			t.Fatalf("BroadcastWithMetadata failed: %v", err)
+		}
+
+		// All handlers should receive this event
+		checkHandlerReceived(t, "handler1", handler1Received, true)
+		checkHandlerReceived(t, "handler2", handler2Received, true)
+		checkHandlerReceived(t, "handler3", handler3Received, true)
+	})
+
+	t.Run("event with one tag", func(t *testing.T) {
+		// Clear channels
+		clearChannel(handler1Received)
+		clearChannel(handler2Received)
+		clearChannel(handler3Received)
+
+		// Send event with tag ["important"]
+		data := &framework.EventData{
+			KeyValue: map[string]string{"test": "value2"},
+		}
+		metadata := framework.NewEventMetadata("test", "tagged.event").
+			WithTags("important")
+
+		err := eb.BroadcastWithMetadata("tagged.event", data, metadata)
+		if err != nil {
+			t.Fatalf("BroadcastWithMetadata failed: %v", err)
+		}
+
+		// Only handler2 and handler3 should receive this event
+		checkHandlerReceived(t, "handler1", handler1Received, false)
+		checkHandlerReceived(t, "handler2", handler2Received, true)
+		checkHandlerReceived(t, "handler3", handler3Received, true)
+	})
+
+	t.Run("event with no tags", func(t *testing.T) {
+		// Clear channels
+		clearChannel(handler1Received)
+		clearChannel(handler2Received)
+		clearChannel(handler3Received)
+
+		// Send event with no tags
+		data := &framework.EventData{
+			KeyValue: map[string]string{"test": "value3"},
+		}
+		metadata := framework.NewEventMetadata("test", "tagged.event")
+
+		err := eb.BroadcastWithMetadata("tagged.event", data, metadata)
+		if err != nil {
+			t.Fatalf("BroadcastWithMetadata failed: %v", err)
+		}
+
+		// Only handler3 should receive this event
+		checkHandlerReceived(t, "handler1", handler1Received, false)
+		checkHandlerReceived(t, "handler2", handler2Received, false)
+		checkHandlerReceived(t, "handler3", handler3Received, true)
+	})
+}
+
+func TestEventBus_SubscribeWithTagsPattern(t *testing.T) {
+	eb := NewEventBus(nil)
+	defer func() {
+		if err := eb.Stop(); err != nil {
+			t.Errorf("Stop failed: %v", err)
+		}
+	}()
+
+	// Track which handlers received events
+	handler1Received := make(chan bool, 1)
+	handler2Received := make(chan bool, 1)
+
+	// Handler 1: Pattern subscriber with tags
+	handler1 := func(event framework.Event) error {
+		handler1Received <- true
+		return nil
+	}
+	err := eb.SubscribeWithTags("system.*", handler1, []string{"critical"})
+	if err != nil {
+		t.Fatalf("SubscribeWithTags failed for pattern handler: %v", err)
+	}
+
+	// Handler 2: Pattern subscriber without tags
+	handler2 := func(event framework.Event) error {
+		handler2Received <- true
+		return nil
+	}
+	err = eb.SubscribeWithTags("system.*", handler2, nil)
+	if err != nil {
+		t.Fatalf("SubscribeWithTags failed for pattern handler: %v", err)
+	}
+
+	t.Run("critical system event", func(t *testing.T) {
+		// Send critical system event
+		data := &framework.EventData{
+			KeyValue: map[string]string{"severity": "critical"},
+		}
+		metadata := framework.NewEventMetadata("test", "system.error").
+			WithTags("critical")
+
+		err := eb.BroadcastWithMetadata("system.error", data, metadata)
+		if err != nil {
+			t.Fatalf("BroadcastWithMetadata failed: %v", err)
+		}
+
+		// Both handlers should receive this event
+		checkHandlerReceived(t, "handler1", handler1Received, true)
+		checkHandlerReceived(t, "handler2", handler2Received, true)
+	})
+
+	t.Run("non-critical system event", func(t *testing.T) {
+		// Clear channels
+		clearChannel(handler1Received)
+		clearChannel(handler2Received)
+
+		// Send non-critical system event
+		data := &framework.EventData{
+			KeyValue: map[string]string{"severity": "info"},
+		}
+		metadata := framework.NewEventMetadata("test", "system.info")
+
+		err := eb.BroadcastWithMetadata("system.info", data, metadata)
+		if err != nil {
+			t.Fatalf("BroadcastWithMetadata failed: %v", err)
+		}
+
+		// Only handler2 should receive this event
+		checkHandlerReceived(t, "handler1", handler1Received, false)
+		checkHandlerReceived(t, "handler2", handler2Received, true)
+	})
+}
+
+func TestEventBus_BackwardCompatibility(t *testing.T) {
+	eb := NewEventBus(nil)
+	defer func() {
+		if err := eb.Stop(); err != nil {
+			t.Errorf("Stop failed: %v", err)
+		}
+	}()
+
+	received := make(chan bool, 1)
+	handler := func(event framework.Event) error {
+		received <- true
+		return nil
+	}
+
+	// Use the old Subscribe method (should work as before)
+	err := eb.Subscribe("compat.event", handler)
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+
+	// Send event with tags (handler should still receive it since it has no tag filter)
+	data := &framework.EventData{
+		KeyValue: map[string]string{"test": "value"},
+	}
+	metadata := framework.NewEventMetadata("test", "compat.event").
+		WithTags("some", "tags")
+
+	err = eb.BroadcastWithMetadata("compat.event", data, metadata)
+	if err != nil {
+		t.Fatalf("BroadcastWithMetadata failed: %v", err)
+	}
+
+	checkHandlerReceived(t, "backward compatible handler", received, true)
+}
+
+// Helper functions
+func checkHandlerReceived(t *testing.T, handlerName string, ch <-chan bool, shouldReceive bool) {
+	t.Helper()
+	select {
+	case <-ch:
+		if !shouldReceive {
+			t.Errorf("%s received event but should not have", handlerName)
+		}
+	case <-time.After(100 * time.Millisecond):
+		if shouldReceive {
+			t.Errorf("%s did not receive event but should have", handlerName)
+		}
+	}
+}
+
+func clearChannel(ch chan bool) {
+	for {
+		select {
+		case <-ch:
+			// Keep draining
+		default:
+			return
+		}
+	}
+}

@@ -179,15 +179,41 @@ type PlaylistArrayEvent struct {
 	Items []PlaylistItem `json:"items"`
 }
 
+// MediaMetadata represents metadata for various media types
+type MediaMetadata struct {
+	// Common fields for all media types
+	Description  string   `json:"description,omitempty"`
+	ThumbnailURL string   `json:"thumbnail_url,omitempty"`
+	UploadDate   string   `json:"upload_date,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+
+	// Video-specific fields
+	ChannelName  string `json:"channel_name,omitempty"`
+	ChannelID    string `json:"channel_id,omitempty"`
+	ViewCount    int64  `json:"view_count,omitempty"`
+	LikeCount    int64  `json:"like_count,omitempty"`
+	DislikeCount int64  `json:"dislike_count,omitempty"`
+
+	// Audio/Music-specific fields
+	Artist      string `json:"artist,omitempty"`
+	Album       string `json:"album,omitempty"`
+	Genre       string `json:"genre,omitempty"`
+	TrackNumber int    `json:"track_number,omitempty"`
+	Year        int    `json:"year,omitempty"`
+
+	// Additional provider-specific fields
+	Extra map[string]interface{} `json:"extra,omitempty"`
+}
+
 // PlaylistItem represents a single item in the playlist
 type PlaylistItem struct {
-	MediaID   string                 `json:"media_id"`
-	MediaType string                 `json:"media_type"`
-	Title     string                 `json:"title"`
-	Duration  int                    `json:"duration"`
-	QueuedBy  string                 `json:"queued_by"`
-	Position  int                    `json:"position"`
-	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+	MediaID   string         `json:"media_id"`
+	MediaType string         `json:"media_type"`
+	Title     string         `json:"title"`
+	Duration  int            `json:"duration"`
+	QueuedBy  string         `json:"queued_by"`
+	Position  int            `json:"position"`
+	Metadata  *MediaMetadata `json:"metadata,omitempty"`
 }
 
 // FieldValue represents a parsed field value from a generic event
