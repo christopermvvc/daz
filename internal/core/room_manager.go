@@ -113,6 +113,16 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 
+	// Create a new client for reconnection to ensure fresh context
+	if conn.ReconnectAttempt > 0 {
+		log.Printf("[RoomManager] Room '%s': Creating new client for reconnection", roomID)
+		newClient, err := cytube.NewWebSocketClient(conn.Room.Channel, conn.Room.ID, conn.EventChan)
+		if err != nil {
+			return fmt.Errorf("failed to create new client for reconnection: %w", err)
+		}
+		conn.Client = newClient
+	}
+
 	// Connect with retry logic
 	for attempt := 0; attempt < conn.Room.ReconnectAttempts; attempt++ {
 		if attempt > 0 {
@@ -401,7 +411,7 @@ func (rm *RoomManager) checkConnections() {
 			needsReconnect = true
 			log.Printf("[RoomManager] Room '%s': Not connected (manager: %v, client: %v), will attempt reconnection",
 				roomID, connected, clientConnected)
-		} else if time.Since(lastMediaUpdate) > 15*time.Second {
+		} else if time.Since(lastMediaUpdate) > 5*time.Minute {
 			needsReconnect = true
 			log.Printf("[RoomManager] Room '%s': No MediaUpdate for %v, assuming disconnected",
 				roomID, time.Since(lastMediaUpdate))
