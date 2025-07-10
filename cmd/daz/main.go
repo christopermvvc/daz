@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -181,7 +182,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 	}
 
 	// Prepare plugin configurations
-	pluginConfigs := make(map[string]interface{})
+	pluginConfigs := make(map[string]json.RawMessage)
 	pluginConfigs["sql"] = cfg.GetPluginConfig("sql")
 	pluginConfigs["eventfilter"] = cfg.GetPluginConfig("eventfilter")
 	pluginConfigs["usertracker"] = cfg.GetPluginConfig("usertracker")

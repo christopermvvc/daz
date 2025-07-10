@@ -17,11 +17,12 @@ import (
 
 // Plugin implements the unified event filter plugin for event routing and command processing
 type Plugin struct {
-	name     string
-	eventBus framework.EventBus
-	config   *Config
-	running  bool
-	mu       sync.RWMutex
+	name      string
+	eventBus  framework.EventBus
+	sqlClient *framework.SQLClient
+	config    *Config
+	running   bool
+	mu        sync.RWMutex
 
 	// Command registry
 	commandRegistry map[string]*CommandInfo
@@ -147,6 +148,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 
 	p.eventBus = bus
+	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
 	log.Printf("[EventFilter] Initialized with command prefix: %s", p.config.CommandPrefix)
@@ -303,8 +305,7 @@ func (p *Plugin) createSchema() error {
 		CREATE INDEX IF NOT EXISTS idx_eventfilter_history_user ON daz_eventfilter_history(username, executed_at);
 	`
 
-	err := p.eventBus.Exec(schema)
-	return err
+	return p.sqlClient.Exec(schema)
 }
 
 // handleCytubeEvent routes Cytube events to appropriate plugins
@@ -485,14 +486,13 @@ func (p *Plugin) saveCommand(command string, info *CommandInfo) error {
 		Valid:  info.IsAlias,
 	}
 
-	err := p.eventBus.Exec(query,
-		framework.SQLParam{Value: command},
-		framework.SQLParam{Value: info.PluginName},
-		framework.SQLParam{Value: info.IsAlias},
-		framework.SQLParam{Value: primaryCmd},
-		framework.SQLParam{Value: info.MinRank},
-		framework.SQLParam{Value: info.Enabled})
-	return err
+	return p.sqlClient.Exec(query,
+		command,
+		info.PluginName,
+		info.IsAlias,
+		primaryCmd,
+		info.MinRank,
+		info.Enabled)
 }
 
 func (p *Plugin) logCommand(command, username, channel string, args []string) error {
@@ -501,12 +501,11 @@ func (p *Plugin) logCommand(command, username, channel string, args []string) er
 		VALUES ($1, $2, $3, $4)
 	`
 
-	err := p.eventBus.Exec(query,
-		framework.SQLParam{Value: command},
-		framework.SQLParam{Value: username},
-		framework.SQLParam{Value: channel},
-		framework.SQLParam{Value: args})
-	return err
+	return p.sqlClient.Exec(query,
+		command,
+		username,
+		channel,
+		args)
 }
 
 // Helper functions

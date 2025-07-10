@@ -72,22 +72,49 @@ type SQLParam struct {
 	Value any `json:"value"`
 }
 
-type SQLRequest struct {
-	ID         string        `json:"id"`
-	Query      string        `json:"query"`
-	Params     []SQLParam    `json:"params"` // Using concrete SQLParam type
-	Timeout    time.Duration `json:"timeout"`
-	RequestBy  string        `json:"request_by"`
-	IsSync     bool          `json:"is_sync"`     // New field to indicate sync operation
-	ResponseCh string        `json:"response_ch"` // Channel ID for response delivery
+// NewSQLParam creates a new SQLParam with the given value
+func NewSQLParam(value any) SQLParam {
+	return SQLParam{Value: value}
 }
 
-type SQLResponse struct {
-	ID       string `json:"id"`
-	Success  bool   `json:"success"`
-	Error    error  `json:"error,omitempty"`
-	Rows     []byte `json:"rows,omitempty"`
-	RowCount int64  `json:"row_count,omitempty"`
+// SQLQueryRequest represents a SQL query request event
+type SQLQueryRequest struct {
+	ID            string        `json:"id"`
+	CorrelationID string        `json:"correlation_id"`
+	Query         string        `json:"query"`
+	Params        []SQLParam    `json:"params"`
+	Timeout       time.Duration `json:"timeout"`
+	RequestBy     string        `json:"request_by"`
+}
+
+// SQLQueryResponse represents a SQL query response event
+type SQLQueryResponse struct {
+	ID            string              `json:"id"`
+	CorrelationID string              `json:"correlation_id"`
+	Success       bool                `json:"success"`
+	Error         string              `json:"error,omitempty"`
+	Columns       []string            `json:"columns,omitempty"`
+	Rows          [][]json.RawMessage `json:"rows,omitempty"`
+}
+
+// SQLExecRequest represents a SQL exec request event
+type SQLExecRequest struct {
+	ID            string        `json:"id"`
+	CorrelationID string        `json:"correlation_id"`
+	Query         string        `json:"query"`
+	Params        []SQLParam    `json:"params"`
+	Timeout       time.Duration `json:"timeout"`
+	RequestBy     string        `json:"request_by"`
+}
+
+// SQLExecResponse represents a SQL exec response event
+type SQLExecResponse struct {
+	ID            string `json:"id"`
+	CorrelationID string `json:"correlation_id"`
+	Success       bool   `json:"success"`
+	Error         string `json:"error,omitempty"`
+	RowsAffected  int64  `json:"rows_affected,omitempty"`
+	LastInsertID  int64  `json:"last_insert_id,omitempty"`
 }
 
 type PluginRequest struct {

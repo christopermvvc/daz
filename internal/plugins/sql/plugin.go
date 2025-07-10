@@ -31,6 +31,7 @@ type Plugin struct {
 
 	loggerRules   []LoggerRule
 	eventsHandled int64
+	idCounter     int64
 }
 
 type Config struct {
@@ -147,11 +148,19 @@ func (p *Plugin) Start() error {
 		return fmt.Errorf("failed to subscribe to log.configure: %w", err)
 	}
 
-	if err := p.eventBus.Subscribe("sql.query", p.handleSQLQuery); err != nil {
-		return fmt.Errorf("failed to subscribe to sql.query: %w", err)
+	// Subscribe to plugin.request for targeted requests
+	if err := p.eventBus.Subscribe("plugin.request", p.handlePluginRequest); err != nil {
+		return fmt.Errorf("failed to subscribe to plugin.request: %w", err)
 	}
-	if err := p.eventBus.Subscribe("sql.exec", p.handleSQLExec); err != nil {
-		return fmt.Errorf("failed to subscribe to sql.exec: %w", err)
+
+	if err := p.eventBus.Subscribe("sql.query.request", p.handleSQLQuery); err != nil {
+		return fmt.Errorf("failed to subscribe to sql.query.request: %w", err)
+	}
+	if err := p.eventBus.Subscribe("sql.exec.request", p.handleSQLExec); err != nil {
+		return fmt.Errorf("failed to subscribe to sql.exec.request: %w", err)
+	}
+	if err := p.eventBus.Subscribe("sql.batch.query", p.handleBatchQueryRequest); err != nil {
+		return fmt.Errorf("failed to subscribe to sql.batch.query: %w", err)
 	}
 
 	for _, rule := range p.loggerRules {
@@ -165,38 +174,11 @@ func (p *Plugin) Start() error {
 		}
 	}
 
-	// Register SQL handlers with EventBus
-	if err := p.registerSQLHandlers(); err != nil {
-		return fmt.Errorf("failed to register SQL handlers: %w", err)
-	}
-
 	// Signal that the plugin is ready
 	close(p.readyChan)
 
 	log.Printf("[SQL Plugin] Started successfully")
 	return nil
-}
-
-// registerSQLHandlers registers the SQL plugin's handlers with the EventBus
-func (p *Plugin) registerSQLHandlers() error {
-	// Get the EventBus interface that supports SetSQLHandlers
-	if sqlEventBus, ok := p.eventBus.(interface {
-		SetSQLHandlers(queryHandler, execHandler framework.EventHandler)
-	}); ok {
-		// Create wrapper handlers that convert direct calls to events
-		queryHandler := func(event framework.Event) error {
-			return p.handleSQLQuery(event)
-		}
-		execHandler := func(event framework.Event) error {
-			return p.handleSQLExec(event)
-		}
-
-		sqlEventBus.SetSQLHandlers(queryHandler, execHandler)
-		log.Printf("[SQL Plugin] Registered SQL handlers with EventBus")
-		return nil
-	}
-
-	return fmt.Errorf("EventBus does not support SetSQLHandlers")
 }
 
 func (p *Plugin) Stop() error {
@@ -378,6 +360,11 @@ func (p *Plugin) initializeSchema(ctx context.Context) error {
 
 	log.Printf("[SQL Plugin] Database schema initialized")
 	return nil
+}
+
+func (p *Plugin) generateID() string {
+	p.idCounter++
+	return fmt.Sprintf("sql-%d-%d", time.Now().UnixNano(), p.idCounter)
 }
 
 func (p *Plugin) findMatchingEventTypes(pattern string) []string {

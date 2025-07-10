@@ -79,6 +79,13 @@ func (m *mockEventBus) Subscribe(eventType string, handler framework.EventHandle
 	return nil
 }
 
+func (m *mockEventBus) SubscribeWithTags(pattern string, handler framework.EventHandler, tags []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.subscriptions[pattern] = append(m.subscriptions[pattern], handler)
+	return nil
+}
+
 func (m *mockEventBus) SetSQLHandlers(queryHandler, execHandler framework.EventHandler) {
 	// Mock implementation - can be empty
 }
@@ -91,11 +98,11 @@ func (m *mockEventBus) GetDroppedEventCount(eventType string) int64 {
 	return 0
 }
 
-func (m *mockEventBus) QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error) {
+func (m *mockEventBus) QuerySync(ctx context.Context, sql string, params ...framework.SQLParam) (*sql.Rows, error) {
 	return nil, fmt.Errorf("sync queries not supported in mock")
 }
 
-func (m *mockEventBus) ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error) {
+func (m *mockEventBus) ExecSync(ctx context.Context, sql string, params ...framework.SQLParam) (sql.Result, error) {
 	return nil, fmt.Errorf("sync exec not supported in mock")
 }
 

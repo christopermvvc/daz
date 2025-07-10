@@ -14,11 +14,12 @@ import (
 
 // Plugin implements analytics functionality
 type Plugin struct {
-	name     string
-	eventBus framework.EventBus
-	config   *Config
-	running  bool
-	mu       sync.RWMutex
+	name      string
+	eventBus  framework.EventBus
+	sqlClient *framework.SQLClient
+	config    *Config
+	running   bool
+	mu        sync.RWMutex
 
 	// Shutdown management
 	ctx       context.Context
@@ -161,6 +162,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 
 	p.eventBus = bus
+	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
 	log.Printf("[Analytics] Initialized with hourly interval: %v, daily interval: %v",
@@ -317,7 +319,7 @@ func (p *Plugin) createTables() error {
 	// Execute table creation
 	ctx := context.Background()
 	for _, sql := range []string{hourlyTableSQL, dailyTableSQL, userStatsTableSQL} {
-		if _, err := p.eventBus.ExecSync(ctx, sql); err != nil {
+		if _, err := p.sqlClient.ExecSync(ctx, sql); err != nil {
 			return fmt.Errorf("failed to create table: %w", err)
 		}
 	}
@@ -359,7 +361,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 			last_seen = NOW()
 	`
 	ctx := context.Background()
-	_, err := p.eventBus.ExecSync(ctx, userStatsSQL, channel, chat.Username)
+	_, err := p.sqlClient.ExecSync(ctx, userStatsSQL, framework.NewSQLParam(channel), framework.NewSQLParam(chat.Username))
 	if err != nil {
 		log.Printf("[Analytics] Error updating user stats: %v", err)
 	}
@@ -394,7 +396,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
-	rows, err := p.eventBus.QuerySync(ctx, currentHourQuery, channel)
+	rows, err := p.sqlClient.QuerySync(ctx, currentHourQuery, framework.NewSQLParam(channel))
 	if err != nil {
 		return fmt.Errorf("failed to query current hour stats: %w", err)
 	}
@@ -421,7 +423,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 		WHERE channel = $1 AND day_date = CURRENT_DATE
 	`
 
-	rows2, err := p.eventBus.QuerySync(ctx, todayQuery, channel)
+	rows2, err := p.sqlClient.QuerySync(ctx, todayQuery, framework.NewSQLParam(channel))
 	if err != nil {
 		return fmt.Errorf("failed to query today stats: %w", err)
 	}
@@ -450,7 +452,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 		LIMIT 3
 	`
 
-	rows3, err := p.eventBus.QuerySync(ctx, topChattersQuery, channel)
+	rows3, err := p.sqlClient.QuerySync(ctx, topChattersQuery, framework.NewSQLParam(channel))
 	if err != nil {
 		return fmt.Errorf("failed to query top chatters: %w", err)
 	}

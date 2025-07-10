@@ -87,18 +87,21 @@ func (m *mockEventBus) Request(ctx context.Context, target string, eventType str
 func (m *mockEventBus) DeliverResponse(correlationID string, response *EventData, err error) {}
 func (m *mockEventBus) Query(sql string, params ...SQLParam) (QueryResult, error)            { return nil, nil }
 func (m *mockEventBus) Exec(sql string, params ...SQLParam) error                            { return nil }
-func (m *mockEventBus) QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error) {
+func (m *mockEventBus) QuerySync(ctx context.Context, sql string, params ...SQLParam) (*sql.Rows, error) {
 	return nil, nil
 }
-func (m *mockEventBus) ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error) {
+func (m *mockEventBus) ExecSync(ctx context.Context, sql string, params ...SQLParam) (sql.Result, error) {
 	return nil, nil
 }
 func (m *mockEventBus) Subscribe(eventType string, handler EventHandler) error { return nil }
-func (m *mockEventBus) SetSQLHandlers(queryHandler, execHandler EventHandler)  {}
-func (m *mockEventBus) RegisterPlugin(name string, plugin Plugin) error        { return nil }
-func (m *mockEventBus) UnregisterPlugin(name string) error                     { return nil }
-func (m *mockEventBus) GetDroppedEventCounts() map[string]int64                { return nil }
-func (m *mockEventBus) GetDroppedEventCount(eventType string) int64            { return 0 }
+func (m *mockEventBus) SubscribeWithTags(pattern string, handler EventHandler, tags []string) error {
+	return nil
+}
+func (m *mockEventBus) SetSQLHandlers(queryHandler, execHandler EventHandler) {}
+func (m *mockEventBus) RegisterPlugin(name string, plugin Plugin) error       { return nil }
+func (m *mockEventBus) UnregisterPlugin(name string) error                    { return nil }
+func (m *mockEventBus) GetDroppedEventCounts() map[string]int64               { return nil }
+func (m *mockEventBus) GetDroppedEventCount(eventType string) int64           { return 0 }
 
 func TestPluginManagerRegisterPlugin(t *testing.T) {
 	pm := NewPluginManager()
@@ -195,7 +198,7 @@ func TestPluginManagerInitializeAll(t *testing.T) {
 		t.Fatalf("Failed to register plugin2: %v", err)
 	}
 
-	configs := map[string]interface{}{
+	configs := map[string]json.RawMessage{
 		"plugin1": nil,
 		"plugin2": nil,
 	}
@@ -224,7 +227,7 @@ func TestPluginManagerStartAll(t *testing.T) {
 		t.Fatalf("Failed to register plugin2: %v", err)
 	}
 
-	configs := map[string]interface{}{
+	configs := map[string]json.RawMessage{
 		"plugin1": nil,
 		"plugin2": nil,
 	}
@@ -262,7 +265,7 @@ func TestPluginManagerStopAll(t *testing.T) {
 		t.Fatalf("Failed to register plugin2: %v", err)
 	}
 
-	configs := map[string]interface{}{
+	configs := map[string]json.RawMessage{
 		"plugin1": nil,
 		"plugin2": nil,
 	}

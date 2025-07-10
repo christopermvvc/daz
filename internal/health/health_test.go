@@ -2,7 +2,6 @@ package health
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -52,23 +51,6 @@ func (m *mockEventBus) Send(target string, eventType string, data *framework.Eve
 	return nil
 }
 
-func (m *mockEventBus) Query(sql string, params ...framework.SQLParam) (framework.QueryResult, error) {
-	return &mockQueryResult{}, nil
-}
-
-func (m *mockEventBus) Exec(sql string, params ...framework.SQLParam) error {
-	return nil
-}
-
-func (m *mockEventBus) QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error) {
-	// Return nil rows for health check - the health checker handles nil gracefully
-	return nil, nil
-}
-
-func (m *mockEventBus) ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error) {
-	return nil, fmt.Errorf("sync exec not supported in mock")
-}
-
 func (m *mockEventBus) BroadcastWithMetadata(eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
 	return m.Broadcast(eventType, data)
 }
@@ -78,6 +60,19 @@ func (m *mockEventBus) SendWithMetadata(target string, eventType string, data *f
 }
 
 func (m *mockEventBus) Request(ctx context.Context, target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) (*framework.EventData, error) {
+	// For health check, return a successful response
+	if eventType == "sql.query.request" && data != nil && data.SQLQueryRequest != nil {
+		response := &framework.EventData{
+			SQLQueryResponse: &framework.SQLQueryResponse{
+				ID:            data.SQLQueryRequest.ID,
+				CorrelationID: data.SQLQueryRequest.CorrelationID,
+				Success:       true,
+				Columns:       []string{"?column?"},
+				Rows:          [][]json.RawMessage{{json.RawMessage("1")}},
+			},
+		}
+		return response, nil
+	}
 	return nil, fmt.Errorf("request not supported in mock")
 }
 
@@ -97,6 +92,10 @@ func (m *mockEventBus) Subscribe(eventType string, handler framework.EventHandle
 	return nil
 }
 
+func (m *mockEventBus) SubscribeWithTags(pattern string, handler framework.EventHandler, tags []string) error {
+	return nil
+}
+
 func (m *mockEventBus) SetSQLHandlers(queryHandler, execHandler framework.EventHandler) {
 }
 
@@ -111,24 +110,6 @@ func (m *mockEventBus) GetDroppedEventCount(eventType string) int64 {
 		return 10
 	}
 	return 0
-}
-
-// mockQueryResult implements framework.QueryResult for testing
-type mockQueryResult struct {
-	scanCalled bool
-}
-
-func (m *mockQueryResult) Scan(dest ...interface{}) error {
-	m.scanCalled = true
-	return nil
-}
-
-func (m *mockQueryResult) Next() bool {
-	return false
-}
-
-func (m *mockQueryResult) Close() error {
-	return nil
 }
 
 // mockHealthChecker implements Checker for testing

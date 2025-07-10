@@ -3,6 +3,7 @@ package analytics
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -81,6 +82,13 @@ func (m *mockEventBus) Subscribe(eventType string, handler framework.EventHandle
 	return nil
 }
 
+func (m *mockEventBus) SubscribeWithTags(pattern string, handler framework.EventHandler, tags []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.subscribers[pattern] = append(m.subscribers[pattern], handler)
+	return nil
+}
+
 func (m *mockEventBus) SetSQLHandlers(queryHandler, execHandler framework.EventHandler) {
 	// No-op for tests
 }
@@ -93,7 +101,7 @@ func (m *mockEventBus) GetDroppedEventCount(eventType string) int64 {
 	return 0
 }
 
-func (m *mockEventBus) QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error) {
+func (m *mockEventBus) QuerySync(ctx context.Context, sql string, params ...framework.SQLParam) (*sql.Rows, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.queryCalls = append(m.queryCalls, sql)
@@ -103,7 +111,7 @@ func (m *mockEventBus) QuerySync(ctx context.Context, sql string, params ...inte
 	return nil, nil
 }
 
-func (m *mockEventBus) ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error) {
+func (m *mockEventBus) ExecSync(ctx context.Context, sql string, params ...framework.SQLParam) (sql.Result, error) {
 	m.mu.Lock()
 	m.execCalls = append(m.execCalls, sql)
 	m.mu.Unlock()
@@ -119,7 +127,59 @@ func (m *mockEventBus) SendWithMetadata(target string, eventType string, data *f
 }
 
 func (m *mockEventBus) Request(ctx context.Context, target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) (*framework.EventData, error) {
-	return nil, fmt.Errorf("request not supported in mock")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Handle SQL exec requests
+	if eventType == "sql.exec.request" && data != nil && data.SQLExecRequest != nil {
+		m.execCalls = append(m.execCalls, data.SQLExecRequest.Query)
+		return &framework.EventData{
+			SQLExecResponse: &framework.SQLExecResponse{
+				Success:      true,
+				RowsAffected: 1,
+			},
+		}, nil
+	}
+
+	// Handle SQL query requests
+	if eventType == "sql.query.request" && data != nil && data.SQLQueryRequest != nil {
+		m.queryCalls = append(m.queryCalls, data.SQLQueryRequest.Query)
+
+		// Check for predefined responses
+		for key, result := range m.queryResponses {
+			if len(data.SQLQueryRequest.Query) >= len(key) && data.SQLQueryRequest.Query[:len(key)] == key {
+				// Convert mock result to SQL response format
+				var rows [][]json.RawMessage
+				for _, row := range result.rows {
+					var jsonRow []json.RawMessage
+					for _, val := range row {
+						jsonBytes, _ := json.Marshal(val)
+						jsonRow = append(jsonRow, json.RawMessage(jsonBytes))
+					}
+					rows = append(rows, jsonRow)
+				}
+
+				return &framework.EventData{
+					SQLQueryResponse: &framework.SQLQueryResponse{
+						Success: true,
+						Columns: []string{"col1", "col2", "col3"}, // Generic columns
+						Rows:    rows,
+					},
+				}, nil
+			}
+		}
+
+		// Return empty result if no predefined response
+		return &framework.EventData{
+			SQLQueryResponse: &framework.SQLQueryResponse{
+				Success: true,
+				Columns: []string{},
+				Rows:    [][]json.RawMessage{},
+			},
+		}, nil
+	}
+
+	return nil, fmt.Errorf("request type %s not supported in mock", eventType)
 }
 
 func (m *mockEventBus) DeliverResponse(correlationID string, response *framework.EventData, err error) {

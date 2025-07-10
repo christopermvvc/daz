@@ -3,6 +3,7 @@ package usertracker
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -72,11 +73,11 @@ func (m *MockEventBus) Exec(sql string, params ...framework.SQLParam) error {
 	return nil
 }
 
-func (m *MockEventBus) QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error) {
+func (m *MockEventBus) QuerySync(ctx context.Context, sql string, params ...framework.SQLParam) (*sql.Rows, error) {
 	return nil, fmt.Errorf("sync queries not supported in mock")
 }
 
-func (m *MockEventBus) ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error) {
+func (m *MockEventBus) ExecSync(ctx context.Context, sql string, params ...framework.SQLParam) (sql.Result, error) {
 	return nil, fmt.Errorf("sync exec not supported in mock")
 }
 
@@ -89,7 +90,40 @@ func (m *MockEventBus) SendWithMetadata(target string, eventType string, data *f
 }
 
 func (m *MockEventBus) Request(ctx context.Context, target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) (*framework.EventData, error) {
-	return nil, fmt.Errorf("request not supported in mock")
+	// Handle SQL exec requests
+	if eventType == "sql.exec.request" && data != nil && data.SQLExecRequest != nil {
+		// Convert SQLParam to interface{} for storage
+		interfaceParams := make([]interface{}, len(data.SQLExecRequest.Params))
+		for i, p := range data.SQLExecRequest.Params {
+			interfaceParams[i] = p.Value
+		}
+		m.execs = append(m.execs, mockExec{query: data.SQLExecRequest.Query, params: interfaceParams})
+		return &framework.EventData{
+			SQLExecResponse: &framework.SQLExecResponse{
+				Success:      true,
+				RowsAffected: 1,
+			},
+		}, nil
+	}
+
+	// Handle SQL query requests
+	if eventType == "sql.query.request" && data != nil && data.SQLQueryRequest != nil {
+		// Convert SQLParam to interface{} for storage
+		interfaceParams := make([]interface{}, len(data.SQLQueryRequest.Params))
+		for i, p := range data.SQLQueryRequest.Params {
+			interfaceParams[i] = p.Value
+		}
+		m.queries = append(m.queries, mockQuery{query: data.SQLQueryRequest.Query, params: interfaceParams})
+		return &framework.EventData{
+			SQLQueryResponse: &framework.SQLQueryResponse{
+				Success: true,
+				Columns: []string{},
+				Rows:    [][]json.RawMessage{},
+			},
+		}, nil
+	}
+
+	return nil, fmt.Errorf("request type %s not supported in mock", eventType)
 }
 
 func (m *MockEventBus) DeliverResponse(correlationID string, response *framework.EventData, err error) {
@@ -109,6 +143,14 @@ func (m *MockEventBus) Subscribe(eventType string, handler framework.EventHandle
 		m.subs = make(map[string][]framework.EventHandler)
 	}
 	m.subs[eventType] = append(m.subs[eventType], handler)
+	return nil
+}
+
+func (m *MockEventBus) SubscribeWithTags(pattern string, handler framework.EventHandler, tags []string) error {
+	if m.subs == nil {
+		m.subs = make(map[string][]framework.EventHandler)
+	}
+	m.subs[pattern] = append(m.subs[pattern], handler)
 	return nil
 }
 
@@ -173,7 +215,7 @@ func TestPluginInitialize(t *testing.T) {
 	plugin := NewPlugin(nil)
 	mockBus := &MockEventBus{}
 
-	err := plugin.Initialize(mockBus)
+	err := plugin.Init(nil, mockBus)
 	if err != nil {
 		t.Fatalf("Failed to initialize plugin: %v", err)
 	}
@@ -186,7 +228,7 @@ func TestPluginStart(t *testing.T) {
 	plugin := NewPlugin(nil)
 	mockBus := &MockEventBus{}
 
-	err := plugin.Initialize(mockBus)
+	err := plugin.Init(nil, mockBus)
 	if err != nil {
 		t.Fatalf("Failed to initialize plugin: %v", err)
 	}
@@ -226,7 +268,7 @@ func TestHandleUserJoin(t *testing.T) {
 	plugin := NewPlugin(nil)
 	mockBus := &MockEventBus{}
 
-	err := plugin.Initialize(mockBus)
+	err := plugin.Init(nil, mockBus)
 	if err != nil {
 		t.Fatalf("Failed to initialize plugin: %v", err)
 	}
@@ -290,7 +332,7 @@ func TestHandleUserLeave(t *testing.T) {
 	plugin := NewPlugin(nil)
 	mockBus := &MockEventBus{}
 
-	err := plugin.Initialize(mockBus)
+	err := plugin.Init(nil, mockBus)
 	if err != nil {
 		t.Fatalf("Failed to initialize plugin: %v", err)
 	}

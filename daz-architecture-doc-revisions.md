@@ -344,7 +344,116 @@ Despite these revisions, the core architectural principles remain intact:
 - ✅ PostgreSQL persistence focus (now selective)
 - ✅ Graceful degradation
 - ✅ Restart resilience
-- ✅ Type safety (no interface{})
+- ✅ Type safety (minimal interface{} usage)
 - ✅ Clean, testable code
 
 All changes enhance rather than contradict the original design goals.
+
+### 2025-07-10: Interface{} Elimination Initiative
+
+#### Type Safety Enhancement
+**Original State**: Widespread use of interface{} throughout the codebase
+**New Implementation**: Eliminated most interface{} usage with concrete types
+
+**Changes Made**:
+
+1. **FlexibleUID Type**:
+   - Created custom type to handle Cytube's dual string/number UID fields
+   - Implements proper JSON marshaling/unmarshaling
+   - Provides type-safe access methods
+
+2. **EventBus SQL Methods**:
+   - Changed from `...interface{}` to `...framework.SQLParam`
+   - All SQL operations now use typed parameters
+   - Maintains compatibility with database/sql at the boundary
+
+3. **Plugin Configuration**:
+   - Changed from `map[string]interface{}` to `map[string]json.RawMessage`
+   - Plugins receive typed configuration data
+   - Better compile-time checking
+
+4. **Event Data Structures**:
+   - Replaced generic maps with concrete types
+   - Created specific payload types for each event
+   - Improved IDE support and documentation
+
+**Justified Exceptions**:
+As documented in the architecture document, the following interface{} uses remain:
+
+1. **SQLParam.Value**: Required for database/sql compatibility
+2. **Cytube Metadata Fields**: Preserves arbitrary JSON from Cytube
+3. **QueryResult.Scan**: Matches sql.Rows interface
+
+**Benefits**:
+- Compile-time type checking catches errors early
+- Better IDE autocompletion and refactoring support
+- Clearer API contracts between components
+- Reduced runtime type assertion errors
+- Improved code maintainability
+
+**Implementation Status**: ✅ COMPLETE
+- All plugins updated to use concrete types
+- All tests passing with new signatures
+- Binary builds successfully
+- Architecture document updated with type safety section
+
+### 2025-07-10: SQL Plugin Event-Driven Architecture Implementation
+
+#### Complete Decoupling from EventBus
+**Changes Made**:
+- Removed all SQL-specific methods from EventBus interface (Query, Exec, QuerySync, ExecSync)
+- SQL plugin now subscribes to event patterns: `sql.query.request`, `sql.exec.request`, `sql.batch.query`
+- Created `SQLClient` helper class for plugins to simplify event-based SQL operations
+- Implemented logger middleware pattern for selective event logging
+
+**Architecture**:
+```go
+// Before: Direct SQL methods on EventBus
+eventBus.QuerySync("SELECT ...", params...)
+
+// After: Event-based communication
+sqlClient := framework.NewSQLClient(eventBus, "plugin-name")
+rows, err := sqlClient.QueryContext(ctx, "SELECT ...", params...)
+```
+
+**Benefits**:
+- EventBus is now a pure message broker
+- SQL implementation can be swapped without changing core interfaces
+- Clean separation of concerns
+- Better testability
+
+**Implementation Status**: ✅ COMPLETE
+
+### 2025-07-10: Enhanced EventBus Features
+
+#### Request/Response Infrastructure
+**Implementation**: ✅ COMPLETE
+- Added `Request()` method for synchronous operations with timeout support
+- Correlation ID tracking for matching requests to responses
+- Context-based cancellation support
+
+#### Event Metadata System
+**Implementation**: ✅ COMPLETE
+- Created comprehensive `EventMetadata` struct with:
+  - Correlation ID for request tracking
+  - Source/Target for directed communication
+  - Priority field for message prioritization
+  - Tags for filtering and routing
+  - Logging directives (loggable, log level)
+- Builder pattern for metadata construction
+
+#### Bidirectional Communication
+**Implementation**: ✅ COMPLETE
+- Full request/response pattern support
+- Plugin-to-plugin communication via EventBus
+- Timeout handling with proper cleanup
+
+#### Not Yet Implemented
+1. **Priority-based Message Delivery**: Priority field exists but EventBus doesn't use it for routing
+2. **Tag-based Routing**: Tags exist in metadata but no routing rules implemented
+
+**Architecture Status**:
+The enhanced EventBus provides all the infrastructure needed for the complete implementation. The remaining work is to:
+1. Add priority queue support to the EventBus router
+2. Implement tag-based subscription patterns
+3. Update all Cytube events to include proper metadata with tags

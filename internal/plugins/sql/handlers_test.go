@@ -11,7 +11,7 @@ import (
 func TestHandleLogRequest(t *testing.T) {
 	p := &Plugin{
 		name:     "sql",
-		eventBus: &mockEventBus{},
+		eventBus: &mockEventBus{responses: make(map[string]*framework.EventData)},
 	}
 
 	// Create a log request event
@@ -47,63 +47,97 @@ func TestHandleLogRequest(t *testing.T) {
 func TestHandleSQLQuery(t *testing.T) {
 	p := &Plugin{
 		name:     "sql",
-		eventBus: &mockEventBus{},
+		eventBus: &mockEventBus{responses: make(map[string]*framework.EventData)},
 	}
 
 	// Create a SQL query request
 	eventData := &framework.EventData{
-		SQLRequest: &framework.SQLRequest{
-			ID:         "query-123",
-			Query:      "SELECT * FROM test",
-			Params:     []framework.SQLParam{},
-			Timeout:    5 * time.Second,
-			RequestBy:  "test-plugin",
-			IsSync:     false,
-			ResponseCh: "",
+		SQLQueryRequest: &framework.SQLQueryRequest{
+			ID:            "query-123",
+			CorrelationID: "corr-123",
+			Query:         "SELECT * FROM test",
+			Params:        []framework.SQLParam{},
+			Timeout:       5 * time.Second,
+			RequestBy:     "test-plugin",
 		},
 	}
 
 	event := framework.NewDataEvent("sql.query", eventData)
 
-	// Should return error when pool is nil
+	// Should send error response when pool is nil
 	err := p.handleSQLQuery(event)
-	if err == nil {
-		t.Error("Expected error when database not connected")
+	if err != nil {
+		t.Errorf("Expected nil error, got: %v", err)
+	}
+
+	// Check that error response was delivered
+	mock := p.eventBus.(*mockEventBus)
+	if len(mock.responses) != 1 {
+		t.Errorf("Expected 1 response, got %d", len(mock.responses))
+		for k := range mock.responses {
+			t.Logf("Got response for correlation ID: %s", k)
+		}
+	} else {
+		resp, ok := mock.responses["corr-123"]
+		if !ok {
+			t.Error("Expected response for correlation ID corr-123")
+			for k := range mock.responses {
+				t.Logf("Got response for correlation ID: %s", k)
+			}
+		} else if resp.SQLQueryResponse == nil {
+			t.Error("Expected SQLQueryResponse in response data")
+		} else if resp.SQLQueryResponse.Success {
+			t.Error("Expected Success to be false")
+		}
 	}
 }
 
 func TestHandleSQLExec(t *testing.T) {
 	p := &Plugin{
 		name:     "sql",
-		eventBus: &mockEventBus{},
+		eventBus: &mockEventBus{responses: make(map[string]*framework.EventData)},
 	}
 
 	// Create a SQL exec request
 	eventData := &framework.EventData{
-		SQLRequest: &framework.SQLRequest{
-			ID:         "exec-123",
-			Query:      "INSERT INTO test (name) VALUES ($1)",
-			Params:     []framework.SQLParam{{Value: "test"}},
-			Timeout:    5 * time.Second,
-			RequestBy:  "test-plugin",
-			IsSync:     false,
-			ResponseCh: "",
+		SQLExecRequest: &framework.SQLExecRequest{
+			ID:            "exec-123",
+			CorrelationID: "corr-456",
+			Query:         "INSERT INTO test (name) VALUES ($1)",
+			Params:        []framework.SQLParam{{Value: "test"}},
+			Timeout:       5 * time.Second,
+			RequestBy:     "test-plugin",
 		},
 	}
 
 	event := framework.NewDataEvent("sql.exec", eventData)
 
-	// Should return error when pool is nil
+	// Should send error response when pool is nil
 	err := p.handleSQLExec(event)
-	if err == nil {
-		t.Error("Expected error when database not connected")
+	if err != nil {
+		t.Errorf("Expected nil error, got: %v", err)
+	}
+
+	// Check that error response was delivered
+	mock := p.eventBus.(*mockEventBus)
+	if len(mock.responses) != 1 {
+		t.Errorf("Expected 1 response, got %d", len(mock.responses))
+	} else {
+		resp, ok := mock.responses["corr-456"]
+		if !ok {
+			t.Error("Expected response for correlation ID corr-456")
+		} else if resp.SQLExecResponse == nil {
+			t.Error("Expected SQLExecResponse in response data")
+		} else if resp.SQLExecResponse.Success {
+			t.Error("Expected Success to be false")
+		}
 	}
 }
 
 func TestHandleConfigureLogging(t *testing.T) {
 	p := &Plugin{
 		name:        "sql",
-		eventBus:    &mockEventBus{},
+		eventBus:    &mockEventBus{responses: make(map[string]*framework.EventData)},
 		loggerRules: []LoggerRule{},
 	}
 

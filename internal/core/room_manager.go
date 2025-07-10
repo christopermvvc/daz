@@ -301,7 +301,11 @@ func (rm *RoomManager) processRoomEvents(roomID string) {
 				eventData.RawEvent = event
 			}
 
-			if err := rm.eventBus.Broadcast(eventType, eventData); err != nil {
+			// Create metadata with appropriate tags
+			metadata := rm.createEventMetadata(event.Type(), roomID)
+
+			// Broadcast with metadata
+			if err := rm.eventBus.BroadcastWithMetadata(eventType, eventData, metadata); err != nil {
 				log.Printf("[RoomManager] Room '%s': Failed to broadcast event: %v", roomID, err)
 			}
 		}
@@ -517,6 +521,111 @@ func (rm *RoomManager) handleReconnection(roomID string) {
 	if err := rm.StartRoom(roomID); err != nil {
 		log.Printf("[RoomManager] Room '%s': Reconnection failed: %v", roomID, err)
 	}
+}
+
+// createEventMetadata creates appropriate metadata for a Cytube event
+func (rm *RoomManager) createEventMetadata(eventType string, roomID string) *framework.EventMetadata {
+	metadata := framework.NewEventMetadata("core", fmt.Sprintf("cytube.event.%s", eventType))
+
+	// Add room ID as a tag
+	metadata.WithTags("room:" + roomID)
+
+	// Set tags and logging based on event type
+	switch eventType {
+	// Chat Events
+	case "chatMsg":
+		metadata.WithTags("chat", "public", "user-content")
+		metadata.WithLogging("info")
+		metadata.WithPriority(0)
+	case "pm":
+		metadata.WithTags("chat", "private", "user-content")
+		metadata.WithLogging("info")
+		metadata.WithPriority(1) // Higher priority for PMs
+
+	// User Events
+	case "userJoin":
+		metadata.WithTags("user", "presence", "join")
+		metadata.WithLogging("info")
+	case "userLeave":
+		metadata.WithTags("user", "presence", "leave")
+		metadata.WithLogging("info")
+	case "setAFK":
+		metadata.WithTags("user", "status")
+	case "setUserRank":
+		metadata.WithTags("user", "permission")
+		metadata.WithLogging("info")
+	case "setUserMeta":
+		metadata.WithTags("user", "metadata")
+
+	// Media Events
+	case "changeMedia":
+		metadata.WithTags("media", "playlist", "change")
+		metadata.WithLogging("info")
+	case "mediaUpdate":
+		metadata.WithTags("media", "sync", "playback")
+		// Don't log these by default as they're very frequent
+	case "playlist":
+		metadata.WithTags("media", "playlist", "update")
+	case "queue":
+		metadata.WithTags("media", "playlist", "queue")
+		metadata.WithLogging("info")
+	case "queueFail":
+		metadata.WithTags("media", "playlist", "error")
+		metadata.WithLogging("warn")
+		metadata.WithPriority(2)
+	case "moveVideo":
+		metadata.WithTags("media", "playlist", "reorder")
+	case "setCurrent":
+		metadata.WithTags("media", "playlist", "current")
+	case "setPlaylistLocked":
+		metadata.WithTags("media", "playlist", "permission")
+		metadata.WithLogging("info")
+	case "setPlaylistMeta":
+		metadata.WithTags("media", "playlist", "metadata")
+
+	// Channel Events
+	case "channelOpts":
+		metadata.WithTags("channel", "config")
+		metadata.WithLogging("info")
+	case "channelCSSJS":
+		metadata.WithTags("channel", "style")
+	case "setMotd":
+		metadata.WithTags("channel", "announcement")
+		metadata.WithLogging("info")
+	case "setPermissions":
+		metadata.WithTags("channel", "permission")
+		metadata.WithLogging("warn")
+		metadata.WithPriority(2)
+	case "meta":
+		metadata.WithTags("channel", "metadata")
+
+	// System Events
+	case "login":
+		metadata.WithTags("system", "auth", "login")
+		metadata.WithLogging("info")
+		metadata.WithPriority(2)
+	case "addUser":
+		metadata.WithTags("system", "user", "registration")
+		metadata.WithLogging("info")
+		metadata.WithPriority(2)
+	case "delete":
+		metadata.WithTags("system", "moderation")
+		metadata.WithLogging("warn")
+		metadata.WithPriority(3)
+	case "clearVoteskipVote":
+		metadata.WithTags("system", "voting")
+	case "disconnect":
+		metadata.WithTags("system", "connection", "disconnect")
+		metadata.WithLogging("warn")
+		metadata.WithPriority(2)
+
+	// Default for unknown events
+	default:
+		metadata.WithTags("unknown")
+		metadata.WithLogging("debug")
+	}
+
+	return metadata
 }
 
 // checkConnections checks all connections and reconnects if needed

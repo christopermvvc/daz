@@ -144,6 +144,76 @@ func (fd FlexibleDuration) Int() int {
 	return int(fd)
 }
 
+// FlexibleUID handles both string and number values for playlist item UIDs
+type FlexibleUID struct {
+	strValue string
+	intValue int64
+	isString bool
+}
+
+// UnmarshalJSON implements json.Unmarshaler to handle both string and number values
+func (fu *FlexibleUID) UnmarshalJSON(data []byte) error {
+	// Check for null
+	if string(data) == "null" {
+		return fmt.Errorf("UID cannot be null")
+	}
+
+	// Try to unmarshal as string first
+	var strVal string
+	if err := json.Unmarshal(data, &strVal); err == nil {
+		fu.strValue = strVal
+		fu.isString = true
+		return nil
+	}
+
+	// Try to unmarshal as number
+	var intVal int64
+	if err := json.Unmarshal(data, &intVal); err == nil {
+		fu.intValue = intVal
+		fu.isString = false
+		return nil
+	}
+
+	// Try float64 (JSON numbers are float64 by default)
+	var floatVal float64
+	if err := json.Unmarshal(data, &floatVal); err == nil {
+		fu.intValue = int64(floatVal)
+		fu.isString = false
+		return nil
+	}
+
+	return fmt.Errorf("UID must be a string or number")
+}
+
+// MarshalJSON implements json.Marshaler
+func (fu FlexibleUID) MarshalJSON() ([]byte, error) {
+	if fu.isString {
+		return json.Marshal(fu.strValue)
+	}
+	return json.Marshal(fu.intValue)
+}
+
+// String returns the UID as a string
+func (fu FlexibleUID) String() string {
+	if fu.isString {
+		return fu.strValue
+	}
+	return strconv.FormatInt(fu.intValue, 10)
+}
+
+// IsString returns true if the UID is a string
+func (fu FlexibleUID) IsString() bool {
+	return fu.isString
+}
+
+// Int64 returns the UID as int64 if it's numeric, or 0 if it's a string
+func (fu FlexibleUID) Int64() int64 {
+	if fu.isString {
+		return 0
+	}
+	return fu.intValue
+}
+
 // MediaPayload represents media change event data
 type MediaPayload struct {
 	ID       string           `json:"id"`

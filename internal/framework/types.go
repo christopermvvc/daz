@@ -20,8 +20,10 @@ type EventData struct {
 	MediaUpdate *MediaUpdateData `json:"media_update,omitempty"`
 
 	// For SQL operations
-	SQLRequest  *SQLRequest  `json:"sql_request,omitempty"`
-	SQLResponse *SQLResponse `json:"sql_response,omitempty"`
+	SQLQueryRequest  *SQLQueryRequest  `json:"sql_query_request,omitempty"`
+	SQLQueryResponse *SQLQueryResponse `json:"sql_query_response,omitempty"`
+	SQLExecRequest   *SQLExecRequest   `json:"sql_exec_request,omitempty"`
+	SQLExecResponse  *SQLExecResponse  `json:"sql_exec_response,omitempty"`
 
 	// For plugin communication
 	PluginRequest  *PluginRequest  `json:"plugin_request,omitempty"`

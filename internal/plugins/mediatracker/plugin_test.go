@@ -3,6 +3,7 @@ package mediatracker
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -20,6 +21,9 @@ type mockEventBus struct {
 	queryCalls  []string
 	sendCalls   []sendCall
 	mu          sync.Mutex
+
+	// Control query responses
+	queryResponses map[string]*mockQueryResult
 }
 
 type sendCall struct {
@@ -30,10 +34,11 @@ type sendCall struct {
 
 func newMockEventBus() *mockEventBus {
 	return &mockEventBus{
-		subscribers: make(map[string][]framework.EventHandler),
-		execCalls:   []string{},
-		queryCalls:  []string{},
-		sendCalls:   []sendCall{},
+		subscribers:    make(map[string][]framework.EventHandler),
+		execCalls:      []string{},
+		queryCalls:     []string{},
+		sendCalls:      []sendCall{},
+		queryResponses: make(map[string]*mockQueryResult),
 	}
 }
 
@@ -81,12 +86,22 @@ func (m *mockEventBus) Subscribe(eventType string, handler framework.EventHandle
 	return nil
 }
 
-func (m *mockEventBus) QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error) {
+func (m *mockEventBus) SubscribeWithTags(pattern string, handler framework.EventHandler, tags []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.subscribers[pattern] = append(m.subscribers[pattern], handler)
+	return nil
+}
+
+func (m *mockEventBus) QuerySync(ctx context.Context, sql string, params ...framework.SQLParam) (*sql.Rows, error) {
 	return nil, fmt.Errorf("sync queries not supported in mock")
 }
 
-func (m *mockEventBus) ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error) {
-	return nil, fmt.Errorf("sync exec not supported in mock")
+func (m *mockEventBus) ExecSync(ctx context.Context, sql string, params ...framework.SQLParam) (sql.Result, error) {
+	m.mu.Lock()
+	m.execCalls = append(m.execCalls, sql)
+	m.mu.Unlock()
+	return &mockSQLResult{}, nil
 }
 
 func (m *mockEventBus) BroadcastWithMetadata(eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
@@ -98,7 +113,59 @@ func (m *mockEventBus) SendWithMetadata(target string, eventType string, data *f
 }
 
 func (m *mockEventBus) Request(ctx context.Context, target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) (*framework.EventData, error) {
-	return nil, fmt.Errorf("request not supported in mock")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Handle SQL exec requests
+	if eventType == "sql.exec.request" && data != nil && data.SQLExecRequest != nil {
+		m.execCalls = append(m.execCalls, data.SQLExecRequest.Query)
+		return &framework.EventData{
+			SQLExecResponse: &framework.SQLExecResponse{
+				Success:      true,
+				RowsAffected: 1,
+			},
+		}, nil
+	}
+
+	// Handle SQL query requests
+	if eventType == "sql.query.request" && data != nil && data.SQLQueryRequest != nil {
+		m.queryCalls = append(m.queryCalls, data.SQLQueryRequest.Query)
+
+		// Check for predefined responses
+		for key, result := range m.queryResponses {
+			if len(data.SQLQueryRequest.Query) >= len(key) && data.SQLQueryRequest.Query[:len(key)] == key {
+				// Convert mock result to SQL response format
+				var rows [][]json.RawMessage
+				for _, row := range result.rows {
+					var jsonRow []json.RawMessage
+					for _, val := range row {
+						jsonBytes, _ := json.Marshal(val)
+						jsonRow = append(jsonRow, json.RawMessage(jsonBytes))
+					}
+					rows = append(rows, jsonRow)
+				}
+
+				return &framework.EventData{
+					SQLQueryResponse: &framework.SQLQueryResponse{
+						Success: true,
+						Columns: []string{"col1", "col2", "col3"}, // Generic columns
+						Rows:    rows,
+					},
+				}, nil
+			}
+		}
+
+		// Return empty result if no predefined response
+		return &framework.EventData{
+			SQLQueryResponse: &framework.SQLQueryResponse{
+				Success: true,
+				Columns: []string{},
+				Rows:    [][]json.RawMessage{},
+			},
+		}, nil
+	}
+
+	return nil, fmt.Errorf("request type %s not supported in mock", eventType)
 }
 
 func (m *mockEventBus) DeliverResponse(correlationID string, response *framework.EventData, err error) {
@@ -158,6 +225,17 @@ func (m *mockQueryResult) Scan(dest ...interface{}) error {
 func (m *mockQueryResult) Close() error {
 	m.closed = true
 	return nil
+}
+
+// mockSQLResult implements sql.Result
+type mockSQLResult struct{}
+
+func (m *mockSQLResult) LastInsertId() (int64, error) {
+	return 0, nil
+}
+
+func (m *mockSQLResult) RowsAffected() (int64, error) {
+	return 1, nil
 }
 
 func TestNewPlugin(t *testing.T) {

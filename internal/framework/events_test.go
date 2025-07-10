@@ -51,17 +51,22 @@ func TestChatMessageEvent(t *testing.T) {
 	}
 }
 
-func TestSQLRequest(t *testing.T) {
-	req := &SQLRequest{
-		ID:        "req123",
-		Query:     "SELECT * FROM users WHERE id = $1",
-		Params:    []SQLParam{{Value: 123}},
-		Timeout:   5 * time.Second,
-		RequestBy: "test-plugin",
+func TestSQLQueryRequest(t *testing.T) {
+	req := &SQLQueryRequest{
+		ID:            "req123",
+		CorrelationID: "corr456",
+		Query:         "SELECT * FROM users WHERE id = $1",
+		Params:        []SQLParam{{Value: 123}},
+		Timeout:       5 * time.Second,
+		RequestBy:     "test-plugin",
 	}
 
 	if req.ID != "req123" {
 		t.Errorf("ID = %v, want %v", req.ID, "req123")
+	}
+
+	if req.CorrelationID != "corr456" {
+		t.Errorf("CorrelationID = %v, want %v", req.CorrelationID, "corr456")
 	}
 
 	if len(req.Params) != 1 {

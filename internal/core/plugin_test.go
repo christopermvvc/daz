@@ -39,11 +39,11 @@ func (m *mockEventBus) Exec(sql string, params ...framework.SQLParam) error {
 	return nil
 }
 
-func (m *mockEventBus) QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error) {
+func (m *mockEventBus) QuerySync(ctx context.Context, sql string, params ...framework.SQLParam) (*sql.Rows, error) {
 	return nil, fmt.Errorf("sync queries not supported in mock")
 }
 
-func (m *mockEventBus) ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error) {
+func (m *mockEventBus) ExecSync(ctx context.Context, sql string, params ...framework.SQLParam) (sql.Result, error) {
 	return nil, fmt.Errorf("sync exec not supported in mock")
 }
 
@@ -72,6 +72,10 @@ func (m *mockEventBus) UnregisterPlugin(name string) error {
 }
 
 func (m *mockEventBus) Subscribe(eventType string, handler framework.EventHandler) error {
+	return nil
+}
+
+func (m *mockEventBus) SubscribeWithTags(pattern string, handler framework.EventHandler, tags []string) error {
 	return nil
 }
 

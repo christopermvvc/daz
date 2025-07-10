@@ -255,20 +255,47 @@ func (d *DatabaseChecker) HealthCheck(ctx context.Context) ComponentHealth {
 		Details:   &HealthDetails{},
 	}
 
-	// Try a simple query
+	// Try a simple query using event-based approach
 	start := time.Now()
-	rows, err := d.eventBus.QuerySync(ctx, "SELECT 1")
+	correlationID := fmt.Sprintf("health-check-%d", time.Now().UnixNano())
+
+	// Create query request
+	request := &framework.EventData{
+		SQLQueryRequest: &framework.SQLQueryRequest{
+			ID:            correlationID,
+			CorrelationID: correlationID,
+			Query:         "SELECT 1",
+			Params:        []framework.SQLParam{},
+			Timeout:       5 * time.Second,
+			RequestBy:     "health-check",
+		},
+	}
+
+	// Create metadata for the request
+	metadata := &framework.EventMetadata{
+		CorrelationID: correlationID,
+		Timestamp:     time.Now(),
+		Source:        "health",
+		Target:        "sql",
+	}
+
+	// Send request and wait for response
+	responseData, err := d.eventBus.Request(ctx, "sql", "sql.query.request", request, metadata)
 	if err != nil {
 		health.Status = StatusDown
 		health.Error = fmt.Sprintf("connection check failed: %v", err)
 		return health
 	}
 
-	if rows != nil {
-		if err := rows.Close(); err != nil {
-			health.Status = StatusDegraded
-			health.Error = fmt.Sprintf("failed to close rows: %v", err)
+	// Check response
+	if responseData != nil && responseData.SQLQueryResponse != nil {
+		if !responseData.SQLQueryResponse.Success {
+			health.Status = StatusDown
+			health.Error = fmt.Sprintf("query failed: %s", responseData.SQLQueryResponse.Error)
 		}
+	} else {
+		health.Status = StatusDown
+		health.Error = "no response received"
 	}
 
 	health.Details.ResponseTimeMS = time.Since(start).Milliseconds()

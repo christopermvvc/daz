@@ -20,6 +20,10 @@ func (m *MockEventBus) Subscribe(eventType string, handler framework.EventHandle
 	return nil
 }
 
+func (m *MockEventBus) SubscribeWithTags(pattern string, handler framework.EventHandler, tags []string) error {
+	return nil
+}
+
 func (m *MockEventBus) Broadcast(eventType string, data *framework.EventData) error {
 	m.broadcastCalled = true
 	m.lastEventType = eventType
@@ -54,11 +58,11 @@ func (m *MockEventBus) Exec(sql string, params ...framework.SQLParam) error {
 	return nil
 }
 
-func (m *MockEventBus) QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error) {
+func (m *MockEventBus) QuerySync(ctx context.Context, sql string, params ...framework.SQLParam) (*sql.Rows, error) {
 	return nil, nil
 }
 
-func (m *MockEventBus) ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error) {
+func (m *MockEventBus) ExecSync(ctx context.Context, sql string, params ...framework.SQLParam) (sql.Result, error) {
 	return nil, nil
 }
 

@@ -259,7 +259,7 @@ type PlaylistArrayItem struct {
 		Type     string          `json:"type"`
 		Meta     json.RawMessage `json:"meta"`
 	} `json:"media"`
-	UID     interface{} `json:"uid"` // Can be string or number
+	UID     FlexibleUID `json:"uid"` // Can be string or number
 	Temp    bool        `json:"temp"`
 	QueueBy string      `json:"queueby"`
 }
@@ -824,7 +824,7 @@ func (p *Parser) parseDeleteEvent(base framework.CytubeEvent, data json.RawMessa
 	// Delete events typically contain position/uid of deleted item
 	var deleteData struct {
 		Position int         `json:"position"`
-		UID      interface{} `json:"uid"`
+		UID      FlexibleUID `json:"uid"`
 	}
 
 	if err := json.Unmarshal(data, &deleteData); err != nil {
@@ -842,9 +842,8 @@ func (p *Parser) parseDeleteEvent(base framework.CytubeEvent, data json.RawMessa
 	// Add metadata
 	base.Metadata["action"] = "delete"
 	base.Metadata["position"] = fmt.Sprintf("%d", deleteData.Position)
-	if deleteData.UID != nil {
-		base.Metadata["uid"] = fmt.Sprintf("%v", deleteData.UID)
-	}
+	// FlexibleUID has a String() method that handles both string and numeric values
+	base.Metadata["uid"] = deleteData.UID.String()
 
 	return event, nil
 }

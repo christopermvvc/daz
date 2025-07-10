@@ -2,7 +2,6 @@ package sql
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -13,6 +12,26 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+// handlePluginRequest handles targeted plugin requests sent via eventBus.Request
+func (p *Plugin) handlePluginRequest(event framework.Event) error {
+	// This handler receives all "plugin.request" events and routes them based on metadata
+	// For now, we'll just pass through to the appropriate handler based on the event data
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil {
+		return nil
+	}
+
+	// Check what type of request this is and route accordingly
+	if dataEvent.Data.SQLExecRequest != nil {
+		return p.handleSQLExec(event)
+	}
+	if dataEvent.Data.SQLQueryRequest != nil {
+		return p.handleSQLQuery(event)
+	}
+
+	return nil
+}
 
 // handleLogRequest handles explicit logging requests from other plugins
 func (p *Plugin) handleLogRequest(event framework.Event) error {
@@ -206,11 +225,11 @@ func (p *Plugin) handleConfigureLogging(event framework.Event) error {
 // handleSQLQuery handles SQL query requests
 func (p *Plugin) handleSQLQuery(event framework.Event) error {
 	dataEvent, ok := event.(*framework.DataEvent)
-	if !ok || dataEvent.Data == nil || dataEvent.Data.SQLRequest == nil {
+	if !ok || dataEvent.Data == nil || dataEvent.Data.SQLQueryRequest == nil {
 		return nil
 	}
 
-	req := dataEvent.Data.SQLRequest
+	req := dataEvent.Data.SQLQueryRequest
 	p.eventsHandled++
 
 	// Track metrics
@@ -221,13 +240,18 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 	if p.pool == nil {
 		metrics.DatabaseErrors.Inc()
 		err := fmt.Errorf("database not connected")
-		if req.IsSync && req.ResponseCh != "" {
-			// Use type assertion to access DeliverQueryResponse
-			if eventBus, ok := p.eventBus.(interface {
-				DeliverQueryResponse(string, *sql.Rows, error)
-			}); ok {
-				eventBus.DeliverQueryResponse(req.ResponseCh, nil, err)
+		// Send error response via event
+		if req.CorrelationID != "" {
+			resp := &framework.EventData{
+				SQLQueryResponse: &framework.SQLQueryResponse{
+					ID:            req.ID,
+					CorrelationID: req.CorrelationID,
+					Success:       false,
+					Error:         err.Error(),
+				},
 			}
+			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
+			return nil
 		}
 		return err
 	}
@@ -249,32 +273,75 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 	rows, err := p.db.QueryContext(ctx, req.Query, params...)
 	if err != nil {
 		metrics.DatabaseErrors.Inc()
-		if req.IsSync && req.ResponseCh != "" {
-			// Use type assertion to access DeliverQueryResponse
-			if eventBus, ok := p.eventBus.(interface {
-				DeliverQueryResponse(string, *sql.Rows, error)
-			}); ok {
-				eventBus.DeliverQueryResponse(req.ResponseCh, nil, err)
+		// Send error response via event
+		if req.CorrelationID != "" {
+			resp := &framework.EventData{
+				SQLQueryResponse: &framework.SQLQueryResponse{
+					ID:            req.ID,
+					CorrelationID: req.CorrelationID,
+					Success:       false,
+					Error:         err.Error(),
+				},
 			}
+			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
+			return nil
 		}
 		return fmt.Errorf("query failed: %w", err)
 	}
+	defer rows.Close()
 
-	// For sync queries, deliver the rows directly
-	if req.IsSync && req.ResponseCh != "" {
-		// Use type assertion to access DeliverQueryResponse
-		if eventBus, ok := p.eventBus.(interface {
-			DeliverQueryResponse(string, *sql.Rows, error)
-		}); ok {
-			eventBus.DeliverQueryResponse(req.ResponseCh, rows, nil)
-		}
-		return nil
+	// Convert rows to response format
+	columns, err := rows.Columns()
+	if err != nil {
+		return fmt.Errorf("failed to get columns: %w", err)
 	}
 
-	// For async queries, we'd need to process and return results differently
-	// For now, just close the rows
-	if err := rows.Close(); err != nil {
-		log.Printf("[SQL Plugin] Failed to close rows: %v", err)
+	var resultRows [][]json.RawMessage
+	for rows.Next() {
+		// Create slice of interface{} to hold column values
+		values := make([]interface{}, len(columns))
+		scanArgs := make([]interface{}, len(columns))
+		for i := range values {
+			scanArgs[i] = &values[i]
+		}
+
+		if err := rows.Scan(scanArgs...); err != nil {
+			return fmt.Errorf("failed to scan row: %w", err)
+		}
+
+		// Convert values to JSON
+		row := make([]json.RawMessage, len(columns))
+		for i, val := range values {
+			if val == nil {
+				row[i] = json.RawMessage("null")
+			} else {
+				jsonVal, err := json.Marshal(val)
+				if err != nil {
+					return fmt.Errorf("failed to marshal value: %w", err)
+				}
+				row[i] = jsonVal
+			}
+		}
+		resultRows = append(resultRows, row)
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rows iteration error: %w", err)
+	}
+
+	// Send successful response
+	if req.CorrelationID != "" {
+		resp := &framework.EventData{
+			SQLQueryResponse: &framework.SQLQueryResponse{
+				ID:            req.ID,
+				CorrelationID: req.CorrelationID,
+				Success:       true,
+				Columns:       columns,
+				Rows:          resultRows,
+			},
+		}
+		p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
+		return nil
 	}
 
 	return nil
@@ -283,12 +350,14 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 // handleSQLExec handles SQL exec requests
 func (p *Plugin) handleSQLExec(event framework.Event) error {
 	dataEvent, ok := event.(*framework.DataEvent)
-	if !ok || dataEvent.Data == nil || dataEvent.Data.SQLRequest == nil {
+	if !ok || dataEvent.Data == nil || dataEvent.Data.SQLExecRequest == nil {
 		return nil
 	}
 
-	req := dataEvent.Data.SQLRequest
+	req := dataEvent.Data.SQLExecRequest
 	p.eventsHandled++
+
+	// Debug logging removed - request/response flow is working correctly
 
 	// Track metrics
 	timer := prometheus.NewTimer(metrics.DatabaseQueryDuration)
@@ -298,13 +367,18 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 	if p.pool == nil {
 		metrics.DatabaseErrors.Inc()
 		err := fmt.Errorf("database not connected")
-		if req.IsSync && req.ResponseCh != "" {
-			// Use type assertion to access DeliverExecResponse
-			if eventBus, ok := p.eventBus.(interface {
-				DeliverExecResponse(string, sql.Result, error)
-			}); ok {
-				eventBus.DeliverExecResponse(req.ResponseCh, nil, err)
+		// Send error response via event
+		if req.CorrelationID != "" {
+			resp := &framework.EventData{
+				SQLExecResponse: &framework.SQLExecResponse{
+					ID:            req.ID,
+					CorrelationID: req.CorrelationID,
+					Success:       false,
+					Error:         err.Error(),
+				},
 			}
+			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
+			return nil
 		}
 		return err
 	}
@@ -326,25 +400,39 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 	result, err := p.db.ExecContext(ctx, req.Query, params...)
 	if err != nil {
 		metrics.DatabaseErrors.Inc()
-		if req.IsSync && req.ResponseCh != "" {
-			// Use type assertion to access DeliverExecResponse
-			if eventBus, ok := p.eventBus.(interface {
-				DeliverExecResponse(string, sql.Result, error)
-			}); ok {
-				eventBus.DeliverExecResponse(req.ResponseCh, nil, err)
+		// Send error response via event
+		if req.CorrelationID != "" {
+			resp := &framework.EventData{
+				SQLExecResponse: &framework.SQLExecResponse{
+					ID:            req.ID,
+					CorrelationID: req.CorrelationID,
+					Success:       false,
+					Error:         err.Error(),
+				},
 			}
+			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
+			return nil
 		}
 		return fmt.Errorf("exec failed: %w", err)
 	}
 
-	// For sync requests, deliver the result
-	if req.IsSync && req.ResponseCh != "" {
-		// Use type assertion to access DeliverExecResponse
-		if eventBus, ok := p.eventBus.(interface {
-			DeliverExecResponse(string, sql.Result, error)
-		}); ok {
-			eventBus.DeliverExecResponse(req.ResponseCh, result, nil)
+	// Get rows affected and last insert ID
+	rowsAffected, _ := result.RowsAffected()
+	lastInsertID, _ := result.LastInsertId()
+
+	// Send successful response
+	if req.CorrelationID != "" {
+		resp := &framework.EventData{
+			SQLExecResponse: &framework.SQLExecResponse{
+				ID:            req.ID,
+				CorrelationID: req.CorrelationID,
+				Success:       true,
+				RowsAffected:  rowsAffected,
+				LastInsertID:  lastInsertID,
+			},
 		}
+		p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
+		return nil
 	}
 
 	return nil
@@ -360,4 +448,262 @@ type LogRequest struct {
 // BatchLogRequest represents multiple log requests
 type BatchLogRequest struct {
 	Logs []LogRequest `json:"logs"`
+}
+
+// BatchQueryRequest represents multiple query requests
+type BatchQueryRequest struct {
+	Queries []framework.SQLQueryRequest `json:"queries"`
+	Atomic  bool                        `json:"atomic"`
+}
+
+// handleBatchQueryRequest handles batch query requests
+func (p *Plugin) handleBatchQueryRequest(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil || dataEvent.Data.PluginRequest == nil {
+		return nil
+	}
+
+	req := dataEvent.Data.PluginRequest
+	if req.Data == nil || req.Data.RawJSON == nil {
+		return nil
+	}
+
+	var batchReq BatchQueryRequest
+	if err := json.Unmarshal(req.Data.RawJSON, &batchReq); err != nil {
+		return fmt.Errorf("invalid batch query request: %w", err)
+	}
+
+	if p.pool == nil {
+		return fmt.Errorf("database not connected")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var responses []*framework.SQLQueryResponse
+
+	if batchReq.Atomic {
+		// Execute all queries in a transaction
+		tx, err := p.pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to begin transaction: %w", err)
+		}
+		defer func() {
+			if err := tx.Rollback(ctx); err != nil && err != pgx.ErrTxClosed {
+				log.Printf("[SQL Plugin] Failed to rollback transaction: %v", err)
+			}
+		}()
+
+		for _, queryReq := range batchReq.Queries {
+			// Convert SQLParam to interface{} for database operation
+			params := make([]interface{}, len(queryReq.Params))
+			for i, p := range queryReq.Params {
+				params[i] = p.Value
+			}
+
+			// Execute query in transaction
+			rows, err := tx.Query(ctx, queryReq.Query, params...)
+			if err != nil {
+				// Return error response for this query
+				responses = append(responses, &framework.SQLQueryResponse{
+					ID:            queryReq.ID,
+					CorrelationID: queryReq.CorrelationID,
+					Success:       false,
+					Error:         err.Error(),
+				})
+				continue
+			}
+
+			// Process rows
+			columns := rows.FieldDescriptions()
+			columnNames := make([]string, len(columns))
+			for i, col := range columns {
+				columnNames[i] = string(col.Name)
+			}
+
+			var resultRows [][]json.RawMessage
+			for rows.Next() {
+				values, err := rows.Values()
+				if err != nil {
+					rows.Close()
+					responses = append(responses, &framework.SQLQueryResponse{
+						ID:            queryReq.ID,
+						CorrelationID: queryReq.CorrelationID,
+						Success:       false,
+						Error:         fmt.Sprintf("failed to get values: %v", err),
+					})
+					continue
+				}
+
+				// Convert values to JSON
+				row := make([]json.RawMessage, len(values))
+				for i, val := range values {
+					if val == nil {
+						row[i] = json.RawMessage("null")
+					} else {
+						jsonVal, err := json.Marshal(val)
+						if err != nil {
+							row[i] = json.RawMessage("null")
+						} else {
+							row[i] = jsonVal
+						}
+					}
+				}
+				resultRows = append(resultRows, row)
+			}
+			rows.Close()
+
+			if err := rows.Err(); err != nil {
+				responses = append(responses, &framework.SQLQueryResponse{
+					ID:            queryReq.ID,
+					CorrelationID: queryReq.CorrelationID,
+					Success:       false,
+					Error:         fmt.Sprintf("rows error: %v", err),
+				})
+				continue
+			}
+
+			// Add successful response
+			responses = append(responses, &framework.SQLQueryResponse{
+				ID:            queryReq.ID,
+				CorrelationID: queryReq.CorrelationID,
+				Success:       true,
+				Columns:       columnNames,
+				Rows:          resultRows,
+			})
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
+		}
+	} else {
+		// Execute queries independently
+		for _, queryReq := range batchReq.Queries {
+			// Convert SQLParam to interface{} for database operation
+			params := make([]interface{}, len(queryReq.Params))
+			for i, p := range queryReq.Params {
+				params[i] = p.Value
+			}
+
+			// Execute query
+			rows, err := p.db.QueryContext(ctx, queryReq.Query, params...)
+			if err != nil {
+				responses = append(responses, &framework.SQLQueryResponse{
+					ID:            queryReq.ID,
+					CorrelationID: queryReq.CorrelationID,
+					Success:       false,
+					Error:         err.Error(),
+				})
+				continue
+			}
+
+			// Process rows
+			columns, err := rows.Columns()
+			if err != nil {
+				rows.Close()
+				responses = append(responses, &framework.SQLQueryResponse{
+					ID:            queryReq.ID,
+					CorrelationID: queryReq.CorrelationID,
+					Success:       false,
+					Error:         fmt.Sprintf("failed to get columns: %v", err),
+				})
+				continue
+			}
+
+			var resultRows [][]json.RawMessage
+			for rows.Next() {
+				// Create slice of interface{} to hold column values
+				values := make([]interface{}, len(columns))
+				scanArgs := make([]interface{}, len(columns))
+				for i := range values {
+					scanArgs[i] = &values[i]
+				}
+
+				if err := rows.Scan(scanArgs...); err != nil {
+					rows.Close()
+					responses = append(responses, &framework.SQLQueryResponse{
+						ID:            queryReq.ID,
+						CorrelationID: queryReq.CorrelationID,
+						Success:       false,
+						Error:         fmt.Sprintf("failed to scan row: %v", err),
+					})
+					break
+				}
+
+				// Convert values to JSON
+				row := make([]json.RawMessage, len(columns))
+				for i, val := range values {
+					if val == nil {
+						row[i] = json.RawMessage("null")
+					} else {
+						jsonVal, err := json.Marshal(val)
+						if err != nil {
+							row[i] = json.RawMessage("null")
+						} else {
+							row[i] = jsonVal
+						}
+					}
+				}
+				resultRows = append(resultRows, row)
+			}
+			rows.Close()
+
+			if err := rows.Err(); err != nil {
+				responses = append(responses, &framework.SQLQueryResponse{
+					ID:            queryReq.ID,
+					CorrelationID: queryReq.CorrelationID,
+					Success:       false,
+					Error:         fmt.Sprintf("rows error: %v", err),
+				})
+				continue
+			}
+
+			// Add successful response
+			responses = append(responses, &framework.SQLQueryResponse{
+				ID:            queryReq.ID,
+				CorrelationID: queryReq.CorrelationID,
+				Success:       true,
+				Columns:       columns,
+				Rows:          resultRows,
+			})
+		}
+	}
+
+	// Send response if requested
+	if req.ID != "" && req.ReplyTo != "" {
+		jsonResponses, err := json.Marshal(responses)
+		if err != nil {
+			return fmt.Errorf("failed to marshal responses: %w", err)
+		}
+
+		resp := &framework.EventData{
+			PluginResponse: &framework.PluginResponse{
+				ID:      req.ID,
+				From:    p.name,
+				Success: true,
+				Data: &framework.ResponseData{
+					RawJSON: jsonResponses,
+					KeyValue: map[string]string{
+						"status": "success",
+						"count":  fmt.Sprintf("%d", len(responses)),
+					},
+				},
+			},
+		}
+		if err := p.eventBus.Send(req.ReplyTo, "plugin.response", resp); err != nil {
+			log.Printf("[SQL Plugin] Failed to send response: %v", err)
+		}
+	}
+
+	// Also broadcast individual responses for correlation ID matching
+	for _, response := range responses {
+		if response.CorrelationID != "" {
+			data := &framework.EventData{
+				SQLQueryResponse: response,
+			}
+			p.eventBus.DeliverResponse(response.CorrelationID, data, nil)
+		}
+	}
+
+	return nil
 }

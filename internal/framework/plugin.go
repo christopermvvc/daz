@@ -2,7 +2,6 @@ package framework
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"time"
 )
@@ -43,15 +42,9 @@ type EventBus interface {
 	Request(ctx context.Context, target string, eventType string, data *EventData, metadata *EventMetadata) (*EventData, error)
 	DeliverResponse(correlationID string, response *EventData, err error)
 
-	// SQL operations (legacy)
-	Query(sql string, params ...SQLParam) (QueryResult, error)
-	Exec(sql string, params ...SQLParam) error
-	QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error)
-	ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error)
-
 	// Event subscription
 	Subscribe(eventType string, handler EventHandler) error
-	SetSQLHandlers(queryHandler, execHandler EventHandler)
+	SubscribeWithTags(pattern string, handler EventHandler, tags []string) error
 
 	// Plugin lifecycle
 	RegisterPlugin(name string, plugin Plugin) error

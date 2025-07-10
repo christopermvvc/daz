@@ -2,9 +2,9 @@ package eventbus
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -14,20 +14,19 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// EventBus implements the framework.EventBus interface using Go channels
+// EventBus implements the framework.EventBus interface using priority queues
 type EventBus struct {
-	// Event channels by type (e.g., "cytube.event", "sql.request")
-	channels map[string]chan *eventMessage
+	// Priority queues by event type (e.g., "cytube.event", "sql.request")
+	queues map[string]*messageQueue
 
-	// Subscribers by event type
+	// Subscribers by event type (exact matches)
 	subscribers map[string][]subscriberInfo
+
+	// Pattern subscribers (wildcard matches)
+	patternSubscribers []subscriberInfo
 
 	// Plugin registry for direct sends
 	plugins map[string]framework.Plugin
-
-	// SQL handler references (set by core plugin)
-	sqlQueryHandler framework.EventHandler
-	sqlExecHandler  framework.EventHandler
 
 	// Buffer size configuration
 	bufferSizes map[string]int
@@ -37,15 +36,13 @@ type EventBus struct {
 	routerMu      sync.RWMutex
 
 	// Sync operation tracking
-	pendingQueries  map[string]chan *queryResponse
-	pendingExecs    map[string]chan *execResponse
 	pendingRequests map[string]chan *pluginResponse
 	syncMu          sync.RWMutex
 
 	// Mutexes for thread safety
-	chanMu sync.RWMutex
-	subMu  sync.RWMutex
-	plugMu sync.RWMutex
+	queueMu sync.RWMutex
+	subMu   sync.RWMutex
+	plugMu  sync.RWMutex
 
 	// Metrics
 	droppedEvents map[string]int64
@@ -59,28 +56,19 @@ type EventBus struct {
 
 // eventMessage wraps an event with metadata
 type eventMessage struct {
-	Event  framework.Event
-	Type   string
-	Target string // For direct sends
-	Data   *framework.EventData
+	Event    framework.Event
+	Type     string
+	Target   string // For direct sends
+	Data     *framework.EventData
+	Metadata *framework.EventMetadata // Priority and other metadata
 }
 
 // subscriberInfo holds subscriber details
 type subscriberInfo struct {
 	Handler framework.EventHandler
-	Name    string // For debugging
-}
-
-// queryResponse holds the response from a synchronous query
-type queryResponse struct {
-	rows *sql.Rows
-	err  error
-}
-
-// execResponse holds the response from a synchronous exec
-type execResponse struct {
-	result sql.Result
-	err    error
+	Name    string   // For debugging
+	Pattern string   // Event type pattern (e.g., "cytube.event.*")
+	Tags    []string // Tags to filter on (empty means no filter)
 }
 
 // pluginResponse holds the response from a plugin request
@@ -113,22 +101,21 @@ func NewEventBus(config *Config) *EventBus {
 	}
 
 	eb := &EventBus{
-		channels:        make(map[string]chan *eventMessage),
-		subscribers:     make(map[string][]subscriberInfo),
-		plugins:         make(map[string]framework.Plugin),
-		bufferSizes:     bufferSizes,
-		activeRouters:   make(map[string]bool),
-		pendingQueries:  make(map[string]chan *queryResponse),
-		pendingExecs:    make(map[string]chan *execResponse),
-		pendingRequests: make(map[string]chan *pluginResponse),
-		droppedEvents:   make(map[string]int64),
-		ctx:             ctx,
-		cancel:          cancel,
+		queues:             make(map[string]*messageQueue),
+		subscribers:        make(map[string][]subscriberInfo),
+		patternSubscribers: make([]subscriberInfo, 0),
+		plugins:            make(map[string]framework.Plugin),
+		bufferSizes:        bufferSizes,
+		activeRouters:      make(map[string]bool),
+		pendingRequests:    make(map[string]chan *pluginResponse),
+		droppedEvents:      make(map[string]int64),
+		ctx:                ctx,
+		cancel:             cancel,
 	}
 
-	// Initialize channels for known event types
-	for eventType, size := range bufferSizes {
-		eb.getOrCreateChannel(eventType, size)
+	// Initialize queues for known event types
+	for eventType := range bufferSizes {
+		eb.getOrCreateQueue(eventType)
 	}
 
 	return eb
@@ -148,12 +135,6 @@ func (eb *EventBus) RegisterPlugin(name string, plugin framework.Plugin) error {
 	return nil
 }
 
-// SetSQLHandlers sets the SQL query and exec handlers (called by core plugin)
-func (eb *EventBus) SetSQLHandlers(queryHandler, execHandler framework.EventHandler) {
-	eb.sqlQueryHandler = queryHandler
-	eb.sqlExecHandler = execHandler
-}
-
 // Broadcast sends an event to all subscribers of the event type
 func (eb *EventBus) Broadcast(eventType string, data *framework.EventData) error {
 	var event framework.Event
@@ -168,20 +149,21 @@ func (eb *EventBus) Broadcast(eventType string, data *framework.EventData) error
 		event = framework.NewDataEvent(eventType, data)
 	}
 
+	// Create metadata with default priority
+	metadata := framework.NewEventMetadata("eventbus", eventType)
+
 	msg := &eventMessage{
-		Event: event,
-		Type:  eventType,
-		Data:  data,
+		Event:    event,
+		Type:     eventType,
+		Data:     data,
+		Metadata: metadata,
 	}
 
-	// Get or create channel
-	ch := eb.getOrCreateChannel(eventType, eb.getBufferSize(eventType))
+	// Get or create queue
+	queue := eb.getOrCreateQueue(eventType)
 
-	// Non-blocking send - drop if buffer full
-	select {
-	case ch <- msg:
-		return nil
-	default:
+	// Push with default priority (0)
+	if !queue.push(msg, metadata.Priority) {
 		// Track dropped event
 		eb.metricsMu.Lock()
 		eb.droppedEvents[eventType]++
@@ -191,9 +173,11 @@ func (eb *EventBus) Broadcast(eventType string, data *framework.EventData) error
 		// Update Prometheus metrics
 		metrics.EventsDropped.WithLabelValues(eventType).Inc()
 
-		log.Printf("[EventBus] WARNING: Dropped event %s - buffer full (total dropped: %d)", eventType, count)
+		log.Printf("[EventBus] WARNING: Dropped event %s - queue closed (total dropped: %d)", eventType, count)
 		return nil // Don't return error for dropped events
 	}
+
+	return nil
 }
 
 // Send sends an event to a specific target plugin
@@ -201,209 +185,72 @@ func (eb *EventBus) Send(target string, eventType string, data *framework.EventD
 	// Create a DataEvent to carry the EventData
 	event := framework.NewDataEvent(eventType, data)
 
+	// Create metadata with default priority
+	metadata := framework.NewEventMetadata("eventbus", eventType).WithTarget(target)
+
 	msg := &eventMessage{
-		Event:  event,
-		Type:   eventType,
-		Target: target,
-		Data:   data,
+		Event:    event,
+		Type:     eventType,
+		Target:   target,
+		Data:     data,
+		Metadata: metadata,
 	}
 
-	// Use plugin.request channel for direct sends
-	ch := eb.getOrCreateChannel("plugin.request", eb.getBufferSize("plugin.request"))
+	// Use plugin.request queue for direct sends
+	queue := eb.getOrCreateQueue("plugin.request")
 
-	// Non-blocking send
-	select {
-	case ch <- msg:
-		return nil
-	default:
+	// Push with default priority
+	if !queue.push(msg, metadata.Priority) {
 		// Track dropped event
 		eb.metricsMu.Lock()
 		eb.droppedEvents["plugin.request"]++
 		count := eb.droppedEvents["plugin.request"]
 		eb.metricsMu.Unlock()
 
-		log.Printf("[EventBus] WARNING: Dropped direct event to %s - buffer full (total dropped: %d)", target, count)
+		log.Printf("[EventBus] WARNING: Dropped direct event to %s - queue closed (total dropped: %d)", target, count)
 		return nil
 	}
-}
 
-// Query delegates SQL queries to the core plugin
-func (eb *EventBus) Query(sql string, params ...framework.SQLParam) (framework.QueryResult, error) {
-	// Delegate to QuerySync with a 30-second timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Convert SQLParam to interface{} for QuerySync
-	interfaceParams := make([]interface{}, len(params))
-	for i, p := range params {
-		interfaceParams[i] = p.Value
-	}
-	rows, err := eb.QuerySync(ctx, sql, interfaceParams...)
-	if err != nil {
-		return nil, err
-	}
-
-	return &sqlRowsAdapter{rows: rows}, nil
-}
-
-// Exec delegates SQL exec operations to the core plugin
-func (eb *EventBus) Exec(sql string, params ...framework.SQLParam) error {
-	if eb.sqlExecHandler == nil {
-		return fmt.Errorf("SQL exec handler not configured")
-	}
-
-	// Create SQL request
-	request := &framework.SQLRequest{
-		ID:        generateID(),
-		Query:     sql,
-		Params:    params,
-		Timeout:   30 * time.Second,
-		RequestBy: "unknown",
-	}
-
-	// Create event data
-	data := &framework.EventData{
-		SQLRequest: request,
-	}
-
-	// Broadcast as sql.exec event
-	return eb.Broadcast("sql.exec", data)
-}
-
-// QuerySync performs a synchronous SQL query with context support
-// Note: This method still uses interface{} to maintain compatibility with framework.EventBus interface
-func (eb *EventBus) QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error) {
-	// Generate correlation ID
-	correlationID := generateID()
-
-	// Create response channel
-	respCh := make(chan *queryResponse, 1)
-
-	// Register pending query
-	eb.syncMu.Lock()
-	eb.pendingQueries[correlationID] = respCh
-	eb.syncMu.Unlock()
-
-	// Clean up on exit
-	defer func() {
-		eb.syncMu.Lock()
-		delete(eb.pendingQueries, correlationID)
-		eb.syncMu.Unlock()
-		close(respCh)
-	}()
-
-	// Convert interface{} params to SQLParam for framework
-	sqlParams := make([]framework.SQLParam, len(params))
-	for i, p := range params {
-		sqlParams[i] = framework.SQLParam{Value: p}
-	}
-
-	// Create sync request
-	request := &framework.SQLRequest{
-		ID:         correlationID,
-		Query:      sql,
-		Params:     sqlParams,
-		IsSync:     true,
-		ResponseCh: correlationID,
-		RequestBy:  "sync_query",
-	}
-
-	// Create event data
-	data := &framework.EventData{
-		SQLRequest: request,
-	}
-
-	// Send request
-	if err := eb.Broadcast("sql.query", data); err != nil {
-		return nil, fmt.Errorf("failed to broadcast query: %w", err)
-	}
-
-	// Wait for response with timeout
-	select {
-	case resp := <-respCh:
-		return resp.rows, resp.err
-	case <-ctx.Done():
-		return nil, fmt.Errorf("query timeout: %w", ctx.Err())
-	}
-}
-
-// ExecSync performs a synchronous SQL exec with context support
-// Note: This method still uses interface{} to maintain compatibility with framework.EventBus interface
-func (eb *EventBus) ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error) {
-	// Generate correlation ID
-	correlationID := generateID()
-
-	// Create response channel
-	respCh := make(chan *execResponse, 1)
-
-	// Register pending exec
-	eb.syncMu.Lock()
-	eb.pendingExecs[correlationID] = respCh
-	eb.syncMu.Unlock()
-
-	// Clean up on exit
-	defer func() {
-		eb.syncMu.Lock()
-		delete(eb.pendingExecs, correlationID)
-		eb.syncMu.Unlock()
-		close(respCh)
-	}()
-
-	// Convert interface{} params to SQLParam for framework
-	sqlParams := make([]framework.SQLParam, len(params))
-	for i, p := range params {
-		sqlParams[i] = framework.SQLParam{Value: p}
-	}
-
-	// Create sync request
-	request := &framework.SQLRequest{
-		ID:         correlationID,
-		Query:      sql,
-		Params:     sqlParams,
-		IsSync:     true,
-		ResponseCh: correlationID,
-		RequestBy:  "sync_exec",
-	}
-
-	// Create event data
-	data := &framework.EventData{
-		SQLRequest: request,
-	}
-
-	// Send request
-	if err := eb.Broadcast("sql.exec", data); err != nil {
-		return nil, fmt.Errorf("failed to broadcast exec: %w", err)
-	}
-
-	// Wait for response with timeout
-	select {
-	case resp := <-respCh:
-		return resp.result, resp.err
-	case <-ctx.Done():
-		return nil, fmt.Errorf("exec timeout: %w", ctx.Err())
-	}
+	return nil
 }
 
 // Subscribe registers a handler for an event type
 func (eb *EventBus) Subscribe(eventType string, handler framework.EventHandler) error {
+	return eb.SubscribeWithTags(eventType, handler, nil)
+}
+
+// SubscribeWithTags registers a handler for an event pattern with optional tag filtering
+func (eb *EventBus) SubscribeWithTags(pattern string, handler framework.EventHandler, tags []string) error {
 	eb.subMu.Lock()
 	defer eb.subMu.Unlock()
 
-	// Add subscriber
+	// Create subscriber info
 	sub := subscriberInfo{
 		Handler: handler,
-		Name:    fmt.Sprintf("handler_%d", len(eb.subscribers[eventType])),
+		Pattern: pattern,
+		Tags:    tags,
 	}
 
-	eb.subscribers[eventType] = append(eb.subscribers[eventType], sub)
+	// Check if this is a wildcard pattern
+	if strings.Contains(pattern, "*") {
+		// Add to pattern subscribers
+		sub.Name = fmt.Sprintf("pattern_handler_%d", len(eb.patternSubscribers))
+		eb.patternSubscribers = append(eb.patternSubscribers, sub)
+		log.Printf("[EventBus] Subscribed to pattern %s with tags %v", pattern, tags)
+	} else {
+		// Add to exact match subscribers
+		sub.Name = fmt.Sprintf("handler_%d", len(eb.subscribers[pattern]))
+		eb.subscribers[pattern] = append(eb.subscribers[pattern], sub)
 
-	// Ensure channel exists and start router if needed
-	ch := eb.getOrCreateChannel(eventType, eb.getBufferSize(eventType))
+		// Ensure queue exists and start router if needed
+		queue := eb.getOrCreateQueue(pattern)
 
-	// Start router for this event type if not already running
-	eb.startRouter(eventType, ch)
+		// Start router for this event type if not already running
+		eb.startRouter(pattern, queue)
 
-	log.Printf("[EventBus] Subscribed to %s", eventType)
+		log.Printf("[EventBus] Subscribed to %s with tags %v", pattern, tags)
+	}
+
 	return nil
 }
 
@@ -422,8 +269,8 @@ func (eb *EventBus) Start() error {
 	}
 
 	for _, eventType := range criticalTypes {
-		ch := eb.getOrCreateChannel(eventType, eb.getBufferSize(eventType))
-		eb.startRouter(eventType, ch)
+		queue := eb.getOrCreateQueue(eventType)
+		eb.startRouter(eventType, queue)
 	}
 
 	log.Println("[EventBus] Critical routers pre-started")
@@ -437,12 +284,12 @@ func (eb *EventBus) Stop() error {
 	// Cancel context to signal shutdown
 	eb.cancel()
 
-	// Close all channels
-	eb.chanMu.Lock()
-	for _, ch := range eb.channels {
-		close(ch)
+	// Close all queues
+	eb.queueMu.Lock()
+	for _, queue := range eb.queues {
+		queue.close()
 	}
-	eb.chanMu.Unlock()
+	eb.queueMu.Unlock()
 
 	// Wait for routers to finish
 	eb.wg.Wait()
@@ -451,18 +298,18 @@ func (eb *EventBus) Stop() error {
 	return nil
 }
 
-// getOrCreateChannel gets or creates a channel for an event type
-func (eb *EventBus) getOrCreateChannel(eventType string, bufferSize int) chan *eventMessage {
-	eb.chanMu.Lock()
-	defer eb.chanMu.Unlock()
+// getOrCreateQueue gets or creates a priority queue for an event type
+func (eb *EventBus) getOrCreateQueue(eventType string) *messageQueue {
+	eb.queueMu.Lock()
+	defer eb.queueMu.Unlock()
 
-	if ch, exists := eb.channels[eventType]; exists {
-		return ch
+	if queue, exists := eb.queues[eventType]; exists {
+		return queue
 	}
 
-	ch := make(chan *eventMessage, bufferSize)
-	eb.channels[eventType] = ch
-	return ch
+	queue := newMessageQueue()
+	eb.queues[eventType] = queue
+	return queue
 }
 
 // getBufferSize returns the buffer size for an event type
@@ -492,7 +339,7 @@ func (eb *EventBus) getBufferSize(eventType string) int {
 }
 
 // startRouter starts the event router for a specific event type
-func (eb *EventBus) startRouter(eventType string, ch chan *eventMessage) {
+func (eb *EventBus) startRouter(eventType string, queue *messageQueue) {
 	// Check if router already exists
 	eb.routerMu.Lock()
 	if eb.activeRouters[eventType] {
@@ -511,48 +358,107 @@ func (eb *EventBus) startRouter(eventType string, ch chan *eventMessage) {
 			delete(eb.activeRouters, eventType)
 			eb.routerMu.Unlock()
 		}()
-		eb.routeEvents(eventType, ch)
+		eb.routeEvents(eventType, queue)
 	}()
 }
 
 // routeEvents routes events to subscribers
-func (eb *EventBus) routeEvents(eventType string, ch chan *eventMessage) {
+func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
 	log.Printf("[EventBus] Router started for %s", eventType)
 
 	for {
+		// Check if we should stop
 		select {
-		case msg, ok := <-ch:
-			if !ok {
-				log.Printf("[EventBus] Channel closed for %s", eventType)
-				return
-			}
-
-			// Get subscribers
-			eb.subMu.RLock()
-			subscribers := eb.subscribers[eventType]
-			eb.subMu.RUnlock()
-
-			// Dispatch to each subscriber
-			for _, sub := range subscribers {
-				// Non-blocking dispatch
-				go func(s subscriberInfo, m *eventMessage) {
-					timer := prometheus.NewTimer(metrics.EventProcessingDuration.WithLabelValues(eventType))
-					defer timer.ObserveDuration()
-
-					if err := s.Handler(m.Event); err != nil {
-						log.Printf("[EventBus] Handler error for %s: %v", eventType, err)
-					}
-
-					// Track successful processing
-					metrics.EventsProcessed.WithLabelValues(eventType).Inc()
-				}(sub, msg)
-			}
-
 		case <-eb.ctx.Done():
 			log.Printf("[EventBus] Router stopping for %s", eventType)
 			return
+		default:
+		}
+
+		// Pop message from queue (blocking)
+		msg, ok := queue.pop()
+		if !ok {
+			log.Printf("[EventBus] Queue closed for %s", eventType)
+			return
+		}
+
+		// Get all matching subscribers
+		matching := eb.getMatchingSubscribers(eventType, msg)
+
+		// Dispatch to each matching subscriber
+		for _, sub := range matching {
+			// Non-blocking dispatch
+			go func(s subscriberInfo, m *eventMessage) {
+				timer := prometheus.NewTimer(metrics.EventProcessingDuration.WithLabelValues(eventType))
+				defer timer.ObserveDuration()
+
+				if err := s.Handler(m.Event); err != nil {
+					log.Printf("[EventBus] Handler error for %s: %v", eventType, err)
+				}
+
+				// Track successful processing
+				metrics.EventsProcessed.WithLabelValues(eventType).Inc()
+			}(sub, msg)
 		}
 	}
+}
+
+// getMatchingSubscribers returns all subscribers that match the event type and tags
+func (eb *EventBus) getMatchingSubscribers(eventType string, msg *eventMessage) []subscriberInfo {
+	eb.subMu.RLock()
+	defer eb.subMu.RUnlock()
+
+	var matching []subscriberInfo
+
+	// Add exact match subscribers
+	for _, sub := range eb.subscribers[eventType] {
+		if eb.matchesTags(sub.Tags, msg.Metadata) {
+			matching = append(matching, sub)
+		}
+	}
+
+	// Add pattern match subscribers
+	for _, sub := range eb.patternSubscribers {
+		matched, err := path.Match(sub.Pattern, eventType)
+		if err != nil {
+			log.Printf("[EventBus] Invalid pattern %s: %v", sub.Pattern, err)
+			continue
+		}
+		if matched && eb.matchesTags(sub.Tags, msg.Metadata) {
+			matching = append(matching, sub)
+		}
+	}
+
+	return matching
+}
+
+// matchesTags checks if the subscription tags match the event metadata tags
+func (eb *EventBus) matchesTags(subTags []string, metadata *framework.EventMetadata) bool {
+	// No tag filter means match all
+	if len(subTags) == 0 {
+		return true
+	}
+
+	// No metadata means no tags to match
+	if metadata == nil || len(metadata.Tags) == 0 {
+		return false
+	}
+
+	// Check if all subscription tags are present in event tags
+	for _, subTag := range subTags {
+		found := false
+		for _, eventTag := range metadata.Tags {
+			if subTag == eventTag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+
+	return true
 }
 
 // generateID generates a unique ID for requests
@@ -580,61 +486,6 @@ func (eb *EventBus) GetDroppedEventCount(eventType string) int64 {
 	return eb.droppedEvents[eventType]
 }
 
-// DeliverQueryResponse delivers a query response to a waiting sync operation
-func (eb *EventBus) DeliverQueryResponse(correlationID string, rows *sql.Rows, err error) {
-	eb.syncMu.RLock()
-	respCh, exists := eb.pendingQueries[correlationID]
-	eb.syncMu.RUnlock()
-
-	if exists {
-		select {
-		case respCh <- &queryResponse{rows: rows, err: err}:
-			// Delivered successfully
-		default:
-			// Channel full or closed, log error
-			log.Printf("[EventBus] Failed to deliver query response for %s", correlationID)
-		}
-	}
-}
-
-// DeliverExecResponse delivers an exec response to a waiting sync operation
-func (eb *EventBus) DeliverExecResponse(correlationID string, result sql.Result, err error) {
-	eb.syncMu.RLock()
-	respCh, exists := eb.pendingExecs[correlationID]
-	eb.syncMu.RUnlock()
-
-	if exists {
-		select {
-		case respCh <- &execResponse{result: result, err: err}:
-			// Delivered successfully
-		default:
-			// Channel full or closed, log error
-			log.Printf("[EventBus] Failed to deliver exec response for %s", correlationID)
-		}
-	}
-}
-
-// sqlRowsAdapter adapts *sql.Rows to framework.QueryResult
-type sqlRowsAdapter struct {
-	rows *sql.Rows
-}
-
-func (a *sqlRowsAdapter) Next() bool {
-	return a.rows.Next()
-}
-
-func (a *sqlRowsAdapter) Scan(dest ...interface{}) error {
-	return a.rows.Scan(dest...)
-}
-
-func (a *sqlRowsAdapter) Close() error {
-	return a.rows.Close()
-}
-
-func (a *sqlRowsAdapter) Columns() ([]string, error) {
-	return a.rows.Columns()
-}
-
 // BroadcastWithMetadata broadcasts an event with metadata
 func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
 	var event framework.Event
@@ -659,11 +510,12 @@ func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.Even
 		}
 	}
 
-	// Create event message
+	// Create event message with metadata
 	msg := &eventMessage{
-		Event: event,
-		Type:  eventType,
-		Data:  data,
+		Event:    event,
+		Type:     eventType,
+		Data:     data,
+		Metadata: metadata,
 	}
 
 	// Route to subscribers
@@ -675,20 +527,25 @@ func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.Even
 		return nil
 	}
 
-	ch := eb.getOrCreateChannel(eventType, eb.getBufferSize(eventType))
+	queue := eb.getOrCreateQueue(eventType)
 
-	select {
-	case ch <- msg:
-		return nil
-	default:
+	// Push with priority from metadata
+	priority := 0
+	if metadata != nil {
+		priority = metadata.Priority
+	}
+
+	if !queue.push(msg, priority) {
 		eb.metricsMu.Lock()
 		eb.droppedEvents[eventType]++
 		count := eb.droppedEvents[eventType]
 		eb.metricsMu.Unlock()
 
-		log.Printf("[EventBus] WARNING: Dropped event %s - buffer full (total dropped: %d)", eventType, count)
+		log.Printf("[EventBus] WARNING: Dropped event %s - queue closed (total dropped: %d)", eventType, count)
 		return nil
 	}
+
+	return nil
 }
 
 // SendWithMetadata sends an event directly to a plugin with metadata
@@ -702,9 +559,12 @@ func (eb *EventBus) SendWithMetadata(target string, eventType string, data *fram
 
 // Request performs a synchronous request to a plugin
 func (eb *EventBus) Request(ctx context.Context, target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) (*framework.EventData, error) {
-	// Generate correlation ID
-	correlationID := generateID()
-	metadata.CorrelationID = correlationID
+	// Use existing correlation ID if present, otherwise generate new one
+	correlationID := metadata.CorrelationID
+	if correlationID == "" {
+		correlationID = generateID()
+		metadata.CorrelationID = correlationID
+	}
 	metadata.Target = target
 	metadata.ReplyTo = "eventbus"
 

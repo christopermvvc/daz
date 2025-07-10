@@ -15,11 +15,12 @@ import (
 
 // Plugin implements user tracking functionality
 type Plugin struct {
-	name     string
-	eventBus framework.EventBus
-	config   *Config
-	running  bool
-	mu       sync.RWMutex
+	name      string
+	eventBus  framework.EventBus
+	sqlClient *framework.SQLClient
+	config    *Config
+	running   bool
+	mu        sync.RWMutex
 
 	// Shutdown management
 	ctx       context.Context
@@ -136,6 +137,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 
 	p.eventBus = bus
+	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
 	log.Printf("[UserTracker] Initialized with inactivity timeout: %v", p.config.InactivityTimeout)
@@ -280,12 +282,12 @@ func (p *Plugin) createTables() error {
 	`
 
 	// Execute table creation
-	err := p.eventBus.Exec(sessionsTableSQL)
+	err := p.sqlClient.Exec(sessionsTableSQL)
 	if err != nil {
 		return fmt.Errorf("failed to create sessions table: %w", err)
 	}
 
-	err = p.eventBus.Exec(historyTableSQL)
+	err = p.sqlClient.Exec(historyTableSQL)
 	if err != nil {
 		return fmt.Errorf("failed to create history table: %w", err)
 	}
@@ -326,7 +328,7 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 			(channel, username, rank, joined_at, last_activity, is_active)
 		VALUES ($1, $2, $3, $4, $5, TRUE)
 	`
-	err := p.eventBus.Exec(sessionSQL,
+	err := p.sqlClient.Exec(sessionSQL,
 		framework.SQLParam{Value: channel},
 		framework.SQLParam{Value: userJoin.Username},
 		framework.SQLParam{Value: userJoin.UserRank},
@@ -343,7 +345,7 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 		VALUES ($1, $2, 'join', $3, $4)
 	`
 	metadata := fmt.Sprintf(`{"rank": %d}`, userJoin.UserRank)
-	err = p.eventBus.Exec(historySQL,
+	err = p.sqlClient.Exec(historySQL,
 		framework.SQLParam{Value: channel},
 		framework.SQLParam{Value: userJoin.Username},
 		framework.SQLParam{Value: now},
@@ -387,7 +389,7 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 		SET left_at = $1, is_active = FALSE, last_activity = $1
 		WHERE channel = $2 AND username = $3 AND is_active = TRUE
 	`
-	err := p.eventBus.Exec(sessionSQL,
+	err := p.sqlClient.Exec(sessionSQL,
 		framework.SQLParam{Value: now},
 		framework.SQLParam{Value: channel},
 		framework.SQLParam{Value: userLeave.Username})
@@ -401,7 +403,7 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 			(channel, username, event_type, timestamp)
 		VALUES ($1, $2, 'leave', $3)
 	`
-	err = p.eventBus.Exec(historySQL,
+	err = p.sqlClient.Exec(historySQL,
 		framework.SQLParam{Value: channel},
 		framework.SQLParam{Value: userLeave.Username},
 		framework.SQLParam{Value: now})
@@ -437,7 +439,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		SET last_activity = $1
 		WHERE channel = $2 AND username = $3 AND is_active = TRUE
 	`
-	err := p.eventBus.Exec(updateSQL,
+	err := p.sqlClient.Exec(updateSQL,
 		framework.SQLParam{Value: now},
 		framework.SQLParam{Value: chat.Channel},
 		framework.SQLParam{Value: chat.Username})
@@ -480,7 +482,7 @@ func (p *Plugin) handleSeenRequest(event framework.Event) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	rows, err := p.eventBus.QuerySync(ctx, query, channel, targetUser)
+	rows, err := p.sqlClient.QuerySync(ctx, query, framework.NewSQLParam(channel), framework.NewSQLParam(targetUser))
 	if err != nil {
 		return fmt.Errorf("failed to query user info: %w", err)
 	}
@@ -560,7 +562,7 @@ func (p *Plugin) doCleanup() {
 		SET is_active = FALSE
 		WHERE is_active = TRUE AND last_activity < $1
 	`
-	err := p.eventBus.Exec(updateSQL,
+	err := p.sqlClient.Exec(updateSQL,
 		framework.SQLParam{Value: cutoffTime})
 	if err != nil {
 		log.Printf("[UserTracker] Error cleaning up inactive sessions: %v", err)

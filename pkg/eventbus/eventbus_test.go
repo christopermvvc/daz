@@ -328,48 +328,6 @@ func TestEventBus_MultipleSubscribers(t *testing.T) {
 	}
 }
 
-func TestEventBus_SQLHandlers(t *testing.T) {
-	eb := NewEventBus(nil)
-	defer func() {
-		if err := eb.Stop(); err != nil {
-			t.Errorf("Stop failed: %v", err)
-		}
-	}()
-
-	// Test Query without handler
-	_, err := eb.Query("SELECT 1")
-	if err == nil {
-		t.Error("Query should fail without handler")
-	}
-
-	// Test Exec without handler
-	err = eb.Exec("INSERT INTO test VALUES (1)")
-	if err == nil {
-		t.Error("Exec should fail without handler")
-	}
-
-	// Set handlers
-	queryHandler := func(event framework.Event) error {
-		return nil
-	}
-	execHandler := func(event framework.Event) error {
-		return nil
-	}
-	eb.SetSQLHandlers(queryHandler, execHandler)
-
-	// Test Query with handler (will still fail due to placeholder implementation)
-	_, err = eb.Query("SELECT 1")
-	if err == nil {
-		t.Error("Query should fail with placeholder implementation")
-	}
-
-	// Test Exec with handler
-	err = eb.Exec("INSERT INTO test VALUES (1)")
-	if err != nil {
-		t.Errorf("Exec failed: %v", err)
-	}
-}
-
 func BenchmarkEventBus_Broadcast(b *testing.B) {
 	eb := NewEventBus(nil)
 	defer func() {

@@ -15,11 +15,12 @@ import (
 
 // Plugin implements media tracking functionality
 type Plugin struct {
-	name     string
-	eventBus framework.EventBus
-	config   *Config
-	running  bool
-	mu       sync.RWMutex
+	name      string
+	eventBus  framework.EventBus
+	sqlClient *framework.SQLClient
+	config    *Config
+	running   bool
+	mu        sync.RWMutex
 
 	// Shutdown management
 	ctx       context.Context
@@ -147,6 +148,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 
 	p.eventBus = bus
+	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
 	log.Printf("[MediaTracker] Initialized with stats update interval: %v", p.config.StatsUpdateInterval)
@@ -357,7 +359,7 @@ func (p *Plugin) createTables() error {
 
 	// Execute table creation
 	for _, sql := range []string{playsTableSQL, queueTableSQL, statsTableSQL, libraryTableSQL} {
-		if err := p.eventBus.Exec(sql); err != nil {
+		if err := p.sqlClient.Exec(sql); err != nil {
 			return fmt.Errorf("failed to create table: %w", err)
 		}
 	}
@@ -436,13 +438,13 @@ func (p *Plugin) handleMediaChange(event framework.Event) error {
 			(channel, media_id, media_type, title, duration, started_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`
-	err := p.eventBus.Exec(playSQL,
-		framework.SQLParam{Value: channel},
-		framework.SQLParam{Value: media.VideoID},
-		framework.SQLParam{Value: media.VideoType},
-		framework.SQLParam{Value: media.Title},
-		framework.SQLParam{Value: media.Duration},
-		framework.SQLParam{Value: now})
+	err := p.sqlClient.Exec(playSQL,
+		channel,
+		media.VideoID,
+		media.VideoType,
+		media.Title,
+		media.Duration,
+		now)
 	if err != nil {
 		log.Printf("[MediaTracker] Error recording media play: %v", err)
 	}
@@ -458,12 +460,12 @@ func (p *Plugin) handleMediaChange(event framework.Event) error {
 			last_played = EXCLUDED.last_played,
 			title = EXCLUDED.title
 	`
-	err = p.eventBus.Exec(statsSQL,
-		framework.SQLParam{Value: channel},
-		framework.SQLParam{Value: media.VideoID},
-		framework.SQLParam{Value: media.VideoType},
-		framework.SQLParam{Value: media.Title},
-		framework.SQLParam{Value: now})
+	err = p.sqlClient.Exec(statsSQL,
+		channel,
+		media.VideoID,
+		media.VideoType,
+		media.Title,
+		now)
 	if err != nil {
 		log.Printf("[MediaTracker] Error updating stats: %v", err)
 	}
@@ -513,10 +515,9 @@ func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error 
 	switch queueData.Action {
 	case "clear":
 		// Clear the entire queue
-		return p.eventBus.Exec(
+		return p.sqlClient.Exec(
 			"DELETE FROM daz_mediatracker_queue WHERE channel = $1",
-			framework.SQLParam{Value: channel},
-		)
+			channel)
 
 	case "full":
 		// Replace entire queue with new items
@@ -524,10 +525,9 @@ func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error 
 		startTime := time.Now()
 
 		// First clear existing queue
-		if err := p.eventBus.Exec(
+		if err := p.sqlClient.Exec(
 			"DELETE FROM daz_mediatracker_queue WHERE channel = $1",
-			framework.SQLParam{Value: channel},
-		); err != nil {
+			channel); err != nil {
 			return fmt.Errorf("failed to clear queue: %w", err)
 		}
 
@@ -544,11 +544,10 @@ func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error 
 		// Add item at position
 		if len(queueData.Items) > 0 {
 			// Shift existing items down if necessary
-			if err := p.eventBus.Exec(
+			if err := p.sqlClient.Exec(
 				"UPDATE daz_mediatracker_queue SET position = position + 1 WHERE channel = $1 AND position >= $2",
-				framework.SQLParam{Value: channel},
-				framework.SQLParam{Value: queueData.Position},
-			); err != nil {
+				channel,
+				queueData.Position); err != nil {
 				return fmt.Errorf("failed to shift queue items: %w", err)
 			}
 
@@ -562,20 +561,18 @@ func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error 
 
 	case "remove":
 		// Remove item at position
-		if err := p.eventBus.Exec(
+		if err := p.sqlClient.Exec(
 			"DELETE FROM daz_mediatracker_queue WHERE channel = $1 AND position = $2",
-			framework.SQLParam{Value: channel},
-			framework.SQLParam{Value: queueData.Position},
-		); err != nil {
+			channel,
+			queueData.Position); err != nil {
 			return fmt.Errorf("failed to remove queue item: %w", err)
 		}
 
 		// Shift remaining items up
-		if err := p.eventBus.Exec(
+		if err := p.sqlClient.Exec(
 			"UPDATE daz_mediatracker_queue SET position = position - 1 WHERE channel = $1 AND position > $2",
-			framework.SQLParam{Value: channel},
-			framework.SQLParam{Value: queueData.Position},
-		); err != nil {
+			channel,
+			queueData.Position); err != nil {
 			return fmt.Errorf("failed to shift queue items: %w", err)
 		}
 
@@ -609,7 +606,7 @@ func (p *Plugin) insertQueueItem(channel string, item *framework.QueueItem) erro
 		log.Printf("[MediaTracker] Error adding queued item to library: %v", err)
 	}
 
-	return p.eventBus.Exec(`
+	return p.sqlClient.Exec(`
 		INSERT INTO daz_mediatracker_queue 
 		(channel, position, media_id, media_type, title, duration, queued_by, queued_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -620,14 +617,14 @@ func (p *Plugin) insertQueueItem(channel string, item *framework.QueueItem) erro
 			duration = EXCLUDED.duration,
 			queued_by = EXCLUDED.queued_by,
 			queued_at = EXCLUDED.queued_at
-	`, framework.SQLParam{Value: channel},
-		framework.SQLParam{Value: item.Position},
-		framework.SQLParam{Value: item.MediaID},
-		framework.SQLParam{Value: item.MediaType},
-		framework.SQLParam{Value: item.Title},
-		framework.SQLParam{Value: item.Duration},
-		framework.SQLParam{Value: item.QueuedBy},
-		framework.SQLParam{Value: queuedAt})
+	`, channel,
+		item.Position,
+		item.MediaID,
+		item.MediaType,
+		item.Title,
+		item.Duration,
+		item.QueuedBy,
+		queuedAt)
 }
 
 // bulkInsertQueueItems performs a bulk insert of queue items to minimize database operations
@@ -644,7 +641,7 @@ func (p *Plugin) bulkInsertQueueItems(channel string, items []framework.QueueIte
 		VALUES `)
 
 	// Build value placeholders and collect all parameters
-	var params []framework.SQLParam
+	var params []interface{}
 	for i, item := range items {
 		if i > 0 {
 			sqlStr.WriteString(", ")
@@ -655,19 +652,18 @@ func (p *Plugin) bulkInsertQueueItems(channel string, items []framework.QueueIte
 
 		queuedAt := time.Unix(item.QueuedAt, 0)
 		params = append(params,
-			framework.SQLParam{Value: channel},
-			framework.SQLParam{Value: item.Position},
-			framework.SQLParam{Value: item.MediaID},
-			framework.SQLParam{Value: item.MediaType},
-			framework.SQLParam{Value: item.Title},
-			framework.SQLParam{Value: item.Duration},
-			framework.SQLParam{Value: item.QueuedBy},
-			framework.SQLParam{Value: queuedAt},
-		)
+			channel,
+			item.Position,
+			item.MediaID,
+			item.MediaType,
+			item.Title,
+			item.Duration,
+			item.QueuedBy,
+			queuedAt)
 	}
 
 	// Execute the bulk insert
-	if err := p.eventBus.Exec(sqlStr.String(), params...); err != nil {
+	if err := p.sqlClient.Exec(sqlStr.String(), params...); err != nil {
 		return fmt.Errorf("bulk insert failed: %w", err)
 	}
 
@@ -692,7 +688,7 @@ func (p *Plugin) bulkAddToLibrary(channel string, items []framework.QueueItem) e
 		(channel, media_id, media_type, title, duration, added_by, added_at, play_count)
 		VALUES `)
 
-	var params []framework.SQLParam
+	var params []interface{}
 	now := time.Now()
 
 	for i, item := range items {
@@ -704,14 +700,13 @@ func (p *Plugin) bulkAddToLibrary(channel string, items []framework.QueueItem) e
 			base+1, base+2, base+3, base+4, base+5, base+6, base+7))
 
 		params = append(params,
-			framework.SQLParam{Value: channel},
-			framework.SQLParam{Value: item.MediaID},
-			framework.SQLParam{Value: item.MediaType},
-			framework.SQLParam{Value: item.Title},
-			framework.SQLParam{Value: item.Duration},
-			framework.SQLParam{Value: item.QueuedBy},
-			framework.SQLParam{Value: now},
-		)
+			channel,
+			item.MediaID,
+			item.MediaType,
+			item.Title,
+			item.Duration,
+			item.QueuedBy,
+			now)
 	}
 
 	sqlStr.WriteString(` ON CONFLICT (channel, media_id) DO UPDATE SET
@@ -719,7 +714,7 @@ func (p *Plugin) bulkAddToLibrary(channel string, items []framework.QueueItem) e
 		duration = EXCLUDED.duration,
 		last_queued = EXCLUDED.added_at`)
 
-	return p.eventBus.Exec(sqlStr.String(), params...)
+	return p.sqlClient.Exec(sqlStr.String(), params...)
 }
 
 // handleNowPlayingRequest handles requests for current media info
@@ -785,7 +780,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
-	rows, err := p.eventBus.QuerySync(ctx, query, channel)
+	rows, err := p.sqlClient.QuerySync(ctx, query, channel)
 	if err != nil {
 		return fmt.Errorf("failed to query stats: %w", err)
 	}
@@ -838,12 +833,12 @@ func (p *Plugin) endMediaPlay(media *MediaState, endTime time.Time, channel stri
 		SET ended_at = $1, completed = $2
 		WHERE channel = $3 AND media_id = $4 AND started_at = $5
 	`
-	err := p.eventBus.Exec(updateSQL,
-		framework.SQLParam{Value: endTime},
-		framework.SQLParam{Value: completed},
-		framework.SQLParam{Value: channel},
-		framework.SQLParam{Value: media.ID},
-		framework.SQLParam{Value: media.StartedAt})
+	err := p.sqlClient.Exec(updateSQL,
+		endTime,
+		completed,
+		channel,
+		media.ID,
+		media.StartedAt)
 	if err != nil {
 		return fmt.Errorf("failed to end media play: %w", err)
 	}
@@ -854,10 +849,10 @@ func (p *Plugin) endMediaPlay(media *MediaState, endTime time.Time, channel stri
 		SET total_duration = total_duration + $1
 		WHERE channel = $2 AND media_id = $3
 	`
-	err = p.eventBus.Exec(statsSQL,
-		framework.SQLParam{Value: int(duration.Seconds())},
-		framework.SQLParam{Value: channel},
-		framework.SQLParam{Value: media.ID})
+	err = p.sqlClient.Exec(statsSQL,
+		int(duration.Seconds()),
+		channel,
+		media.ID)
 	if err != nil {
 		return fmt.Errorf("failed to update total duration: %w", err)
 	}
@@ -1068,16 +1063,16 @@ func (p *Plugin) addToLibrary(mediaID, mediaType, title string, duration int, ad
 			END
 	`
 
-	err := p.eventBus.Exec(query,
-		framework.SQLParam{Value: url},
-		framework.SQLParam{Value: mediaID},
-		framework.SQLParam{Value: mediaType},
-		framework.SQLParam{Value: title},
-		framework.SQLParam{Value: duration},
-		framework.SQLParam{Value: time.Now()},
-		framework.SQLParam{Value: addedBy},
-		framework.SQLParam{Value: channel},
-		framework.SQLParam{Value: metaJSON})
+	err := p.sqlClient.Exec(query,
+		url,
+		mediaID,
+		mediaType,
+		title,
+		duration,
+		time.Now(),
+		addedBy,
+		channel,
+		metaJSON)
 	if err != nil {
 		return fmt.Errorf("failed to add to library: %w", err)
 	}
@@ -1093,7 +1088,7 @@ func (p *Plugin) bulkAddPlaylistToLibrary(items []framework.PlaylistItem, channe
 
 	// Build bulk insert query
 	valueStrings := make([]string, 0, len(items))
-	valueArgs := make([]framework.SQLParam, 0, len(items)*9)
+	valueArgs := make([]interface{}, 0, len(items)*9)
 
 	for i, item := range items {
 		valueStrings = append(valueStrings, fmt.Sprintf(
@@ -1112,16 +1107,15 @@ func (p *Plugin) bulkAddPlaylistToLibrary(items []framework.PlaylistItem, channe
 		}
 
 		valueArgs = append(valueArgs,
-			framework.SQLParam{Value: url},
-			framework.SQLParam{Value: item.MediaID},
-			framework.SQLParam{Value: item.MediaType},
-			framework.SQLParam{Value: item.Title},
-			framework.SQLParam{Value: item.Duration},
-			framework.SQLParam{Value: time.Now()},
-			framework.SQLParam{Value: item.QueuedBy},
-			framework.SQLParam{Value: channel},
-			framework.SQLParam{Value: metaJSON},
-		)
+			url,
+			item.MediaID,
+			item.MediaType,
+			item.Title,
+			item.Duration,
+			time.Now(),
+			item.QueuedBy,
+			channel,
+			metaJSON)
 	}
 
 	query := fmt.Sprintf(`
@@ -1141,7 +1135,7 @@ func (p *Plugin) bulkAddPlaylistToLibrary(items []framework.PlaylistItem, channe
 			END
 	`, strings.Join(valueStrings, ","))
 
-	if err := p.eventBus.Exec(query, valueArgs...); err != nil {
+	if err := p.sqlClient.Exec(query, valueArgs...); err != nil {
 		return fmt.Errorf("bulk insert failed: %w", err)
 	}
 

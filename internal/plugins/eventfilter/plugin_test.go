@@ -2,7 +2,7 @@ package eventfilter
 
 import (
 	"context"
-	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -62,22 +62,7 @@ func (m *MockEventBus) Send(target string, eventType string, data *framework.Eve
 	return nil
 }
 
-func (m *MockEventBus) Query(sql string, params ...framework.SQLParam) (framework.QueryResult, error) {
-	return &MockQueryResult{}, nil
-}
-
-func (m *MockEventBus) Exec(sql string, params ...framework.SQLParam) error {
-	m.execCalls = append(m.execCalls, sql)
-	return nil
-}
-
-func (m *MockEventBus) QuerySync(ctx context.Context, sql string, params ...interface{}) (*sql.Rows, error) {
-	return nil, fmt.Errorf("sync queries not supported in mock")
-}
-
-func (m *MockEventBus) ExecSync(ctx context.Context, sql string, params ...interface{}) (sql.Result, error) {
-	return nil, fmt.Errorf("sync exec not supported in mock")
-}
+// Removed SQL-specific methods as EventBus no longer supports them
 
 func (m *MockEventBus) BroadcastWithMetadata(eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
 	return m.Broadcast(eventType, data)
@@ -88,6 +73,36 @@ func (m *MockEventBus) SendWithMetadata(target string, eventType string, data *f
 }
 
 func (m *MockEventBus) Request(ctx context.Context, target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) (*framework.EventData, error) {
+	// Handle SQL exec requests for schema creation
+	if eventType == "sql.exec.request" && data != nil && data.SQLExecRequest != nil {
+		// Record the SQL call
+		m.execCalls = append(m.execCalls, data.SQLExecRequest.Query)
+
+		// Return success response
+		response := &framework.EventData{
+			SQLExecResponse: &framework.SQLExecResponse{
+				CorrelationID: data.SQLExecRequest.CorrelationID,
+				Success:       true,
+				RowsAffected:  0,
+			},
+		}
+		return response, nil
+	}
+
+	// Handle SQL query requests
+	if eventType == "sql.query.request" && data != nil && data.SQLQueryRequest != nil {
+		// Return empty result set
+		response := &framework.EventData{
+			SQLQueryResponse: &framework.SQLQueryResponse{
+				CorrelationID: data.SQLQueryRequest.CorrelationID,
+				Success:       true,
+				Columns:       []string{},
+				Rows:          [][]json.RawMessage{},
+			},
+		}
+		return response, nil
+	}
+
 	return nil, fmt.Errorf("request not supported in mock")
 }
 
@@ -108,8 +123,12 @@ func (m *MockEventBus) Subscribe(eventType string, handler framework.EventHandle
 	return nil
 }
 
-func (m *MockEventBus) SetSQLHandlers(queryHandler, execHandler framework.EventHandler) {
+func (m *MockEventBus) SubscribeWithTags(pattern string, handler framework.EventHandler, tags []string) error {
+	m.subscriptions[pattern] = append(m.subscriptions[pattern], handler)
+	return nil
 }
+
+// SetSQLHandlers removed as EventBus no longer supports SQL handlers
 
 func (m *MockEventBus) GetDroppedEventCounts() map[string]int64 {
 	return make(map[string]int64)
@@ -119,21 +138,7 @@ func (m *MockEventBus) GetDroppedEventCount(eventType string) int64 {
 	return 0
 }
 
-// MockQueryResult implements framework.QueryResult
-type MockQueryResult struct {
-}
-
-func (m *MockQueryResult) Scan(dest ...interface{}) error {
-	return nil
-}
-
-func (m *MockQueryResult) Next() bool {
-	return false
-}
-
-func (m *MockQueryResult) Close() error {
-	return nil
-}
+// MockQueryResult removed as EventBus no longer supports direct SQL operations
 
 func TestNewPlugin(t *testing.T) {
 	// Test with nil config

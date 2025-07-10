@@ -1,7 +1,9 @@
 package sql
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/hildolfr/daz/internal/framework"
@@ -133,17 +135,66 @@ func TestExtractFieldsForRule(t *testing.T) {
 
 // mockEventBus implements a minimal EventBus interface for testing
 type mockEventBus struct {
-	framework.EventBus
+	broadcasts []broadcastCall
+	responses  map[string]*framework.EventData
 }
 
-func (m *mockEventBus) Subscribe(eventType string, handler framework.EventHandler) error {
+type broadcastCall struct {
+	eventType string
+	data      *framework.EventData
+}
+
+func (m *mockEventBus) Broadcast(eventType string, data *framework.EventData) error {
+	if m.broadcasts == nil {
+		m.broadcasts = make([]broadcastCall, 0)
+	}
+	m.broadcasts = append(m.broadcasts, broadcastCall{eventType: eventType, data: data})
 	return nil
+}
+
+func (m *mockEventBus) BroadcastWithMetadata(eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
+	return m.Broadcast(eventType, data)
 }
 
 func (m *mockEventBus) Send(target string, eventType string, data *framework.EventData) error {
 	return nil
 }
 
+func (m *mockEventBus) SendWithMetadata(target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
+	return nil
+}
+
+func (m *mockEventBus) Request(ctx context.Context, target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) (*framework.EventData, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (m *mockEventBus) DeliverResponse(correlationID string, response *framework.EventData, err error) {
+	if m.responses == nil {
+		m.responses = make(map[string]*framework.EventData)
+	}
+	m.responses[correlationID] = response
+}
+
+func (m *mockEventBus) Subscribe(eventType string, handler framework.EventHandler) error {
+	return nil
+}
+
+func (m *mockEventBus) SubscribeWithTags(pattern string, handler framework.EventHandler, tags []string) error {
+	return nil
+}
+
 func (m *mockEventBus) RegisterPlugin(name string, plugin framework.Plugin) error {
 	return nil
+}
+
+func (m *mockEventBus) UnregisterPlugin(name string) error {
+	return nil
+}
+
+func (m *mockEventBus) GetDroppedEventCounts() map[string]int64 {
+	return nil
+}
+
+func (m *mockEventBus) GetDroppedEventCount(eventType string) int64 {
+	return 0
 }

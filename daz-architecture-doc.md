@@ -145,6 +145,35 @@ Cytube API → Core Plugin → Event Bus (Tagged Events) → SQL Plugin (Logger 
   - `daz_eventfilter_commands`: Command registry and aliases
   - `daz_eventfilter_history`: Command execution audit log
 
+## Type Safety and Interface{} Usage
+
+### Design Principle
+The Daz architecture prioritizes type safety and avoids the use of `interface{}` wherever possible. All data structures should use concrete types to ensure compile-time type checking and prevent runtime type assertion errors.
+
+### Necessary Exceptions
+While the architecture strives to eliminate `interface{}` usage, the following exceptions are necessary and justified:
+
+1. **SQL Parameter Handling** (`SQLParam.Value`)
+   - Required for compatibility with Go's `database/sql` package
+   - The `Value` field must accept all SQL-compatible types (string, int, int64, float64, bool, time.Time, []byte, nil)
+   - Wrapped in a concrete `SQLParam` type to maintain type safety at the API level
+
+2. **Cytube Metadata Fields**
+   - Private message metadata (`PrivateMessagePayload.Meta`)
+   - Playlist item metadata (`PlaylistItem.Metadata`)
+   - Required because Cytube sends arbitrary JSON objects that vary by media type
+   - These fields preserve the original data without imposing a rigid schema
+
+3. **QueryResult.Scan Method**
+   - Matches the standard `sql.Rows.Scan` interface signature
+   - Required for compatibility with existing SQL scanning patterns
+
+### Implementation Notes
+- All other uses of `interface{}` have been eliminated
+- Plugin configurations use `json.RawMessage` instead of `interface{}`
+- Event data uses concrete types with specific fields
+- SQL operations use `SQLParam` type instead of raw `interface{}` parameters
+
 ## Error Handling & Resilience
 
 ### Connection Retry Strategy
@@ -411,7 +440,7 @@ type PluginRequest struct {
     From       string          `json:"from"`
     To         string          `json:"to"`
     Type       string          `json:"type"`
-    Data       interface{}     `json:"data"`
+    Data       json.RawMessage `json:"data"`
     ReplyTo    string          `json:"reply_to,omitempty"`
 }
 
@@ -419,7 +448,7 @@ type PluginResponse struct {
     ID         string          `json:"id"`
     From       string          `json:"from"`
     Success    bool            `json:"success"`
-    Data       interface{}     `json:"data,omitempty"`
+    Data       json.RawMessage `json:"data,omitempty"`
     Error      string          `json:"error,omitempty"`
 }
 ```

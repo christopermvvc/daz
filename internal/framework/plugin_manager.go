@@ -52,7 +52,7 @@ func (pm *PluginManager) RegisterPlugin(name string, plugin Plugin) error {
 }
 
 // InitializeAll initializes all plugins with their configuration
-func (pm *PluginManager) InitializeAll(configs map[string]interface{}, eventBus EventBus) error {
+func (pm *PluginManager) InitializeAll(configs map[string]json.RawMessage, eventBus EventBus) error {
 	// Resolve startup order based on dependencies
 	if err := pm.resolveStartupOrder(); err != nil {
 		return fmt.Errorf("failed to resolve plugin dependencies: %w", err)
