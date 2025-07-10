@@ -155,23 +155,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 }
 
 func (p *Plugin) handleHelpCommand(req *framework.PluginRequest) {
-	// For now, provide a static help message until async queries are implemented
-
-	lines := []string{
-		"Available Commands:",
-		"",
-		"• help: !help, !h, !commands - Show this help message",
-		"• about: !about, !version, !info - Show bot information",
-		"• uptime: !uptime, !up - Show bot uptime",
-		"",
-		"Use !<command> to execute a command",
-	}
-
-	message := ""
-	for _, line := range lines {
-		message += line + "\n"
-	}
-
+	message := "In development"
 	p.sendResponse(req, message)
 }
 

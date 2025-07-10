@@ -81,6 +81,7 @@ config.local.json
 config.prod.json
 secrets.json
 credentials.json
+admin_users.json
 
 # Session files
 *.session

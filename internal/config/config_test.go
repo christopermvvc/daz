@@ -127,12 +127,20 @@ func TestLoadFromFile(t *testing.T) {
 			}`,
 			validate: func(t *testing.T, c *Config) {
 				// LoadFromEnv should create a room from env vars
-				os.Setenv("DAZ_CYTUBE_CHANNEL", "legacy-channel")
-				os.Setenv("DAZ_CYTUBE_USERNAME", "legacyuser")
-				os.Setenv("DAZ_CYTUBE_PASSWORD", "legacypass")
-				defer os.Unsetenv("DAZ_CYTUBE_CHANNEL")
-				defer os.Unsetenv("DAZ_CYTUBE_USERNAME")
-				defer os.Unsetenv("DAZ_CYTUBE_PASSWORD")
+				if err := os.Setenv("DAZ_CYTUBE_CHANNEL", "legacy-channel"); err != nil {
+					t.Fatalf("Failed to set DAZ_CYTUBE_CHANNEL: %v", err)
+				}
+				if err := os.Setenv("DAZ_CYTUBE_USERNAME", "legacyuser"); err != nil {
+					t.Fatalf("Failed to set DAZ_CYTUBE_USERNAME: %v", err)
+				}
+				if err := os.Setenv("DAZ_CYTUBE_PASSWORD", "legacypass"); err != nil {
+					t.Fatalf("Failed to set DAZ_CYTUBE_PASSWORD: %v", err)
+				}
+				defer func() {
+					_ = os.Unsetenv("DAZ_CYTUBE_CHANNEL")
+					_ = os.Unsetenv("DAZ_CYTUBE_USERNAME")
+					_ = os.Unsetenv("DAZ_CYTUBE_PASSWORD")
+				}()
 
 				c.LoadFromEnv()
 

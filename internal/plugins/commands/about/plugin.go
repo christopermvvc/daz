@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"runtime"
 	"sync"
 	"time"
 
@@ -190,28 +191,75 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 func (p *Plugin) handleAboutCommand(req *framework.PluginRequest) {
 	log.Printf("[About] Handling about command from %s", req.Data.Command.Params["username"])
 
-	// Build about message
-	var lines []string
-	lines = append(lines, fmt.Sprintf("%s v%s", p.config.Description, p.config.Version))
-	lines = append(lines, "")
-	lines = append(lines, "A modular Go chat bot with plugin-based architecture")
-	lines = append(lines, fmt.Sprintf("Author: %s", p.config.Author))
-	lines = append(lines, fmt.Sprintf("Repository: %s", p.config.Repository))
-	lines = append(lines, "")
-	lines = append(lines, "Features:")
-	lines = append(lines, "• WebSocket connection to Cytube")
-	lines = append(lines, "• PostgreSQL persistence")
-	lines = append(lines, "• Event-driven plugin system")
-	lines = append(lines, "• Modular command architecture")
-	lines = append(lines, "")
-	lines = append(lines, "Type !help for available commands")
+	// Check if user is admin
+	isAdmin := req.Data.Command.Params["is_admin"] == "true"
 
-	message := ""
-	for _, line := range lines {
-		message += line + "\n"
+	var message string
+	if !isAdmin {
+		message = "This command is admin-only."
+	} else {
+		// Get memory statistics
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+
+		// Get system state
+		uptime := time.Since(p.startTime)
+
+		// Build about message with memory usage and system state
+		var lines []string
+		lines = append(lines, "=== System State ===")
+		lines = append(lines, fmt.Sprintf("Uptime: %s", formatDuration(uptime)))
+		lines = append(lines, fmt.Sprintf("Goroutines: %d", runtime.NumGoroutine()))
+		lines = append(lines, "")
+		lines = append(lines, "=== Memory Usage ===")
+		lines = append(lines, fmt.Sprintf("Allocated: %.2f MB", float64(m.Alloc)/1024/1024))
+		lines = append(lines, fmt.Sprintf("Total Allocated: %.2f MB", float64(m.TotalAlloc)/1024/1024))
+		lines = append(lines, fmt.Sprintf("System Memory: %.2f MB", float64(m.Sys)/1024/1024))
+		lines = append(lines, fmt.Sprintf("GC Cycles: %d", m.NumGC))
+		lines = append(lines, "")
+		lines = append(lines, "=== Runtime Info ===")
+		lines = append(lines, fmt.Sprintf("Go Version: %s", runtime.Version()))
+		lines = append(lines, fmt.Sprintf("GOOS: %s", runtime.GOOS))
+		lines = append(lines, fmt.Sprintf("GOARCH: %s", runtime.GOARCH))
+		lines = append(lines, fmt.Sprintf("CPU Cores: %d", runtime.NumCPU()))
+
+		message = ""
+		for _, line := range lines {
+			message += line + "\n"
+		}
 	}
 
 	p.sendResponse(req, message)
+}
+
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	minutes := int(d.Minutes()) % 60
+	seconds := int(d.Seconds()) % 60
+
+	parts := []string{}
+	if days > 0 {
+		parts = append(parts, fmt.Sprintf("%dd", days))
+	}
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", hours))
+	}
+	if minutes > 0 {
+		parts = append(parts, fmt.Sprintf("%dm", minutes))
+	}
+	if seconds > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%ds", seconds))
+	}
+
+	result := ""
+	for i, part := range parts {
+		if i > 0 {
+			result += " "
+		}
+		result += part
+	}
+	return result
 }
 
 func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {

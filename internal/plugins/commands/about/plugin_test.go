@@ -295,106 +295,136 @@ func TestStatus(t *testing.T) {
 }
 
 func TestHandleCommand(t *testing.T) {
-	plugin := New().(*Plugin)
-	bus := newMockEventBus()
-
-	err := plugin.Init(nil, bus)
-	if err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-
-	err = plugin.Start()
-	if err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-
-	// Create a command event
-	eventData := framework.EventData{
-		PluginRequest: &framework.PluginRequest{
-			From: "commandrouter",
-			To:   "about",
-			Data: &framework.RequestData{
-				Command: &framework.CommandData{
-					Name: "about",
-					Params: map[string]string{
-						"channel":  "test-channel",
-						"username": "testuser",
-					},
-				},
+	testCases := []struct {
+		name            string
+		isAdmin         string
+		expectedContent []string
+	}{
+		{
+			name:    "admin user",
+			isAdmin: "true",
+			expectedContent: []string{
+				"System State",
+				"Memory Usage",
+				"Runtime Info",
+				"Uptime:",
+				"Goroutines:",
+				"Go Version:",
 			},
+		},
+		{
+			name:            "non-admin user",
+			isAdmin:         "false",
+			expectedContent: []string{"This command is admin-only."},
 		},
 	}
 
-	eventJSON, _ := json.Marshal(eventData)
-	event := &framework.CytubeEvent{
-		EventType: "command.about.execute",
-		RawData:   eventJSON,
-	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := New().(*Plugin)
+			bus := newMockEventBus()
 
-	// Handle the command
-	bus.mu.Lock()
-	handler := bus.subscriptions["command.about.execute"][0]
-	bus.mu.Unlock()
-	err = handler(event)
-	if err != nil {
-		t.Errorf("handleCommand() error = %v", err)
-	}
+			err := plugin.Init(nil, bus)
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
 
-	// Wait for async handler to complete
-	select {
-	case <-bus.sendNotify:
-		// Broadcast was called
-	case <-time.After(1 * time.Second):
-		t.Fatal("Timeout waiting for handler to send response")
-	}
+			err = plugin.Start()
+			if err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
 
-	// Give a bit more time for the handler to finish
-	handlerDone := make(chan struct{})
-	go func() {
-		timer := time.NewTimer(100 * time.Millisecond)
-		defer timer.Stop()
-		<-timer.C
-		close(handlerDone)
-	}()
-	<-handlerDone
+			// Create a command event
+			eventData := framework.EventData{
+				PluginRequest: &framework.PluginRequest{
+					From: "commandrouter",
+					To:   "about",
+					Data: &framework.RequestData{
+						Command: &framework.CommandData{
+							Name: "about",
+							Params: map[string]string{
+								"channel":  "test-channel",
+								"username": "testuser",
+								"is_admin": tc.isAdmin,
+							},
+						},
+					},
+				},
+			}
 
-	// Check that a response was broadcast
-	bus.mu.Lock()
-	broadcastCount := len(bus.broadcasts)
-	// Find the cytube.send.pm broadcast
-	var broadcast broadcastCall
-	found := false
-	for _, b := range bus.broadcasts {
-		if b.eventType == "cytube.send.pm" {
-			broadcast = b
-			found = true
-			break
-		}
-	}
-	bus.mu.Unlock()
-	if !found {
-		t.Errorf("Expected cytube.send.pm broadcast not found in %d broadcasts", broadcastCount)
-		return
-	}
+			eventJSON, _ := json.Marshal(eventData)
+			event := &framework.CytubeEvent{
+				EventType: "command.about.execute",
+				RawData:   eventJSON,
+			}
 
-	// Check message content
-	if broadcast.data.PrivateMessage == nil {
-		t.Fatal("Expected PrivateMessage data")
-	}
+			// Handle the command
+			bus.mu.Lock()
+			handler := bus.subscriptions["command.about.execute"][0]
+			bus.mu.Unlock()
+			err = handler(event)
+			if err != nil {
+				t.Errorf("handleCommand() error = %v", err)
+			}
 
-	// Verify PM is sent to the correct user
-	if broadcast.data.PrivateMessage.ToUser != "testuser" {
-		t.Errorf("Expected PM to be sent to 'testuser', got '%s'", broadcast.data.PrivateMessage.ToUser)
-	}
+			// Wait for async handler to complete
+			select {
+			case <-bus.sendNotify:
+				// Broadcast was called
+			case <-time.After(1 * time.Second):
+				t.Fatal("Timeout waiting for handler to send response")
+			}
 
-	message := broadcast.data.PrivateMessage.Message
-	if !strings.Contains(message, "Daz") {
-		t.Error("About message should contain 'Daz'")
-	}
-	if !strings.Contains(message, "v0.1.0") {
-		t.Error("About message should contain version")
-	}
-	if !strings.Contains(message, "hildolfr") {
-		t.Error("About message should contain author")
+			// Give a bit more time for the handler to finish
+			handlerDone := make(chan struct{})
+			go func() {
+				timer := time.NewTimer(100 * time.Millisecond)
+				defer timer.Stop()
+				<-timer.C
+				close(handlerDone)
+			}()
+			<-handlerDone
+
+			// Check that a response was broadcast
+			bus.mu.Lock()
+			// Find the cytube.send.pm broadcast
+			var broadcast broadcastCall
+			found := false
+			for _, b := range bus.broadcasts {
+				if b.eventType == "cytube.send.pm" {
+					broadcast = b
+					found = true
+					break
+				}
+			}
+			bus.mu.Unlock()
+			if !found {
+				t.Errorf("Expected cytube.send.pm broadcast not found")
+				return
+			}
+
+			// Check message content
+			if broadcast.data.PrivateMessage == nil {
+				t.Fatal("Expected PrivateMessage data")
+			}
+
+			// Verify PM is sent to the correct user
+			if broadcast.data.PrivateMessage.ToUser != "testuser" {
+				t.Errorf("Expected PM to be sent to 'testuser', got '%s'", broadcast.data.PrivateMessage.ToUser)
+			}
+
+			message := broadcast.data.PrivateMessage.Message
+			// Check for expected content based on admin status
+			for _, expectedStr := range tc.expectedContent {
+				if !strings.Contains(message, expectedStr) {
+					t.Errorf("Expected message to contain '%s', but got: %s", expectedStr, message)
+				}
+			}
+
+			// Clear broadcasts for next test
+			bus.mu.Lock()
+			bus.broadcasts = []broadcastCall{}
+			bus.mu.Unlock()
+		})
 	}
 }

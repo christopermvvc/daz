@@ -175,7 +175,9 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 
 	// Register all plugins with the manager
 	for _, p := range plugins {
-		pluginManager.RegisterPlugin(p.name, p.plugin)
+		if err := pluginManager.RegisterPlugin(p.name, p.plugin); err != nil {
+			log.Fatalf("Failed to register plugin %s: %v", p.name, err)
+		}
 	}
 
 	// Prepare plugin configurations

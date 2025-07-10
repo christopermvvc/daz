@@ -191,11 +191,9 @@ func (pm *PluginManager) waitForDependencies(pluginName string, timeout time.Dur
 			return nil
 		}
 
-		select {
-		case <-ticker.C:
-			if time.Now().After(deadline) {
-				return fmt.Errorf("timeout waiting for dependencies: %v", deps)
-			}
+		<-ticker.C
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for dependencies: %v", deps)
 		}
 	}
 }
@@ -220,11 +218,9 @@ func (pm *PluginManager) waitForReady(pluginName string, timeout time.Duration) 
 			return nil
 		}
 
-		select {
-		case <-ticker.C:
-			if time.Now().After(deadline) {
-				return fmt.Errorf("timeout waiting for plugin to be ready")
-			}
+		<-ticker.C
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for plugin to be ready")
 		}
 	}
 }

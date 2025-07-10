@@ -15,6 +15,13 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
+// logDeferredError is a helper function to log errors from deferred calls
+func logDeferredError(err error, context string) {
+	if err != nil {
+		log.Printf("error in deferred %s: %v", context, err)
+	}
+}
+
 // EventDiscoveryCommand implements event discovery functionality
 type EventDiscoveryCommand struct {
 	configPath string
@@ -51,7 +58,9 @@ func (c *EventDiscoveryCommand) Run() error {
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
-	defer c.db.Close()
+	defer func() {
+		logDeferredError(c.db.Close(), "database close")
+	}()
 
 	fmt.Println("CyTube Event Discovery Analysis")
 	fmt.Println("===============================")
@@ -92,11 +101,17 @@ func (c *EventDiscoveryCommand) analyzeAllEvents() error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() {
+		logDeferredError(rows.Close(), "rows close")
+	}()
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "Event Type\tCount\tFirst Seen\tLast Seen")
-	fmt.Fprintln(w, "----------\t-----\t----------\t---------")
+	if _, err := fmt.Fprintln(w, "Event Type\tCount\tFirst Seen\tLast Seen"); err != nil {
+		return fmt.Errorf("writing header: %w", err)
+	}
+	if _, err := fmt.Fprintln(w, "----------\t-----\t----------\t---------"); err != nil {
+		return fmt.Errorf("writing separator: %w", err)
+	}
 
 	for rows.Next() {
 		var eventType string
@@ -107,12 +122,16 @@ func (c *EventDiscoveryCommand) analyzeAllEvents() error {
 			continue
 		}
 
-		fmt.Fprintf(w, "%s\t%d\t%s\t%s\n",
+		if _, err := fmt.Fprintf(w, "%s\t%d\t%s\t%s\n",
 			eventType, count,
 			firstSeen.Format("2006-01-02 15:04"),
-			lastSeen.Format("2006-01-02 15:04"))
+			lastSeen.Format("2006-01-02 15:04")); err != nil {
+			return fmt.Errorf("writing row: %w", err)
+		}
 	}
-	w.Flush()
+	if err := w.Flush(); err != nil {
+		return fmt.Errorf("flushing writer: %w", err)
+	}
 	fmt.Println()
 
 	return nil
@@ -136,7 +155,9 @@ func (c *EventDiscoveryCommand) analyzeUnknownEvents() error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() {
+		logDeferredError(rows.Close(), "rows close")
+	}()
 
 	// Collect unique unknown events
 	unknownEvents := make(map[string]json.RawMessage)
@@ -214,12 +235,4 @@ func (c *EventDiscoveryCommand) generateRecommendations() {
 	fmt.Println("3. Enable discovery mode:")
 	fmt.Println("   - Set LOG_LEVEL=debug in your configuration")
 	fmt.Println("   - All events will be logged with full details")
-}
-
-// Add this to your main.go to enable the command
-func runEventDiscovery(configPath string) {
-	cmd := NewEventDiscoveryCommand(configPath)
-	if err := cmd.Run(); err != nil {
-		log.Fatal(err)
-	}
 }

@@ -201,14 +201,21 @@ func formatUptime(d time.Duration) string {
 }
 
 func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
-	// Send response as PM to the requesting user
 	username := req.Data.Command.Params["username"]
 	channel := req.Data.Command.Params["channel"]
+	isAdmin := req.Data.Command.Params["is_admin"] == "true"
 
+	// Non-admins get "admin only" message
+	responseMessage := message
+	if !isAdmin {
+		responseMessage = "This command is admin-only."
+	}
+
+	// Always respond via PM for both admins and non-admins
 	response := &framework.EventData{
 		PrivateMessage: &framework.PrivateMessageData{
 			ToUser:  username,
-			Message: message,
+			Message: responseMessage,
 			Channel: channel,
 		},
 	}

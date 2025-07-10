@@ -286,7 +286,7 @@ func (c *WebSocketClient) handleSocketIOMessage(message []byte) {
 		// Close the connection to trigger readLoop exit and reconnection
 		c.mu.Lock()
 		if c.conn != nil {
-			c.conn.Close()
+			_ = c.conn.Close() // Ignore error on close
 		}
 		c.mu.Unlock()
 

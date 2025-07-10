@@ -284,103 +284,130 @@ func TestStatus(t *testing.T) {
 }
 
 func TestHandleCommand(t *testing.T) {
-	plugin := New().(*Plugin)
-	bus := newMockEventBus()
-
-	err := plugin.Init(nil, bus)
-	if err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-
-	err = plugin.Start()
-	if err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-
-	// Use a timer to ensure some uptime for testing
-	uptime := time.NewTimer(100 * time.Millisecond)
-	<-uptime.C
-
-	// Create a command event
-	eventData := &framework.EventData{
-		PluginRequest: &framework.PluginRequest{
-			From: "commandrouter",
-			To:   "uptime",
-			Data: &framework.RequestData{
-				Command: &framework.CommandData{
-					Name: "uptime",
-					Params: map[string]string{
-						"channel":  "test-channel",
-						"username": "testuser",
-					},
-				},
-			},
+	testCases := []struct {
+		name           string
+		isAdmin        string
+		expectedPrefix string
+	}{
+		{
+			name:           "admin user",
+			isAdmin:        "true",
+			expectedPrefix: "Bot uptime:",
+		},
+		{
+			name:           "non-admin user",
+			isAdmin:        "false",
+			expectedPrefix: "This command is admin-only.",
 		},
 	}
 
-	event := framework.NewDataEvent("command.uptime.execute", eventData)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := New().(*Plugin)
+			bus := newMockEventBus()
 
-	// Handle the command
-	bus.mu.Lock()
-	handler := bus.subscriptions["command.uptime.execute"][0]
-	bus.mu.Unlock()
-	err = handler(event)
-	if err != nil {
-		t.Errorf("handleCommand() error = %v", err)
-	}
+			err := plugin.Init(nil, bus)
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
 
-	// Wait for async handler to complete - it will broadcast the response
-	// Wait for async handler to complete using channel notification
-	select {
-	case <-bus.sendNotify:
-		// Handler completed
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("Timeout waiting for async handler")
-	}
+			err = plugin.Start()
+			if err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
 
-	// Allow a brief moment for the broadcast to be recorded
-	done := make(chan struct{})
-	go func() {
-		timer := time.NewTimer(10 * time.Millisecond)
-		defer timer.Stop()
-		<-timer.C
-		close(done)
-	}()
-	<-done
+			// Use a timer to ensure some uptime for testing
+			uptime := time.NewTimer(100 * time.Millisecond)
+			<-uptime.C
 
-	// Check that a response was broadcast (not sent)
-	bus.mu.Lock()
-	// We should have 2 broadcasts: 1 for command registration + 1 for the response
-	broadcastCount := len(bus.broadcasts)
-	if broadcastCount != 2 {
-		bus.mu.Unlock()
-		t.Fatalf("Expected 2 broadcasts, got %d", broadcastCount)
-	}
-	// Get the second broadcast (the response)
-	broadcast := bus.broadcasts[1]
-	bus.mu.Unlock()
-	if broadcast.eventType != "cytube.send.pm" {
-		t.Errorf("Expected broadcast eventType 'cytube.send.pm', got '%s'", broadcast.eventType)
-	}
+			// Create a command event
+			eventData := &framework.EventData{
+				PluginRequest: &framework.PluginRequest{
+					From: "commandrouter",
+					To:   "uptime",
+					Data: &framework.RequestData{
+						Command: &framework.CommandData{
+							Name: "uptime",
+							Params: map[string]string{
+								"channel":  "test-channel",
+								"username": "testuser",
+								"is_admin": tc.isAdmin,
+							},
+						},
+					},
+				},
+			}
 
-	// Check message content
-	if broadcast.data.PrivateMessage == nil {
-		t.Fatal("Expected PrivateMessage data")
-	}
+			event := framework.NewDataEvent("command.uptime.execute", eventData)
 
-	// Verify PM is sent to the correct user
-	if broadcast.data.PrivateMessage.ToUser != "testuser" {
-		t.Errorf("Expected PM to be sent to 'testuser', got '%s'", broadcast.data.PrivateMessage.ToUser)
-	}
+			// Handle the command
+			bus.mu.Lock()
+			handler := bus.subscriptions["command.uptime.execute"][0]
+			bus.mu.Unlock()
+			err = handler(event)
+			if err != nil {
+				t.Errorf("handleCommand() error = %v", err)
+			}
 
-	message := broadcast.data.PrivateMessage.Message
-	if !strings.Contains(message, "Bot uptime:") {
-		t.Error("Uptime message should contain 'Bot uptime:'")
-	}
+			// Wait for async handler to complete - it will broadcast the response
+			// Wait for async handler to complete using channel notification
+			select {
+			case <-bus.sendNotify:
+				// Handler completed
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("Timeout waiting for async handler")
+			}
 
-	// Should have at least seconds
-	if !strings.Contains(message, "second") {
-		t.Error("Uptime message should contain time units")
+			// Allow a brief moment for the broadcast to be recorded
+			done := make(chan struct{})
+			go func() {
+				timer := time.NewTimer(10 * time.Millisecond)
+				defer timer.Stop()
+				<-timer.C
+				close(done)
+			}()
+			<-done
+
+			// Check that a response was broadcast (not sent)
+			bus.mu.Lock()
+			// We should have 2 broadcasts: 1 for command registration + 1 for the response
+			broadcastCount := len(bus.broadcasts)
+			if broadcastCount != 2 {
+				bus.mu.Unlock()
+				t.Fatalf("Expected 2 broadcasts, got %d", broadcastCount)
+			}
+			// Get the second broadcast (the response)
+			broadcast := bus.broadcasts[1]
+			bus.mu.Unlock()
+			if broadcast.eventType != "cytube.send.pm" {
+				t.Errorf("Expected broadcast eventType 'cytube.send.pm', got '%s'", broadcast.eventType)
+			}
+
+			// Check message content
+			if broadcast.data.PrivateMessage == nil {
+				t.Fatal("Expected PrivateMessage data")
+			}
+
+			// Verify PM is sent to the correct user
+			if broadcast.data.PrivateMessage.ToUser != "testuser" {
+				t.Errorf("Expected PM to be sent to 'testuser', got '%s'", broadcast.data.PrivateMessage.ToUser)
+			}
+
+			message := broadcast.data.PrivateMessage.Message
+			if !strings.Contains(message, tc.expectedPrefix) {
+				t.Errorf("Expected message to contain '%s', got '%s'", tc.expectedPrefix, message)
+			}
+
+			// For admin users, also check for time units
+			if tc.isAdmin == "true" && !strings.Contains(message, "second") {
+				t.Error("Admin uptime message should contain time units")
+			}
+
+			// Clear broadcasts for next test
+			bus.mu.Lock()
+			bus.broadcasts = []broadcastCall{}
+			bus.mu.Unlock()
+		})
 	}
 }
 

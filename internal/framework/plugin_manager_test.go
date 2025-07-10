@@ -188,8 +188,12 @@ func TestPluginManagerInitializeAll(t *testing.T) {
 	plugin1 := &mockPluginDep{name: "plugin1"}
 	plugin2 := &mockPluginDep{name: "plugin2", initError: errors.New("init failed")}
 
-	pm.RegisterPlugin("plugin1", plugin1)
-	pm.RegisterPlugin("plugin2", plugin2)
+	if err := pm.RegisterPlugin("plugin1", plugin1); err != nil {
+		t.Fatalf("Failed to register plugin1: %v", err)
+	}
+	if err := pm.RegisterPlugin("plugin2", plugin2); err != nil {
+		t.Fatalf("Failed to register plugin2: %v", err)
+	}
 
 	configs := map[string]interface{}{
 		"plugin1": nil,
@@ -213,8 +217,12 @@ func TestPluginManagerStartAll(t *testing.T) {
 	plugin1 := &mockPluginDep{name: "plugin1"}
 	plugin2 := &mockPluginDep{name: "plugin2", dependencies: []string{"plugin1"}}
 
-	pm.RegisterPlugin("plugin1", plugin1)
-	pm.RegisterPlugin("plugin2", plugin2)
+	if err := pm.RegisterPlugin("plugin1", plugin1); err != nil {
+		t.Fatalf("Failed to register plugin1: %v", err)
+	}
+	if err := pm.RegisterPlugin("plugin2", plugin2); err != nil {
+		t.Fatalf("Failed to register plugin2: %v", err)
+	}
 
 	configs := map[string]interface{}{
 		"plugin1": nil,
@@ -247,8 +255,12 @@ func TestPluginManagerStopAll(t *testing.T) {
 	plugin1 := &mockPluginDep{name: "plugin1"}
 	plugin2 := &mockPluginDep{name: "plugin2", dependencies: []string{"plugin1"}}
 
-	pm.RegisterPlugin("plugin1", plugin1)
-	pm.RegisterPlugin("plugin2", plugin2)
+	if err := pm.RegisterPlugin("plugin1", plugin1); err != nil {
+		t.Fatalf("Failed to register plugin1: %v", err)
+	}
+	if err := pm.RegisterPlugin("plugin2", plugin2); err != nil {
+		t.Fatalf("Failed to register plugin2: %v", err)
+	}
 
 	configs := map[string]interface{}{
 		"plugin1": nil,
@@ -256,8 +268,12 @@ func TestPluginManagerStopAll(t *testing.T) {
 	}
 
 	// Initialize and start
-	pm.InitializeAll(configs, bus)
-	pm.StartAll()
+	if err := pm.InitializeAll(configs, bus); err != nil {
+		t.Fatalf("Failed to initialize: %v", err)
+	}
+	if err := pm.StartAll(); err != nil {
+		t.Fatalf("Failed to start: %v", err)
+	}
 
 	// Stop all
 	pm.StopAll()

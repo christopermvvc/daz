@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,9 @@ type Plugin struct {
 	commandRegistry map[string]*CommandInfo
 	cooldowns       map[string]time.Time
 	registryLoaded  bool
+
+	// Admin users loaded from file
+	adminUsers map[string]bool
 
 	// Shutdown management
 	ctx       context.Context
@@ -191,6 +195,15 @@ func (p *Plugin) Start() error {
 		return fmt.Errorf("failed to subscribe to chat events: %w", err)
 	}
 
+	// Subscribe to PM messages for command parsing
+	err = p.eventBus.Subscribe(eventbus.EventCytubePM, p.handlePMMessage)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to PM events: %w", err)
+	}
+
+	// Load admin users from file
+	p.loadAdminUsers()
+
 	p.mu.Lock()
 	p.running = true
 	p.mu.Unlock()
@@ -354,93 +367,8 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 
 // handleCommand processes detected commands
 func (p *Plugin) handleCommand(event *framework.DataEvent, chatData framework.ChatMessageData) {
-	// Remove command prefix and parse
-	cmdText := strings.TrimPrefix(chatData.Message, p.config.CommandPrefix)
-	parts := strings.Fields(cmdText)
-
-	if len(parts) == 0 {
-		return
-	}
-
-	cmdName := strings.ToLower(parts[0])
-	args := parts[1:]
-
-	log.Printf("[EventFilter] Detected command: %s with args: %v from user: %s", cmdName, args, chatData.Username)
-
-	// Load registry if needed
-	p.mu.RLock()
-	if !p.registryLoaded {
-		p.mu.RUnlock()
-		p.mu.Lock()
-		p.registryLoaded = true
-		p.mu.Unlock()
-		p.mu.RLock()
-	}
-	cmdInfo, exists := p.commandRegistry[cmdName]
-	p.mu.RUnlock()
-
-	if !exists {
-		log.Printf("[EventFilter] Unknown command: %s", cmdName)
-		return
-	}
-
-	// Check if command is enabled
-	if !cmdInfo.Enabled {
-		log.Printf("[EventFilter] Command disabled: %s", cmdName)
-		return
-	}
-
-	// Check user rank
-	if chatData.UserRank < cmdInfo.MinRank {
-		log.Printf("[EventFilter] User %s lacks rank for command %s (has: %d, needs: %d)",
-			chatData.Username, cmdName, chatData.UserRank, cmdInfo.MinRank)
-		return
-	}
-
-	// Get target plugin
-	targetPlugin := cmdInfo.PluginName
-	if cmdInfo.IsAlias && cmdInfo.PrimaryCommand != "" {
-		// For aliases, route to the primary command's plugin
-		if primaryInfo, ok := p.commandRegistry[cmdInfo.PrimaryCommand]; ok {
-			targetPlugin = primaryInfo.PluginName
-		}
-	}
-
-	// Create command execution event for the target plugin
-	cmdData := &framework.EventData{
-		PluginRequest: &framework.PluginRequest{
-			From: "eventfilter",
-			To:   targetPlugin,
-			Type: "execute",
-			Data: &framework.RequestData{
-				Command: &framework.CommandData{
-					Name: cmdName,
-					Args: args,
-					Params: map[string]string{
-						"username": chatData.Username,
-						"rank":     fmt.Sprintf("%d", chatData.UserRank),
-						"channel":  chatData.Channel,
-					},
-				},
-			},
-		},
-	}
-
-	// Send to specific plugin
-	eventType := fmt.Sprintf("command.%s.execute", targetPlugin)
-	log.Printf("[EventFilter] Routing command %s to %s via %s", cmdName, targetPlugin, eventType)
-
-	// Log command execution
-	go func() {
-		if err := p.logCommand(cmdName, chatData.Username, chatData.Channel, args); err != nil {
-			log.Printf("[EventFilter] Failed to log command execution: %v", err)
-		}
-	}()
-
-	err := p.eventBus.Broadcast(eventType, cmdData)
-	if err != nil {
-		log.Printf("[EventFilter] Failed to route command: %v", err)
-	}
+	// Call the new context-aware handler with isFromPM = false
+	p.handleCommandWithContext(event, chatData, false)
 }
 
 // handleRegisterEvent handles command registration from plugins
@@ -635,5 +563,190 @@ func getDefaultRoutingRules() []RoutingRule {
 			Priority:     5,
 			Enabled:      true,
 		},
+	}
+}
+
+// loadAdminUsers loads admin users from the admin_users.json file
+func (p *Plugin) loadAdminUsers() {
+	p.adminUsers = make(map[string]bool)
+
+	// Try to load from admin_users.json
+	data, err := os.ReadFile("admin_users.json")
+	if err != nil {
+		// If file doesn't exist, fall back to config
+		if os.IsNotExist(err) {
+			log.Printf("[EventFilter] admin_users.json not found, using config admin_users")
+			for _, user := range p.config.AdminUsers {
+				p.adminUsers[strings.ToLower(user)] = true
+			}
+			return
+		}
+		log.Printf("[EventFilter] Failed to read admin_users.json: %v", err)
+		return
+	}
+
+	// Parse the JSON file
+	var adminConfig struct {
+		AdminUsers []string `json:"admin_users"`
+	}
+	if err := json.Unmarshal(data, &adminConfig); err != nil {
+		log.Printf("[EventFilter] Failed to parse admin_users.json: %v", err)
+		return
+	}
+
+	// Populate admin users map
+	for _, user := range adminConfig.AdminUsers {
+		p.adminUsers[strings.ToLower(user)] = true
+	}
+
+	log.Printf("[EventFilter] Loaded %d admin users from admin_users.json", len(p.adminUsers))
+}
+
+// isAdmin checks if a user is an admin
+func (p *Plugin) isAdmin(username string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.adminUsers[strings.ToLower(username)]
+}
+
+// handlePMMessage handles private messages for command detection
+func (p *Plugin) handlePMMessage(event framework.Event) error {
+	// Extract the DataEvent which contains EventData
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok {
+		return fmt.Errorf("invalid event type for PM message")
+	}
+
+	// Check if EventData and PrivateMessage are present
+	if dataEvent.Data == nil || dataEvent.Data.PrivateMessage == nil {
+		return fmt.Errorf("no PM message data in event")
+	}
+
+	pmData := dataEvent.Data.PrivateMessage
+
+	// Ignore messages older than 10 seconds
+	if pmData.MessageTime > 0 {
+		messageAge := time.Now().Unix() - pmData.MessageTime
+		if messageAge > 10 {
+			log.Printf("[EventFilter] Ignoring old PM from %s (age: %ds)",
+				pmData.FromUser, messageAge)
+			return nil
+		}
+	}
+
+	log.Printf("[EventFilter] Received PM: '%s' from user: %s",
+		pmData.Message, pmData.FromUser)
+
+	// Check if message is a command
+	if strings.HasPrefix(pmData.Message, p.config.CommandPrefix) {
+		// Create a ChatMessageData from PM data to reuse handleCommand
+		chatData := framework.ChatMessageData{
+			Username:    pmData.FromUser,
+			Message:     pmData.Message,
+			UserRank:    0, // PMs don't include rank, assume 0
+			Channel:     pmData.Channel,
+			MessageTime: pmData.MessageTime * 1000, // Convert to milliseconds
+		}
+
+		// Handle the command with PM flag
+		p.handleCommandWithContext(dataEvent, chatData, true)
+	}
+
+	return nil
+}
+
+// handleCommandWithContext processes commands with context about their source
+func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData framework.ChatMessageData, isFromPM bool) {
+	// Remove command prefix and parse
+	cmdText := strings.TrimPrefix(chatData.Message, p.config.CommandPrefix)
+	parts := strings.Fields(cmdText)
+
+	if len(parts) == 0 {
+		return
+	}
+
+	cmdName := strings.ToLower(parts[0])
+	args := parts[1:]
+
+	log.Printf("[EventFilter] Detected command: %s with args: %v from user: %s (PM: %v)",
+		cmdName, args, chatData.Username, isFromPM)
+
+	// Load registry if needed
+	p.mu.RLock()
+	if !p.registryLoaded {
+		p.mu.RUnlock()
+		p.mu.Lock()
+		p.registryLoaded = true
+		p.mu.Unlock()
+		p.mu.RLock()
+	}
+	cmdInfo, exists := p.commandRegistry[cmdName]
+	p.mu.RUnlock()
+
+	if !exists {
+		log.Printf("[EventFilter] Unknown command: %s", cmdName)
+		return
+	}
+
+	// Check if command is enabled
+	if !cmdInfo.Enabled {
+		log.Printf("[EventFilter] Command disabled: %s", cmdName)
+		return
+	}
+
+	// Check user rank (skip for PMs from admins)
+	if !isFromPM || !p.isAdmin(chatData.Username) {
+		if chatData.UserRank < cmdInfo.MinRank {
+			log.Printf("[EventFilter] User %s lacks rank for command %s (has: %d, needs: %d)",
+				chatData.Username, cmdName, chatData.UserRank, cmdInfo.MinRank)
+			return
+		}
+	}
+
+	// Get target plugin
+	targetPlugin := cmdInfo.PluginName
+	if cmdInfo.IsAlias && cmdInfo.PrimaryCommand != "" {
+		// For aliases, route to the primary command's plugin
+		if primaryInfo, ok := p.commandRegistry[cmdInfo.PrimaryCommand]; ok {
+			targetPlugin = primaryInfo.PluginName
+		}
+	}
+
+	// Create command execution event for the target plugin
+	cmdData := &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			From: "eventfilter",
+			To:   targetPlugin,
+			Type: "execute",
+			Data: &framework.RequestData{
+				Command: &framework.CommandData{
+					Name: cmdName,
+					Args: args,
+					Params: map[string]string{
+						"username": chatData.Username,
+						"rank":     fmt.Sprintf("%d", chatData.UserRank),
+						"channel":  chatData.Channel,
+						"is_pm":    fmt.Sprintf("%t", isFromPM),
+						"is_admin": fmt.Sprintf("%t", p.isAdmin(chatData.Username)),
+					},
+				},
+			},
+		},
+	}
+
+	// Send to specific plugin
+	eventType := fmt.Sprintf("command.%s.execute", targetPlugin)
+	log.Printf("[EventFilter] Routing command %s to %s via %s", cmdName, targetPlugin, eventType)
+
+	// Log command execution
+	go func() {
+		if err := p.logCommand(cmdName, chatData.Username, chatData.Channel, args); err != nil {
+			log.Printf("[EventFilter] Failed to log command execution: %v", err)
+		}
+	}()
+
+	err := p.eventBus.Broadcast(eventType, cmdData)
+	if err != nil {
+		log.Printf("[EventFilter] Failed to route command: %v", err)
 	}
 }
