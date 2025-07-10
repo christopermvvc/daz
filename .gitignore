@@ -143,3 +143,14 @@ coverage.txt
 # Event discovery outputs
 *-discovered.txt
 *_discovered.txt
+
+# External repository clones and references
+dazza-repo/
+dazza-reference/
+*-repo/
+*-reference/
+
+# Documentation and fix tracking
+*_FIX.md
+CONNECTION_STATE_FIX.md
+COMMAND_PROCESSING_FIX.md
