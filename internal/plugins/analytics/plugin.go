@@ -361,7 +361,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 			last_seen = NOW()
 	`
 	ctx := context.Background()
-	_, err := p.sqlClient.ExecSync(ctx, userStatsSQL, framework.NewSQLParam(channel), framework.NewSQLParam(chat.Username))
+	_, err := p.sqlClient.ExecSync(ctx, userStatsSQL, channel, chat.Username)
 	if err != nil {
 		log.Printf("[Analytics] Error updating user stats: %v", err)
 	}
@@ -396,7 +396,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
-	rows, err := p.sqlClient.QuerySync(ctx, currentHourQuery, framework.NewSQLParam(channel))
+	rows, err := p.sqlClient.QuerySync(ctx, currentHourQuery, channel)
 	if err != nil {
 		return fmt.Errorf("failed to query current hour stats: %w", err)
 	}
@@ -423,7 +423,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 		WHERE channel = $1 AND day_date = CURRENT_DATE
 	`
 
-	rows2, err := p.sqlClient.QuerySync(ctx, todayQuery, framework.NewSQLParam(channel))
+	rows2, err := p.sqlClient.QuerySync(ctx, todayQuery, channel)
 	if err != nil {
 		return fmt.Errorf("failed to query today stats: %w", err)
 	}
@@ -452,7 +452,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 		LIMIT 3
 	`
 
-	rows3, err := p.sqlClient.QuerySync(ctx, topChattersQuery, framework.NewSQLParam(channel))
+	rows3, err := p.sqlClient.QuerySync(ctx, topChattersQuery, channel)
 	if err != nil {
 		return fmt.Errorf("failed to query top chatters: %w", err)
 	}

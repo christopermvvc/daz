@@ -329,11 +329,11 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 		VALUES ($1, $2, $3, $4, $5, TRUE)
 	`
 	err := p.sqlClient.Exec(sessionSQL,
-		framework.SQLParam{Value: channel},
-		framework.SQLParam{Value: userJoin.Username},
-		framework.SQLParam{Value: userJoin.UserRank},
-		framework.SQLParam{Value: now},
-		framework.SQLParam{Value: now})
+		channel,
+		userJoin.Username,
+		userJoin.UserRank,
+		now,
+		now)
 	if err != nil {
 		log.Printf("[UserTracker] Error recording user join: %v", err)
 	}
@@ -346,10 +346,10 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	`
 	metadata := fmt.Sprintf(`{"rank": %d}`, userJoin.UserRank)
 	err = p.sqlClient.Exec(historySQL,
-		framework.SQLParam{Value: channel},
-		framework.SQLParam{Value: userJoin.Username},
-		framework.SQLParam{Value: now},
-		framework.SQLParam{Value: metadata})
+		channel,
+		userJoin.Username,
+		now,
+		metadata)
 	if err != nil {
 		log.Printf("[UserTracker] Error recording join history: %v", err)
 	}
@@ -390,9 +390,9 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 		WHERE channel = $2 AND username = $3 AND is_active = TRUE
 	`
 	err := p.sqlClient.Exec(sessionSQL,
-		framework.SQLParam{Value: now},
-		framework.SQLParam{Value: channel},
-		framework.SQLParam{Value: userLeave.Username})
+		now,
+		channel,
+		userLeave.Username)
 	if err != nil {
 		log.Printf("[UserTracker] Error recording user leave: %v", err)
 	}
@@ -404,9 +404,9 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 		VALUES ($1, $2, 'leave', $3)
 	`
 	err = p.sqlClient.Exec(historySQL,
-		framework.SQLParam{Value: channel},
-		framework.SQLParam{Value: userLeave.Username},
-		framework.SQLParam{Value: now})
+		channel,
+		userLeave.Username,
+		now)
 	if err != nil {
 		log.Printf("[UserTracker] Error recording leave history: %v", err)
 	}
@@ -440,9 +440,9 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		WHERE channel = $2 AND username = $3 AND is_active = TRUE
 	`
 	err := p.sqlClient.Exec(updateSQL,
-		framework.SQLParam{Value: now},
-		framework.SQLParam{Value: chat.Channel},
-		framework.SQLParam{Value: chat.Username})
+		now,
+		chat.Channel,
+		chat.Username)
 	if err != nil {
 		log.Printf("[UserTracker] Error updating activity: %v", err)
 	}
@@ -482,7 +482,7 @@ func (p *Plugin) handleSeenRequest(event framework.Event) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	rows, err := p.sqlClient.QuerySync(ctx, query, framework.NewSQLParam(channel), framework.NewSQLParam(targetUser))
+	rows, err := p.sqlClient.QuerySync(ctx, query, channel, targetUser)
 	if err != nil {
 		return fmt.Errorf("failed to query user info: %w", err)
 	}
@@ -563,7 +563,7 @@ func (p *Plugin) doCleanup() {
 		WHERE is_active = TRUE AND last_activity < $1
 	`
 	err := p.sqlClient.Exec(updateSQL,
-		framework.SQLParam{Value: cutoffTime})
+		cutoffTime)
 	if err != nil {
 		log.Printf("[UserTracker] Error cleaning up inactive sessions: %v", err)
 	}
