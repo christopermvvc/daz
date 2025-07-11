@@ -5,13 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/logger"
 	"github.com/hildolfr/daz/pkg/eventbus"
 )
 
@@ -151,7 +151,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
-	log.Printf("[EventFilter] Initialized with command prefix: %s", p.config.CommandPrefix)
+	logger.Info("EventFilter", "Initialized with command prefix: %s", p.config.CommandPrefix)
 	return nil
 }
 
@@ -164,10 +164,22 @@ func (p *Plugin) Start() error {
 	}
 	p.mu.RUnlock()
 
-	// Create database schema now that database is connected
-	if err := p.createSchema(); err != nil {
-		return fmt.Errorf("failed to create schema: %w", err)
-	}
+	// Create database schema in background to avoid blocking startup
+	go func() {
+		// Wait a moment to allow other plugins to start first
+		timer := time.NewTimer(3 * time.Second)
+		defer timer.Stop()
+
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-timer.C:
+			if err := p.createSchema(); err != nil {
+				logger.Error("EventFilter", "Failed to create schema: %v", err)
+				// Don't fail plugin startup, it can retry later
+			}
+		}
+	}()
 
 	// Subscribe to command registration events first
 	if err := p.eventBus.Subscribe("command.register", p.handleRegisterEvent); err != nil {
@@ -219,7 +231,7 @@ func (p *Plugin) Start() error {
 	// Signal that the plugin is ready
 	close(p.readyChan)
 
-	log.Println("[EventFilter] Started unified event filtering and command routing")
+	logger.Info("EventFilter", "Started unified event filtering and command routing")
 	return nil
 }
 
@@ -232,14 +244,14 @@ func (p *Plugin) Stop() error {
 	}
 	p.mu.RUnlock()
 
-	log.Println("[EventFilter] Stopping eventfilter plugin")
+	logger.Info("EventFilter", "Stopping eventfilter plugin")
 	p.cancel()
 	p.wg.Wait()
 
 	p.mu.Lock()
 	p.running = false
 	p.mu.Unlock()
-	log.Println("[EventFilter] EventFilter plugin stopped")
+	logger.Info("EventFilter", "EventFilter plugin stopped")
 	return nil
 }
 
@@ -360,13 +372,13 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	if chatData.MessageTime > 0 {
 		messageAge := time.Now().UnixMilli() - chatData.MessageTime
 		if messageAge > 10000 { // 10 seconds in milliseconds
-			log.Printf("[EventFilter] Ignoring old message from %s (age: %dms)",
+			logger.Debug("EventFilter", "Ignoring old message from %s (age: %dms)",
 				chatData.Username, messageAge)
 			return nil
 		}
 	}
 
-	log.Printf("[EventFilter] Received chat message: '%s' from user: %s (prefix: '%s')",
+	logger.Debug("EventFilter", "Received chat message: '%s' from user: %s (prefix: '%s')",
 		chatData.Message, chatData.Username, p.config.CommandPrefix)
 
 	// Check if message is a command
@@ -413,7 +425,7 @@ func (p *Plugin) handleRegisterEvent(event framework.Event) error {
 		var err error
 		minRank, err = parseRank(minRankStr)
 		if err != nil {
-			log.Printf("[EventFilter] Invalid min_rank: %v", err)
+			logger.Warn("EventFilter", "Invalid min_rank: %v", err)
 		}
 	}
 
@@ -443,12 +455,12 @@ func (p *Plugin) handleRegisterEvent(event framework.Event) error {
 
 		// Save to database
 		if err := p.saveCommand(cmd, info); err != nil {
-			log.Printf("[EventFilter] Failed to save command %s: %v", cmd, err)
+			logger.Error("EventFilter", "Failed to save command %s: %v", cmd, err)
 			// Emit failure event for retry
 			p.emitFailureEvent("eventfilter.database.failed", req.ID, "command_registration", err)
 		}
 
-		log.Printf("[EventFilter] Registered command '%s' for plugin '%s'", cmd, pluginName)
+		logger.Info("EventFilter", "Registered command '%s' for plugin '%s'", cmd, pluginName)
 	}
 
 	return nil
@@ -476,7 +488,7 @@ func (p *Plugin) routeToPlugin(targetPlugin string, event *framework.DataEvent) 
 
 	err := p.eventBus.Send(targetPlugin, eventType, eventData)
 	if err != nil {
-		log.Printf("[EventFilter] Failed to route event to %s: %v", targetPlugin, err)
+		logger.Error("EventFilter", "Failed to route event to %s: %v", targetPlugin, err)
 		// Emit failure event for retry
 		correlationID := fmt.Sprintf("route-%s-%d", targetPlugin, time.Now().UnixNano())
 		p.emitFailureEvent("eventfilter.routing.failed", correlationID, "event_routing", err)
@@ -590,13 +602,13 @@ func (p *Plugin) loadAdminUsers() {
 	if err != nil {
 		// If file doesn't exist, fall back to config
 		if os.IsNotExist(err) {
-			log.Printf("[EventFilter] admin_users.json not found, using config admin_users")
+			logger.Info("EventFilter", "admin_users.json not found, using config admin_users")
 			for _, user := range p.config.AdminUsers {
 				p.adminUsers[strings.ToLower(user)] = true
 			}
 			return
 		}
-		log.Printf("[EventFilter] Failed to read admin_users.json: %v", err)
+		logger.Warn("EventFilter", "Failed to read admin_users.json: %v", err)
 		return
 	}
 
@@ -605,7 +617,7 @@ func (p *Plugin) loadAdminUsers() {
 		AdminUsers []string `json:"admin_users"`
 	}
 	if err := json.Unmarshal(data, &adminConfig); err != nil {
-		log.Printf("[EventFilter] Failed to parse admin_users.json: %v", err)
+		logger.Error("EventFilter", "Failed to parse admin_users.json: %v", err)
 		return
 	}
 
@@ -614,7 +626,7 @@ func (p *Plugin) loadAdminUsers() {
 		p.adminUsers[strings.ToLower(user)] = true
 	}
 
-	log.Printf("[EventFilter] Loaded %d admin users from admin_users.json", len(p.adminUsers))
+	logger.Info("EventFilter", "Loaded %d admin users from admin_users.json", len(p.adminUsers))
 }
 
 // isAdmin checks if a user is an admin
@@ -643,13 +655,13 @@ func (p *Plugin) handlePMMessage(event framework.Event) error {
 	if pmData.MessageTime > 0 {
 		messageAge := time.Now().Unix() - pmData.MessageTime
 		if messageAge > 10 {
-			log.Printf("[EventFilter] Ignoring old PM from %s (age: %ds)",
+			logger.Debug("EventFilter", "Ignoring old PM from %s (age: %ds)",
 				pmData.FromUser, messageAge)
 			return nil
 		}
 	}
 
-	log.Printf("[EventFilter] Received PM: '%s' from user: %s",
+	logger.Debug("EventFilter", "Received PM: '%s' from user: %s",
 		pmData.Message, pmData.FromUser)
 
 	// Check if message is a command
@@ -683,7 +695,7 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 	cmdName := strings.ToLower(parts[0])
 	args := parts[1:]
 
-	log.Printf("[EventFilter] Detected command: %s with args: %v from user: %s (PM: %v)",
+	logger.Debug("EventFilter", "Detected command: %s with args: %v from user: %s (PM: %v)",
 		cmdName, args, chatData.Username, isFromPM)
 
 	// Load registry if needed
@@ -699,7 +711,7 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 	p.mu.RUnlock()
 
 	if !exists {
-		log.Printf("[EventFilter] Unknown command: %s", cmdName)
+		logger.Warn("EventFilter", "Unknown command: %s", cmdName)
 		// Emit failure event for unknown command
 		correlationID := fmt.Sprintf("unknown-%s-%d", cmdName, time.Now().UnixNano())
 		err := fmt.Errorf("unknown command: %s", cmdName)
@@ -709,7 +721,7 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 
 	// Check if command is enabled
 	if !cmdInfo.Enabled {
-		log.Printf("[EventFilter] Command disabled: %s", cmdName)
+		logger.Debug("EventFilter", "Command disabled: %s", cmdName)
 		// Emit failure event for disabled command
 		correlationID := fmt.Sprintf("disabled-%s-%d", cmdName, time.Now().UnixNano())
 		err := fmt.Errorf("command disabled: %s", cmdName)
@@ -720,7 +732,7 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 	// Check user rank (skip for PMs from admins)
 	if !isFromPM || !p.isAdmin(chatData.Username) {
 		if chatData.UserRank < cmdInfo.MinRank {
-			log.Printf("[EventFilter] User %s lacks rank for command %s (has: %d, needs: %d)",
+			logger.Debug("EventFilter", "User %s lacks rank for command %s (has: %d, needs: %d)",
 				chatData.Username, cmdName, chatData.UserRank, cmdInfo.MinRank)
 			// Emit failure event for insufficient rank
 			correlationID := fmt.Sprintf("rank-%s-%d", cmdName, time.Now().UnixNano())
@@ -763,12 +775,12 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 
 	// Send to specific plugin
 	eventType := fmt.Sprintf("command.%s.execute", targetPlugin)
-	log.Printf("[EventFilter] Routing command %s to %s via %s", cmdName, targetPlugin, eventType)
+	logger.Debug("EventFilter", "Routing command %s to %s via %s", cmdName, targetPlugin, eventType)
 
 	// Log command execution
 	go func() {
 		if err := p.logCommand(cmdName, chatData.Username, chatData.Channel, args); err != nil {
-			log.Printf("[EventFilter] Failed to log command execution: %v", err)
+			logger.Warn("EventFilter", "Failed to log command execution: %v", err)
 			// Emit failure event for retry
 			correlationID := fmt.Sprintf("cmdlog-%s-%d", cmdName, time.Now().UnixNano())
 			p.emitFailureEvent("eventfilter.database.failed", correlationID, "command_logging", err)
@@ -777,7 +789,7 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 
 	err := p.eventBus.Broadcast(eventType, cmdData)
 	if err != nil {
-		log.Printf("[EventFilter] Failed to route command: %v", err)
+		logger.Error("EventFilter", "Failed to route command: %v", err)
 		// Emit failure event for retry
 		correlationID := fmt.Sprintf("cmd-%s-%d", cmdName, time.Now().UnixNano())
 		p.emitFailureEvent("eventfilter.command.failed", correlationID, "command_routing", err)
@@ -798,7 +810,7 @@ func (p *Plugin) handlePluginResponse(event framework.Event) error {
 
 	response := dataEvent.Data.PluginResponse
 
-	log.Printf("[EventFilter] Processing plugin response from %s (success: %v)",
+	logger.Debug("EventFilter", "Processing plugin response from %s (success: %v)",
 		response.From, response.Success)
 
 	// Handle different types of plugin responses
@@ -809,14 +821,14 @@ func (p *Plugin) handlePluginResponse(event framework.Event) error {
 
 	// Handle error responses
 	if !response.Success && response.Error != "" {
-		log.Printf("[EventFilter] Plugin response error from %s: %s",
+		logger.Warn("EventFilter", "Plugin response error from %s: %s",
 			response.From, response.Error)
 		return p.handleErrorResponse(response)
 	}
 
 	// Log other response types for debugging
 	if response.Data != nil && response.Data.KeyValue != nil {
-		log.Printf("[EventFilter] Plugin response from %s with key-value data: %v",
+		logger.Debug("EventFilter", "Plugin response from %s with key-value data: %v",
 			response.From, response.Data.KeyValue)
 	}
 
@@ -839,7 +851,7 @@ func (p *Plugin) handleCommandResponse(response *framework.PluginResponse) error
 
 	// If we don't have user info, try to extract from command result
 	if username == "" {
-		log.Printf("[EventFilter] No username found in command response from %s", response.From)
+		logger.Warn("EventFilter", "No username found in command response from %s", response.From)
 		return nil
 	}
 
@@ -860,11 +872,11 @@ func (p *Plugin) handleCommandResponse(response *framework.PluginResponse) error
 		},
 	}
 
-	log.Printf("[EventFilter] Routing command response from %s to PM for user %s",
+	logger.Debug("EventFilter", "Routing command response from %s to PM for user %s",
 		response.From, username)
 
 	if err := p.eventBus.Broadcast("cytube.send.pm", pmData); err != nil {
-		log.Printf("[EventFilter] Failed to send command response PM: %v", err)
+		logger.Error("EventFilter", "Failed to send command response PM: %v", err)
 		// Emit failure event for retry
 		p.emitFailureEvent("eventfilter.pm.failed", response.ID, "pm_response", err)
 		return err
@@ -894,11 +906,11 @@ func (p *Plugin) handleErrorResponse(response *framework.PluginResponse) error {
 			},
 		}
 
-		log.Printf("[EventFilter] Routing error response from %s to PM for user %s",
+		logger.Debug("EventFilter", "Routing error response from %s to PM for user %s",
 			response.From, username)
 
 		if err := p.eventBus.Broadcast("cytube.send.pm", pmData); err != nil {
-			log.Printf("[EventFilter] Failed to send error response PM: %v", err)
+			logger.Error("EventFilter", "Failed to send error response PM: %v", err)
 			// Emit failure event for retry
 			p.emitFailureEvent("eventfilter.pm.failed", response.ID, "pm_response", err)
 			return err
@@ -923,7 +935,7 @@ func (p *Plugin) emitFailureEvent(eventType, correlationID, operationType string
 	// Emit failure event asynchronously
 	go func() {
 		if err := p.eventBus.Broadcast(eventType, failureData); err != nil {
-			log.Printf("[EventFilter] Failed to emit failure event: %v", err)
+			logger.Warn("EventFilter", "Failed to emit failure event: %v", err)
 		}
 	}()
 }

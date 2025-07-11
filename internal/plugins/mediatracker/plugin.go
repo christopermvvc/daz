@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/hildolfr/daz/internal/logger"
 	"strings"
 	"sync"
 	"time"
@@ -151,7 +151,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
-	log.Printf("[MediaTracker] Initialized with stats update interval: %v", p.config.StatsUpdateInterval)
+	logger.Info("MediaTracker", "Initialized with stats update interval: %v", p.config.StatsUpdateInterval)
 	return nil
 }
 
@@ -181,7 +181,7 @@ func (p *Plugin) Start() error {
 		select {
 		case <-timer.C:
 			if err := p.createTables(); err != nil {
-				log.Printf("[MediaTracker] Failed to create tables: %v (will retry on first use)", err)
+				logger.Warn("MediaTracker", "Failed to create tables: %v (will retry on first use)", err)
 				p.status.LastError = err
 			}
 		case <-p.ctx.Done():
@@ -229,7 +229,7 @@ func (p *Plugin) Start() error {
 	go func() {
 		defer p.wg.Done()
 		if err := p.loadCurrentState(); err != nil {
-			log.Printf("[MediaTracker] Error loading current state: %v", err)
+			logger.Error("MediaTracker", "Error loading current state: %v", err)
 		}
 	}()
 
@@ -243,7 +243,7 @@ func (p *Plugin) Start() error {
 	// Signal that the plugin is ready
 	close(p.readyChan)
 
-	log.Println("[MediaTracker] Started media tracking")
+	logger.Info("MediaTracker", "Started media tracking")
 	return nil
 }
 
@@ -264,7 +264,7 @@ func (p *Plugin) Stop() error {
 
 	p.running = false
 	p.status.State = "stopped"
-	log.Println("[MediaTracker] Stopped media tracking")
+	logger.Info("MediaTracker", "Stopped media tracking")
 	return nil
 }
 
@@ -388,7 +388,7 @@ func (p *Plugin) handleMediaUpdate(event framework.Event) error {
 	update := dataEvent.Data.MediaUpdate
 
 	// Temporary logging to verify events are being received
-	log.Printf("[MediaTracker] Media update received - currentTime: %.2f, paused: %v",
+	logger.Debug("MediaTracker", "Media update received - currentTime: %.2f, paused: %v",
 		update.CurrentTime, update.Paused)
 
 	p.status.EventsHandled++
@@ -408,14 +408,14 @@ func (p *Plugin) handleMediaChange(event framework.Event) error {
 	// Get channel from event (must be present)
 	channel := media.Channel
 	if channel == "" {
-		log.Printf("[MediaTracker] Skipping video change event without channel information")
+		logger.Warn("MediaTracker", "Skipping video change event without channel information")
 		return nil
 	}
 
 	// End the previous media play if any
 	if p.currentMedia != nil {
 		if err := p.endMediaPlay(p.currentMedia, now, channel); err != nil {
-			log.Printf("[MediaTracker] Error ending previous media: %v", err)
+			logger.Error("MediaTracker", "Error ending previous media: %v", err)
 		}
 	}
 
@@ -440,7 +440,7 @@ func (p *Plugin) handleMediaChange(event framework.Event) error {
 		channel,
 		nil, // metadata
 	); err != nil {
-		log.Printf("[MediaTracker] Error adding to library: %v", err)
+		logger.Error("MediaTracker", "Error adding to library: %v", err)
 	}
 
 	// Record new media play
@@ -457,7 +457,7 @@ func (p *Plugin) handleMediaChange(event framework.Event) error {
 		media.Duration,
 		now)
 	if err != nil {
-		log.Printf("[MediaTracker] Error recording media play: %v", err)
+		logger.Error("MediaTracker", "Error recording media play: %v", err)
 	}
 
 	// Update stats
@@ -478,10 +478,10 @@ func (p *Plugin) handleMediaChange(event framework.Event) error {
 		media.Title,
 		now)
 	if err != nil {
-		log.Printf("[MediaTracker] Error updating stats: %v", err)
+		logger.Error("MediaTracker", "Error updating stats: %v", err)
 	}
 
-	log.Printf("[MediaTracker] Now playing: %s (%s, %ds)", media.Title, media.VideoType, media.Duration)
+	logger.Info("MediaTracker", "Now playing: %s (%s, %ds)", media.Title, media.VideoType, media.Duration)
 	p.status.EventsHandled++
 	return nil
 }
@@ -494,7 +494,7 @@ func (p *Plugin) handleQueueUpdate(event framework.Event) error {
 		// Try to handle as a QueueEvent directly
 		queueEvent, ok := event.(*framework.QueueEvent)
 		if !ok {
-			log.Printf("[MediaTracker] Received queue event but couldn't parse it")
+			logger.Warn("MediaTracker", "Received queue event but couldn't parse it")
 			return nil
 		}
 		// Convert QueueEvent to QueueUpdateData
@@ -517,11 +517,11 @@ func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error 
 	// Get channel from event (must be present)
 	channel := queueData.Channel
 	if channel == "" {
-		log.Printf("[MediaTracker] Skipping queue update without channel information")
+		logger.Warn("MediaTracker", "Skipping queue update without channel information")
 		return nil
 	}
 
-	log.Printf("[MediaTracker] Processing queue %s for channel %s", queueData.Action, channel)
+	logger.Debug("MediaTracker", "Processing queue %s for channel %s", queueData.Action, channel)
 
 	switch queueData.Action {
 	case "clear":
@@ -532,7 +532,7 @@ func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error 
 
 	case "full":
 		// Replace entire queue with new items
-		log.Printf("[MediaTracker] Starting to process full playlist with %d items (queue event)", len(queueData.Items))
+		logger.Info("MediaTracker", "Starting to process full playlist with %d items (queue event)", len(queueData.Items))
 		startTime := time.Now()
 
 		// First clear existing queue
@@ -549,7 +549,7 @@ func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error 
 			}
 		}
 
-		log.Printf("[MediaTracker] Finished processing %d playlist items in %v", len(queueData.Items), time.Since(startTime))
+		logger.Info("MediaTracker", "Finished processing %d playlist items in %v", len(queueData.Items), time.Since(startTime))
 
 	case "add":
 		// Add item at position
@@ -591,10 +591,10 @@ func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error 
 		// Move item from position to newPosition
 		// This is complex - need to handle in a transaction-like manner
 		// For now, log it as unimplemented
-		log.Printf("[MediaTracker] Queue move operation not fully implemented yet")
+		logger.Warn("MediaTracker", "Queue move operation not fully implemented yet")
 
 	default:
-		log.Printf("[MediaTracker] Unknown queue action: %s", queueData.Action)
+		logger.Warn("MediaTracker", "Unknown queue action: %s", queueData.Action)
 	}
 
 	return nil
@@ -614,7 +614,7 @@ func (p *Plugin) insertQueueItem(channel string, item *framework.QueueItem) erro
 		channel,
 		nil, // metadata
 	); err != nil {
-		log.Printf("[MediaTracker] Error adding queued item to library: %v", err)
+		logger.Error("MediaTracker", "Error adding queued item to library: %v", err)
 	}
 
 	return p.sqlClient.Exec(`
@@ -680,10 +680,10 @@ func (p *Plugin) bulkInsertQueueItems(channel string, items []framework.QueueIte
 
 	// Bulk add to library (single operation for all items)
 	if err := p.bulkAddToLibrary(channel, items); err != nil {
-		log.Printf("[MediaTracker] Error bulk adding to library: %v", err)
+		logger.Error("MediaTracker", "Error bulk adding to library: %v", err)
 	}
 
-	log.Printf("[MediaTracker] Bulk inserted %d queue items", len(items))
+	logger.Debug("MediaTracker", "Bulk inserted %d queue items", len(items))
 	return nil
 }
 
@@ -746,7 +746,7 @@ func (p *Plugin) registerCommands() {
 	}
 
 	if err := p.eventBus.Broadcast("command.register", regEvent); err != nil {
-		log.Printf("[ERROR] Failed to register mediatracker commands: %v", err)
+		logger.Error("MediaTracker", "Failed to register mediatracker commands: %v", err)
 	}
 }
 
@@ -786,7 +786,7 @@ func (p *Plugin) handleMediaTrackerCommand(req *framework.PluginRequest) {
 	case "stats", "mediastats":
 		p.handleStatsCommand(req)
 	default:
-		log.Printf("[MediaTracker] Unknown command: %s", cmdName)
+		logger.Warn("MediaTracker", "Unknown command: %s", cmdName)
 	}
 }
 
@@ -823,7 +823,7 @@ func (p *Plugin) handleStatsCommand(req *framework.PluginRequest) {
 	// Get channel from request context
 	channel := req.Data.Command.Params["channel"]
 	if channel == "" {
-		log.Printf("[MediaTracker] Skipping stats request without channel context")
+		logger.Warn("MediaTracker", "Skipping stats request without channel context")
 		return
 	}
 
@@ -843,13 +843,13 @@ func (p *Plugin) handleStatsCommand(req *framework.PluginRequest) {
 	sqlHelper := framework.NewSQLRequestHelper(p.eventBus, "mediatracker")
 	rows, err := sqlHelper.NormalQuery(ctx, query, channel)
 	if err != nil {
-		log.Printf("[MediaTracker] Failed to query stats: %v", err)
+		logger.Error("MediaTracker", "Failed to query stats: %v", err)
 		p.sendResponse(req, "Failed to retrieve media statistics")
 		return
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			log.Printf("Failed to close rows: %v", err)
+			logger.Error("MediaTracker", "Failed to close rows: %v", err)
 		}
 	}()
 
@@ -895,7 +895,7 @@ func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
 
 	// Broadcast to cytube.send.pm event
 	if err := p.eventBus.Broadcast("cytube.send.pm", response); err != nil {
-		log.Printf("[ERROR] Failed to send MediaTracker PM response: %v", err)
+		logger.Error("MediaTracker", "Failed to send MediaTracker PM response: %v", err)
 	}
 }
 
@@ -940,7 +940,7 @@ func (p *Plugin) endMediaPlay(media *MediaState, endTime time.Time, channel stri
 func (p *Plugin) loadCurrentState() error {
 	// Since this is called at startup, we can't determine channel from events
 	// Skip loading current state for now in multi-room setup
-	log.Printf("[MediaTracker] Skipping current state load in multi-room mode")
+	logger.Debug("MediaTracker", "Skipping current state load in multi-room mode")
 	return nil
 }
 
@@ -965,7 +965,7 @@ func (p *Plugin) updateStats() {
 func (p *Plugin) doStatsUpdate() {
 	// This is a placeholder for more complex aggregation logic
 	// For now, the stats are updated in real-time during media changes
-	log.Println("[MediaTracker] Running periodic stats update")
+	logger.Debug("MediaTracker", "Running periodic stats update")
 }
 
 // formatDuration formats a duration in human-readable form
@@ -1022,7 +1022,7 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 		// Deduplication: ignore duplicate playlist events within 2 seconds for the same channel
 		channel := playlistArray.ChannelName
 		if channel == "" {
-			log.Printf("[MediaTracker] Skipping playlist event without channel information")
+			logger.Warn("MediaTracker", "Skipping playlist event without channel information")
 			return nil
 		}
 
@@ -1034,7 +1034,7 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 		if lastInfo, exists := p.lastPlaylistInfo[channel]; exists {
 			if time.Since(lastInfo.time) < 2*time.Second && lastInfo.count == len(playlistArray.Items) {
 				p.mu.Unlock()
-				log.Printf("[MediaTracker] Ignoring duplicate playlist event for channel %s (%d items, %v since last)",
+				logger.Debug("MediaTracker", "Ignoring duplicate playlist event for channel %s (%d items, %v since last)",
 					channel, len(playlistArray.Items), time.Since(lastInfo.time))
 				return nil
 			}
@@ -1046,7 +1046,7 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 		}
 		p.mu.Unlock()
 
-		log.Printf("[MediaTracker] Starting to process full playlist with %d items (playlist event)", len(playlistArray.Items))
+		logger.Info("MediaTracker", "Starting to process full playlist with %d items (playlist event)", len(playlistArray.Items))
 		startTime := time.Now()
 
 		// Process all items in batches to avoid overwhelming the database
@@ -1061,7 +1061,7 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 
 			// Use bulk insert for better performance
 			if err := p.bulkAddPlaylistToLibrary(batch, channel); err != nil {
-				log.Printf("[MediaTracker] Failed to bulk add playlist items to library: %v", err)
+				logger.Error("MediaTracker", "Failed to bulk add playlist items to library: %v", err)
 				// Fall back to individual inserts on bulk failure
 				for _, item := range batch {
 					if err := p.addToLibrary(
@@ -1073,7 +1073,7 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 						channel,
 						item.Metadata,
 					); err != nil {
-						log.Printf("[MediaTracker] Failed to add playlist item to library: %v", err)
+						logger.Error("MediaTracker", "Failed to add playlist item to library: %v", err)
 					}
 				}
 			}
@@ -1089,18 +1089,18 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 					QueuedBy:  item.QueuedBy,
 					QueuedAt:  time.Now().Unix(),
 				}); err != nil {
-					log.Printf("[MediaTracker] Failed to update queue: %v", err)
+					logger.Error("MediaTracker", "Failed to update queue: %v", err)
 				}
 			}
 		}
 
-		log.Printf("[MediaTracker] Finished processing %d playlist items in %v", len(playlistArray.Items), time.Since(startTime))
+		logger.Info("MediaTracker", "Finished processing %d playlist items in %v", len(playlistArray.Items), time.Since(startTime))
 		return nil
 	}
 
 	// Check if it's a PlaylistEvent (playlist modification - add/remove/move)
 	if playlistEvent, ok := event.(*framework.PlaylistEvent); ok {
-		log.Printf("[MediaTracker] Received playlist modification event: %s", playlistEvent.Action)
+		logger.Debug("MediaTracker", "Received playlist modification event: %s", playlistEvent.Action)
 		// Existing playlist modification handling can be added here if needed
 		return nil
 	}

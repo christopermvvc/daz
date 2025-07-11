@@ -198,7 +198,10 @@ func TestStartStop(t *testing.T) {
 		t.Error("Plugin should be running after Start()")
 	}
 
-	// Check that schema was created during Start
+	// Wait a bit for async schema creation
+	time.Sleep(4 * time.Second)
+
+	// Check that schema was created after Start
 	schemaCreated := false
 	for _, call := range mockBus.execCalls {
 		if strings.Contains(call, "CREATE TABLE IF NOT EXISTS daz_eventfilter_rules") {
@@ -207,7 +210,7 @@ func TestStartStop(t *testing.T) {
 		}
 	}
 	if !schemaCreated {
-		t.Error("Expected schema creation during Start(), but it wasn't called")
+		t.Error("Expected schema creation after Start(), but it wasn't called")
 	}
 
 	// Test double start

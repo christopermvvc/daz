@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/logger"
 	"github.com/hildolfr/daz/internal/metrics"
 	"github.com/jackc/pgx/v5"
 	"github.com/prometheus/client_golang/prometheus"
@@ -17,25 +17,25 @@ import (
 func (p *Plugin) handlePluginRequest(event framework.Event) error {
 	// This handler receives all "plugin.request" events and routes them based on metadata
 	// For now, we'll just pass through to the appropriate handler based on the event data
-	log.Printf("[SQL Plugin] Received plugin.request event")
+	logger.Debug("SQL", "Received plugin.request event")
 
 	dataEvent, ok := event.(*framework.DataEvent)
 	if !ok || dataEvent.Data == nil {
-		log.Printf("[SQL Plugin] plugin.request event has no data")
+		logger.Debug("SQL", "plugin.request event has no data")
 		return nil
 	}
 
 	// Check what type of request this is and route accordingly
 	if dataEvent.Data.SQLExecRequest != nil {
-		log.Printf("[SQL Plugin] Routing to SQL exec handler")
+		logger.Debug("SQL", "Routing to SQL exec handler")
 		return p.handleSQLExec(event)
 	}
 	if dataEvent.Data.SQLQueryRequest != nil {
-		log.Printf("[SQL Plugin] Routing to SQL query handler")
+		logger.Debug("SQL", "Routing to SQL query handler")
 		return p.handleSQLQuery(event)
 	}
 	if dataEvent.Data.SQLBatchRequest != nil {
-		log.Printf("[SQL Plugin] Routing to SQL batch handler")
+		logger.Debug("SQL", "Routing to SQL batch handler")
 		// Determine if it's a query or exec batch
 		if len(dataEvent.Data.SQLBatchRequest.Operations) > 0 {
 			firstOp := dataEvent.Data.SQLBatchRequest.Operations[0]
@@ -46,7 +46,7 @@ func (p *Plugin) handlePluginRequest(event framework.Event) error {
 		}
 	}
 
-	log.Printf("[SQL Plugin] plugin.request event has no SQL request data")
+	logger.Debug("SQL", "plugin.request event has no SQL request data")
 	return nil
 }
 
@@ -89,7 +89,7 @@ func (p *Plugin) handleLogRequest(event framework.Event) error {
 	)
 
 	if err != nil {
-		log.Printf("[SQL Plugin] Failed to process log request: %v", err)
+		logger.Error("SQL", "Failed to process log request: %v", err)
 		return err
 	}
 
@@ -108,7 +108,7 @@ func (p *Plugin) handleLogRequest(event framework.Event) error {
 			},
 		}
 		if err := p.eventBus.Send(req.ReplyTo, "plugin.response", resp); err != nil {
-			log.Printf("[SQL Plugin] Failed to send response: %v", err)
+			logger.Error("SQL", "Failed to send response: %v", err)
 		}
 	}
 
@@ -141,7 +141,7 @@ func (p *Plugin) handleBatchLogRequest(event framework.Event) error {
 	}
 	defer func() {
 		if err := tx.Rollback(ctx); err != nil && err != pgx.ErrTxClosed {
-			log.Printf("[SQL Plugin] Failed to rollback transaction: %v", err)
+			logger.Error("SQL", "Failed to rollback transaction: %v", err)
 		}
 	}()
 
@@ -184,7 +184,7 @@ func (p *Plugin) handleBatchLogRequest(event framework.Event) error {
 			},
 		}
 		if err := p.eventBus.Send(req.ReplyTo, "plugin.response", resp); err != nil {
-			log.Printf("[SQL Plugin] Failed to send response: %v", err)
+			logger.Error("SQL", "Failed to send response: %v", err)
 		}
 	}
 
@@ -214,7 +214,7 @@ func (p *Plugin) handleConfigureLogging(event framework.Event) error {
 
 	// Update logger rules
 	p.loggerRules = newRules
-	log.Printf("[SQL Plugin] Updated logger rules: %d rules", len(newRules))
+	logger.Info("SQL", "Updated logger rules: %d rules", len(newRules))
 
 	// Send response if requested
 	if req.ID != "" && req.ReplyTo != "" {
@@ -232,7 +232,7 @@ func (p *Plugin) handleConfigureLogging(event framework.Event) error {
 			},
 		}
 		if err := p.eventBus.Send(req.ReplyTo, "plugin.response", resp); err != nil {
-			log.Printf("[SQL Plugin] Failed to send response: %v", err)
+			logger.Error("SQL", "Failed to send response: %v", err)
 		}
 	}
 
@@ -246,7 +246,7 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 
 	dataEvent, ok := event.(*framework.DataEvent)
 	if !ok || dataEvent.Data == nil || dataEvent.Data.SQLQueryRequest == nil {
-		log.Printf("[SQL Plugin] Invalid SQL query event data")
+		logger.Warn("SQL", "Invalid SQL query event data")
 		return nil
 	}
 
@@ -278,7 +278,7 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 					Error:         err.Error(),
 				},
 			}
-			log.Printf("[SQL Plugin] Delivering error response for query CorrelationID: %s, error: %v", req.CorrelationID, err)
+			logger.Debug("SQL", "Delivering error response for query CorrelationID: %s, error: %v", req.CorrelationID, err)
 			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
 			return nil
 		}
@@ -302,7 +302,7 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 					Error:         err.Error(),
 				},
 			}
-			log.Printf("[SQL Plugin] Delivering error response for query CorrelationID: %s, error: %v", req.CorrelationID, err)
+			logger.Debug("SQL", "Delivering error response for query CorrelationID: %s, error: %v", req.CorrelationID, err)
 			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
 			return nil
 		}
@@ -332,7 +332,7 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 
 	if err != nil {
 		metrics.DatabaseErrors.Inc()
-		log.Printf("[SQL Plugin] Query failed: %v", err)
+		logger.Error("SQL", "Query failed: %v", err)
 
 		// Emit failure event for retry mechanism
 		p.emitFailureEvent("sql.query.failed", req.CorrelationID, req.RequestBy, "sql.query", err)
@@ -428,7 +428,7 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 		return nil
 	}
 
-	log.Printf("[SQL Plugin] WARNING: No CorrelationID provided for query response")
+	logger.Warn("SQL", "WARNING: No CorrelationID provided for query response")
 	return nil
 }
 
@@ -439,7 +439,7 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 
 	dataEvent, ok := event.(*framework.DataEvent)
 	if !ok || dataEvent.Data == nil || dataEvent.Data.SQLExecRequest == nil {
-		log.Printf("[SQL Plugin] Invalid SQL exec event data")
+		logger.Warn("SQL", "Invalid SQL exec event data")
 		return nil
 	}
 
@@ -471,7 +471,7 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 					Error:         err.Error(),
 				},
 			}
-			log.Printf("[SQL Plugin] Delivering error response for exec CorrelationID: %s, error: %v", req.CorrelationID, err)
+			logger.Debug("SQL", "Delivering error response for exec CorrelationID: %s, error: %v", req.CorrelationID, err)
 			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
 			return nil
 		}
@@ -495,7 +495,7 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 					Error:         err.Error(),
 				},
 			}
-			log.Printf("[SQL Plugin] Delivering error response for exec CorrelationID: %s, error: %v", req.CorrelationID, err)
+			logger.Debug("SQL", "Delivering error response for exec CorrelationID: %s, error: %v", req.CorrelationID, err)
 			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
 			return nil
 		}
@@ -525,7 +525,7 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 
 	if err != nil {
 		metrics.DatabaseErrors.Inc()
-		log.Printf("[SQL Plugin] Exec failed: %v", err)
+		logger.Error("SQL", "Exec failed: %v", err)
 
 		// Emit failure event for retry mechanism
 		p.emitFailureEvent("sql.exec.failed", req.CorrelationID, req.RequestBy, "sql.exec", err)
@@ -576,7 +576,7 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 		return nil
 	}
 
-	log.Printf("[SQL Plugin] WARNING: No CorrelationID provided for exec response")
+	logger.Warn("SQL", "WARNING: No CorrelationID provided for exec response")
 	return nil
 }
 
@@ -648,7 +648,7 @@ func (p *Plugin) handleBatchQueryRequest(event framework.Event) error {
 		}
 		defer func() {
 			if err := tx.Rollback(ctx); err != nil && err != pgx.ErrTxClosed {
-				log.Printf("[SQL Plugin] Failed to rollback transaction: %v", err)
+				logger.Error("SQL", "Failed to rollback transaction: %v", err)
 			}
 		}()
 
@@ -849,7 +849,7 @@ func (p *Plugin) handleBatchQueryRequest(event framework.Event) error {
 			},
 		}
 		if err := p.eventBus.Send(req.ReplyTo, "plugin.response", resp); err != nil {
-			log.Printf("[SQL Plugin] Failed to send response: %v", err)
+			logger.Error("SQL", "Failed to send response: %v", err)
 		}
 	}
 
@@ -910,7 +910,7 @@ func (p *Plugin) handleBatchExecRequest(event framework.Event) error {
 		}
 		defer func() {
 			if err := tx.Rollback(ctx); err != nil && err != pgx.ErrTxClosed {
-				log.Printf("[SQL Plugin] Failed to rollback transaction: %v", err)
+				logger.Error("SQL", "Failed to rollback transaction: %v", err)
 			}
 		}()
 
@@ -1022,7 +1022,7 @@ func (p *Plugin) handleBatchExecRequest(event framework.Event) error {
 			},
 		}
 		if err := p.eventBus.Send(req.ReplyTo, "plugin.response", resp); err != nil {
-			log.Printf("[SQL Plugin] Failed to send response: %v", err)
+			logger.Error("SQL", "Failed to send response: %v", err)
 		}
 	}
 
@@ -1058,7 +1058,7 @@ func (p *Plugin) handleFrameworkBatchRequest(batchReq *framework.SQLBatchRequest
 		}
 		defer func() {
 			if err := tx.Rollback(ctx); err != nil && err != pgx.ErrTxClosed {
-				log.Printf("[SQL Plugin] Failed to rollback transaction: %v", err)
+				logger.Error("SQL", "Failed to rollback transaction: %v", err)
 			}
 		}()
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/hildolfr/daz/internal/logger"
 	"net/http"
 	"net/url"
 	"sync"
@@ -44,7 +44,7 @@ func NewWebSocketClient(channel string, roomID string, eventChan chan<- framewor
 		return nil, fmt.Errorf("failed to discover server: %w", err)
 	}
 
-	log.Printf("Discovered server URL for channel %s: %s", channel, serverURL)
+	logger.Info("WebSocketClient", "Discovered server URL for channel %s: %s", channel, serverURL)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -106,7 +106,7 @@ func (c *WebSocketClient) Connect() error {
 	u.RawQuery = q.Encode()
 
 	wsURL := u.String()
-	log.Printf("Connecting to WebSocket URL: %s", wsURL)
+	logger.Info("WebSocketClient", "Connecting to WebSocket URL: %s", wsURL)
 
 	// Create WebSocket connection
 	dialer := websocket.DefaultDialer
@@ -141,7 +141,7 @@ func (c *WebSocketClient) readLoop() {
 
 		// If we were connected and lost connection unexpectedly, trigger reconnection
 		if wasConnected {
-			log.Printf("WebSocket connection lost, triggering reconnection event")
+			logger.Warn("WebSocketClient", "WebSocket connection lost, triggering reconnection event")
 			// Send a disconnect event to notify the system
 			baseEvent := framework.CytubeEvent{
 				EventType:   "disconnect",
@@ -167,7 +167,7 @@ func (c *WebSocketClient) readLoop() {
 		messageType, message, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket read error: %v", err)
+				logger.Error("WebSocketClient", "WebSocket read error: %v", err)
 			}
 			// Connection lost - the defer will handle triggering reconnection
 			return
@@ -187,12 +187,12 @@ func (c *WebSocketClient) writeLoop() {
 			c.writeMu.Lock()
 			if c.conn != nil {
 				if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-					log.Printf("Failed to set write deadline: %v", err)
+					logger.Error("WebSocketClient", "Failed to set write deadline: %v", err)
 					c.writeMu.Unlock()
 					return
 				}
 				if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
-					log.Printf("WebSocket write error: %v", err)
+					logger.Error("WebSocketClient", "WebSocket write error: %v", err)
 					c.writeMu.Unlock()
 					return
 				}
@@ -220,8 +220,8 @@ func (c *WebSocketClient) handleMessage(message []byte) {
 		var handshake HandshakeResponse
 		if err := json.Unmarshal([]byte(msg[1:]), &handshake); err == nil {
 			c.sid = handshake.SessionID
-			log.Printf("Received handshake, SID: %s", c.sid)
-			log.Printf("Server ping interval: %dms, timeout: %dms", handshake.PingInterval, handshake.PingTimeout)
+			logger.Info("WebSocketClient", "Received handshake, SID: %s", c.sid)
+			logger.Info("WebSocketClient", "Server ping interval: %dms, timeout: %dms", handshake.PingInterval, handshake.PingTimeout)
 
 			// Send Socket.IO connect packet first
 			c.writeChan <- []byte("40")
@@ -229,8 +229,8 @@ func (c *WebSocketClient) handleMessage(message []byte) {
 			// Note: In Engine.IO, the server sends pings and we respond with pongs
 			// We should NOT send unsolicited pings from the client side
 		} else {
-			log.Printf("Failed to parse handshake: %v", err)
-			log.Printf("Raw handshake message: %s", msg)
+			logger.Error("WebSocketClient", "Failed to parse handshake: %v", err)
+			logger.Debug("WebSocketClient", "Raw handshake message: %s", msg)
 		}
 
 	case '2': // Ping
@@ -260,7 +260,7 @@ func (c *WebSocketClient) handleSocketIOMessage(message []byte) {
 
 	switch msg[0] {
 	case '0': // Connect
-		log.Println("Socket.IO connected")
+		logger.Info("WebSocketClient", "Socket.IO connected")
 		// Signal that Socket.IO is ready but don't join channel yet
 		// Channel join should happen after login
 		if c.socketIOReady != nil {
@@ -270,7 +270,7 @@ func (c *WebSocketClient) handleSocketIOMessage(message []byte) {
 		}
 
 	case '1': // Disconnect
-		log.Println("Socket.IO disconnected")
+		logger.Info("WebSocketClient", "Socket.IO disconnected")
 		// Send disconnect event with connection_lost reason to trigger reconnection
 		baseEvent := framework.CytubeEvent{
 			EventType:   "disconnect",
@@ -294,7 +294,7 @@ func (c *WebSocketClient) handleSocketIOMessage(message []byte) {
 		// Parse Socket.IO event
 		eventType, data, err := parseSocketIOMessage(msg)
 		if err != nil {
-			log.Printf("Failed to parse Socket.IO message: %v", err)
+			logger.Error("WebSocketClient", "Failed to parse Socket.IO message: %v", err)
 			return
 		}
 
@@ -305,7 +305,7 @@ func (c *WebSocketClient) handleSocketIOMessage(message []byte) {
 		// Acknowledgment
 
 	case '4': // Error
-		log.Printf("Socket.IO error: %s", msg[1:])
+		logger.Error("WebSocketClient", "Socket.IO error: %s", msg[1:])
 	}
 }
 
@@ -320,7 +320,7 @@ func (c *WebSocketClient) handleEvent(eventType string, data json.RawMessage) {
 	// Parse the event
 	parsedEvent, err := c.parser.ParseEvent(event)
 	if err != nil {
-		log.Printf("Failed to parse event %s: %v", eventType, err)
+		logger.Error("WebSocketClient", "Failed to parse event %s: %v", eventType, err)
 		return
 	}
 
@@ -330,7 +330,7 @@ func (c *WebSocketClient) handleEvent(eventType string, data json.RawMessage) {
 	case <-c.ctx.Done():
 		return
 	default:
-		log.Printf("Event channel full, dropping event: %s", eventType)
+		logger.Warn("WebSocketClient", "Event channel full, dropping event: %s", eventType)
 	}
 }
 
@@ -353,7 +353,7 @@ func (c *WebSocketClient) JoinChannel() error {
 	// Send the join message
 	select {
 	case c.writeChan <- []byte(message):
-		log.Printf("Sent join request for channel: %s", c.channel)
+		logger.Info("WebSocketClient", "Sent join request for channel: %s", c.channel)
 		return nil
 	case <-c.ctx.Done():
 		return fmt.Errorf("context cancelled")
@@ -395,18 +395,18 @@ func (c *WebSocketClient) Disconnect() error {
 	if c.conn != nil {
 		// Send disconnect message
 		if err := c.conn.SetWriteDeadline(time.Now().Add(1 * time.Second)); err != nil {
-			log.Printf("Error setting write deadline during disconnect: %v", err)
+			logger.Error("WebSocketClient", "Error setting write deadline during disconnect: %v", err)
 		}
 		if err := c.conn.WriteMessage(websocket.TextMessage, []byte("41")); err != nil {
-			log.Printf("Error sending disconnect message: %v", err)
+			logger.Error("WebSocketClient", "Error sending disconnect message: %v", err)
 		}
 		if err := c.conn.Close(); err != nil {
-			log.Printf("Error closing WebSocket connection: %v", err)
+			logger.Error("WebSocketClient", "Error closing WebSocket connection: %v", err)
 		}
 		c.conn = nil
 	}
 
-	log.Println("WebSocket disconnected")
+	logger.Info("WebSocketClient", "WebSocket disconnected")
 	return nil
 }
 
@@ -436,7 +436,7 @@ func (c *WebSocketClient) Send(eventType string, data EventPayload) error {
 
 	// Only log important messages, not all traffic
 	if eventType == "requestPlaylist" || eventType == "login" || eventType == "pm" {
-		log.Printf("[WebSocket] Sending %s command with data: %s", eventType, string(dataJSON))
+		logger.Debug("WebSocketClient", "Sending %s command with data: %s", eventType, string(dataJSON))
 	}
 
 	select {
@@ -457,7 +457,7 @@ func (c *WebSocketClient) Login(username, password string) error {
 	}
 
 	// Per ***REMOVED***-connect.md, we need a 2-second delay between join and login
-	log.Println("Waiting 2 seconds before login (per cytube protocol)...")
+	logger.Info("WebSocketClient", "Waiting 2 seconds before login (per cytube protocol)...")
 	loginTimer := time.NewTimer(2 * time.Second)
 	select {
 	case <-loginTimer.C:
@@ -520,7 +520,7 @@ func (c *WebSocketClient) ConnectWithRetry() error {
 		}
 
 		lastErr = err
-		log.Printf("Connection attempt %d failed: %v", attempts, err)
+		logger.Warn("WebSocketClient", "Connection attempt %d failed: %v", attempts, err)
 
 		if attempts < c.reconnectConfig.MaxAttempts {
 			retryTimer := time.NewTimer(c.reconnectConfig.RetryDelay)

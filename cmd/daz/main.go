@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,6 +15,7 @@ import (
 	"github.com/hildolfr/daz/internal/core"
 	"github.com/hildolfr/daz/internal/framework"
 	"github.com/hildolfr/daz/internal/health"
+	"github.com/hildolfr/daz/internal/logger"
 	"github.com/hildolfr/daz/internal/metrics"
 	"github.com/hildolfr/daz/internal/plugins/analytics"
 	"github.com/hildolfr/daz/internal/plugins/commands/about"
@@ -43,7 +43,13 @@ func main() {
 	dbUser := flag.String("db-user", "", "Database user")
 	dbPass := flag.String("db-pass", "", "Database password")
 	healthPort := flag.Int("health-port", 8080, "Port for health check endpoints")
+	verbose := flag.Bool("verbose", false, "Enable verbose/debug logging")
 	flag.Parse()
+
+	// Configure logging
+	if *verbose {
+		logger.SetDebug(true)
+	}
 
 	// Load configuration
 	var cfg *config.Config
@@ -52,7 +58,8 @@ func main() {
 	// Always use LoadFromFile which handles env vars
 	cfg, err = config.LoadFromFile(*configFile)
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		logger.Error("Main", "Failed to load configuration: %v", err)
+		os.Exit(1)
 	}
 
 	// Merge command-line flags with config (flags take precedence)
@@ -60,7 +67,8 @@ func main() {
 
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
-		log.Fatalf("Invalid configuration: %v", err)
+		logger.Error("Main", "Invalid configuration: %v", err)
+		os.Exit(1)
 	}
 
 	fmt.Println("Daz - Modular Go Chat Bot for Cytube")
@@ -101,7 +109,8 @@ func main() {
 	}
 
 	if err := run(coreConfig, cfg, *healthPort); err != nil {
-		log.Fatalf("Failed to start: %v", err)
+		logger.Error("Main", "Failed to start: %v", err)
+		os.Exit(1)
 	}
 }
 
@@ -144,14 +153,14 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 	}
 	defer func() {
 		if err := bus.Stop(); err != nil {
-			log.Printf("Error stopping event bus: %v", err)
+			logger.Error("Main", "Error stopping event bus: %v", err)
 		}
 	}()
 
 	// Create and initialize the core plugin
 	corePlugin := core.NewPlugin(coreConfig)
 
-	log.Println("Initializing core plugin...")
+	logger.Info("Main", "Initializing core plugin...")
 	if err := corePlugin.Initialize(bus); err != nil {
 		return fmt.Errorf("failed to initialize core plugin: %w", err)
 	}
@@ -179,7 +188,8 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 	// Register all plugins with the manager
 	for _, p := range plugins {
 		if err := pluginManager.RegisterPlugin(p.name, p.plugin); err != nil {
-			log.Fatalf("Failed to register plugin %s: %v", p.name, err)
+			logger.Error("Main", "Failed to register plugin %s: %v", p.name, err)
+			os.Exit(1)
 		}
 	}
 
@@ -201,13 +211,13 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 	}
 
 	// Start core plugin first
-	log.Println("Starting core plugin...")
+	logger.Info("Main", "Starting core plugin...")
 	if err := corePlugin.Start(); err != nil {
 		return fmt.Errorf("failed to start core plugin: %w", err)
 	}
 	defer func() {
 		if err := corePlugin.Stop(); err != nil {
-			log.Printf("Error stopping core plugin: %v", err)
+			logger.Error("Main", "Error stopping core plugin: %v", err)
 		}
 	}()
 
@@ -218,7 +228,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 	defer pluginManager.StopAll()
 
 	// Now that all plugins are ready, start room connections
-	log.Println("All plugins are ready, starting room connections...")
+	logger.Info("Main", "All plugins are ready, starting room connections...")
 	corePlugin.StartRoomConnections()
 
 	// Create health check service
@@ -261,9 +271,9 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 
 	// Start health server in background
 	go func() {
-		log.Printf("Starting health check server on port %d", healthPort)
+		logger.Info("Main", "Starting health check server on port %d", healthPort)
 		if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Health check server error: %v", err)
+			logger.Error("Main", "Health check server error: %v", err)
 		}
 	}()
 
@@ -273,19 +283,19 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 		defer cancel()
 
 		if err := healthServer.Shutdown(ctx); err != nil {
-			log.Printf("Error shutting down health server: %v", err)
+			logger.Error("Main", "Error shutting down health server: %v", err)
 		}
 	}()
 
-	log.Println("Bot is running! Press Ctrl+C to stop.")
-	log.Printf("Health check endpoints available at http://localhost:%d/health", healthPort)
+	logger.Info("Main", "Bot is running! Press Ctrl+C to stop.")
+	logger.Info("Main", "Health check endpoints available at http://localhost:%d/health", healthPort)
 
 	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	sig := <-sigChan
-	log.Printf("Received signal %v, shutting down...", sig)
+	logger.Info("Main", "Received signal %v, shutting down...", sig)
 
 	return nil
 }

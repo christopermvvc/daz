@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/logger"
 	"github.com/hildolfr/daz/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -108,14 +108,14 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 		}
 	}
 
-	log.Printf("[Retry] Initialized with %d retry policies", len(p.config.RetryPolicies))
+	logger.Info("Retry", "Initialized with %d retry policies", len(p.config.RetryPolicies))
 	return nil
 }
 
 // Start starts the retry manager
 func (p *Plugin) Start() error {
 	if !p.config.Enabled {
-		log.Printf("[Retry] Plugin disabled by configuration")
+		logger.Info("Retry", "Plugin disabled by configuration")
 		return nil
 	}
 
@@ -149,7 +149,7 @@ func (p *Plugin) Start() error {
 	p.wg.Add(1)
 	go p.queueProcessor()
 
-	log.Printf("[Retry] Started with %d workers", p.config.WorkerCount)
+	logger.Info("Retry", "Started with %d workers", p.config.WorkerCount)
 	return nil
 }
 
@@ -168,9 +168,9 @@ func (p *Plugin) Stop() error {
 
 	select {
 	case <-done:
-		log.Printf("[Retry] All workers stopped")
+		logger.Info("Retry", "All workers stopped")
 	case <-time.After(30 * time.Second):
-		log.Printf("[Retry] Warning: workers did not stop within 30 seconds")
+		logger.Warn("Retry", "Workers did not stop within 30 seconds")
 	}
 
 	return nil
@@ -242,7 +242,7 @@ func (p *Plugin) handleFailureEvent(event framework.Event) error {
 	// Marshal event data to JSON
 	eventDataJSON, err := json.Marshal(dataEvent.Data)
 	if err != nil {
-		log.Printf("[Retry] Failed to marshal event data: %v", err)
+		logger.Error("Retry", "Failed to marshal event data: %v", err)
 		return nil
 	}
 
@@ -305,7 +305,7 @@ func (p *Plugin) scheduleRetry(request *RetryRequest) error {
 		return fmt.Errorf("failed to schedule retry: %w", err)
 	}
 
-	log.Printf("[Retry] Scheduled retry for %s (type: %s) after %v",
+	logger.Info("Retry", "Scheduled retry for %s (type: %s) after %v",
 		request.OperationID, request.OperationType, retryAfter.Sub(time.Now()))
 
 	return nil
@@ -318,8 +318,17 @@ func (p *Plugin) queueProcessor() {
 	ticker := time.NewTicker(time.Duration(p.config.PollIntervalSeconds) * time.Second)
 	defer ticker.Stop()
 
-	// Initial poll
-	p.pollQueue()
+	// Wait a bit before initial poll to ensure all plugins are ready
+	initialDelay := time.NewTimer(2 * time.Second)
+	defer initialDelay.Stop()
+
+	select {
+	case <-p.ctx.Done():
+		return
+	case <-initialDelay.C:
+		// Initial poll after delay
+		p.pollQueue()
+	}
 
 	for {
 		select {
@@ -341,7 +350,7 @@ func (p *Plugin) pollQueue() {
 
 	rows, err := p.sqlClient.QueryContext(ctx, query, p.config.BatchSize)
 	if err != nil {
-		log.Printf("[Retry] Failed to poll queue: %v", err)
+		logger.Error("Retry", "Failed to poll queue: %v", err)
 		metrics.DatabaseErrors.Inc()
 		return
 	}
@@ -371,13 +380,13 @@ func (p *Plugin) pollQueue() {
 		)
 
 		if err != nil {
-			log.Printf("[Retry] Failed to scan retry item: %v", err)
+			logger.Error("Retry", "Failed to scan retry item: %v", err)
 			continue
 		}
 
 		// Unmarshal event data
 		if err := json.Unmarshal(eventDataJSON, &item.EventData); err != nil {
-			log.Printf("[Retry] Failed to unmarshal event data: %v", err)
+			logger.Error("Retry", "Failed to unmarshal event data: %v", err)
 			p.markFailed(item.ID, fmt.Sprintf("invalid event data: %v", err))
 			continue
 		}
@@ -401,7 +410,7 @@ func (p *Plugin) pollQueue() {
 	}
 
 	if count > 0 {
-		log.Printf("[Retry] Dispatched %d items for retry", count)
+		logger.Debug("Retry", "Dispatched %d items for retry", count)
 	}
 }
 
@@ -427,7 +436,7 @@ func (p *Plugin) processRetry(item RetryQueueItem) {
 		p.processingMu.Unlock()
 	}()
 
-	log.Printf("[Retry] Processing retry %s (attempt %d/%d)",
+	logger.Debug("Retry", "Processing retry %s (attempt %d/%d)",
 		item.CorrelationID, item.RetryCount+1, item.MaxRetries)
 
 	// Create context with timeout
@@ -458,7 +467,7 @@ func (p *Plugin) processRetry(item RetryQueueItem) {
 func (p *Plugin) handleRetrySuccess(item RetryQueueItem, response *framework.EventData, duration time.Duration) {
 	// Mark as completed
 	if err := p.markCompleted(item.ID); err != nil {
-		log.Printf("[Retry] Failed to mark completed: %v", err)
+		logger.Error("Retry", "Failed to mark completed: %v", err)
 	}
 
 	// Update metrics
@@ -479,7 +488,7 @@ func (p *Plugin) handleRetrySuccess(item RetryQueueItem, response *framework.Eve
 		RetryStatus: statusData,
 	})
 
-	log.Printf("[Retry] Successfully completed retry for %s after %d attempts",
+	logger.Info("Retry", "Successfully completed retry for %s after %d attempts",
 		item.CorrelationID, item.RetryCount+1)
 }
 
@@ -493,7 +502,7 @@ func (p *Plugin) handleRetryFailure(item RetryQueueItem, err error, duration tim
 	if item.RetryCount+1 >= item.MaxRetries {
 		// Mark as permanently failed
 		if err := p.markFailed(item.ID, err.Error()); err != nil {
-			log.Printf("[Retry] Failed to mark as failed: %v", err)
+			logger.Error("Retry", "Failed to mark as failed: %v", err)
 		}
 
 		// Emit final failure event
@@ -511,7 +520,7 @@ func (p *Plugin) handleRetryFailure(item RetryQueueItem, err error, duration tim
 			RetryStatus: statusData,
 		})
 
-		log.Printf("[Retry] Permanently failed %s after %d attempts: %v",
+		logger.Error("Retry", "Permanently failed %s after %d attempts: %v",
 			item.CorrelationID, item.RetryCount+1, err)
 	} else {
 		// Calculate next retry time
@@ -520,10 +529,10 @@ func (p *Plugin) handleRetryFailure(item RetryQueueItem, err error, duration tim
 
 		// Update for next retry
 		if err := p.updateRetryTime(item.ID, nextRetry, err.Error()); err != nil {
-			log.Printf("[Retry] Failed to update retry time: %v", err)
+			logger.Error("Retry", "Failed to update retry time: %v", err)
 		}
 
-		log.Printf("[Retry] Retry %s failed (attempt %d/%d), next retry at %v: %v",
+		logger.Debug("Retry", "Retry %s failed (attempt %d/%d), next retry at %v: %v",
 			item.CorrelationID, item.RetryCount+1, item.MaxRetries, nextRetry, err)
 	}
 }

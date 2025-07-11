@@ -238,9 +238,12 @@ func TestPluginStart(t *testing.T) {
 		t.Fatalf("Failed to start plugin: %v", err)
 	}
 
-	// Check that tables were created during Start
+	// Wait for async table creation
+	time.Sleep(5 * time.Second)
+
+	// Check that tables were created after Start
 	if len(mockBus.execs) != 2 {
-		t.Errorf("Expected 2 table creation queries during Start, got %d", len(mockBus.execs))
+		t.Errorf("Expected 2 table creation queries after Start, got %d", len(mockBus.execs))
 	}
 
 	// Check subscriptions

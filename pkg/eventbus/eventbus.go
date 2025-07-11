@@ -3,7 +3,7 @@ package eventbus
 import (
 	"context"
 	"fmt"
-	"log"
+	"github.com/hildolfr/daz/internal/logger"
 	"path"
 	"strings"
 	"sync"
@@ -131,7 +131,7 @@ func (eb *EventBus) RegisterPlugin(name string, plugin framework.Plugin) error {
 	}
 
 	eb.plugins[name] = plugin
-	log.Printf("[EventBus] Registered plugin: %s", name)
+	logger.Info("EventBus", "Registered plugin: %s", name)
 	return nil
 }
 
@@ -173,7 +173,7 @@ func (eb *EventBus) Broadcast(eventType string, data *framework.EventData) error
 		// Update Prometheus metrics
 		metrics.EventsDropped.WithLabelValues(eventType).Inc()
 
-		log.Printf("[EventBus] WARNING: Dropped event %s - queue closed (total dropped: %d)", eventType, count)
+		logger.Warn("EventBus", "Dropped event %s - queue closed (total dropped: %d)", eventType, count)
 		return nil // Don't return error for dropped events
 	}
 
@@ -207,7 +207,7 @@ func (eb *EventBus) Send(target string, eventType string, data *framework.EventD
 		count := eb.droppedEvents["plugin.request"]
 		eb.metricsMu.Unlock()
 
-		log.Printf("[EventBus] WARNING: Dropped direct event to %s - queue closed (total dropped: %d)", target, count)
+		logger.Warn("EventBus", "Dropped direct event to %s - queue closed (total dropped: %d)", target, count)
 		return nil
 	}
 
@@ -236,7 +236,7 @@ func (eb *EventBus) SubscribeWithTags(pattern string, handler framework.EventHan
 		// Add to pattern subscribers
 		sub.Name = fmt.Sprintf("pattern_handler_%d", len(eb.patternSubscribers))
 		eb.patternSubscribers = append(eb.patternSubscribers, sub)
-		log.Printf("[EventBus] Subscribed to pattern %s with tags %v", pattern, tags)
+		logger.Info("EventBus", "Subscribed to pattern %s with tags %v", pattern, tags)
 	} else {
 		// Add to exact match subscribers
 		sub.Name = fmt.Sprintf("handler_%d", len(eb.subscribers[pattern]))
@@ -248,7 +248,7 @@ func (eb *EventBus) SubscribeWithTags(pattern string, handler framework.EventHan
 		// Start router for this event type if not already running
 		eb.startRouter(pattern, queue)
 
-		log.Printf("[EventBus] Subscribed to %s with tags %v", pattern, tags)
+		logger.Info("EventBus", "Subscribed to %s with tags %v", pattern, tags)
 	}
 
 	return nil
@@ -256,7 +256,7 @@ func (eb *EventBus) SubscribeWithTags(pattern string, handler framework.EventHan
 
 // Start begins event routing
 func (eb *EventBus) Start() error {
-	log.Println("[EventBus] Starting event routing")
+	logger.Info("EventBus", "Starting event routing")
 
 	// Pre-start routers for critical event types
 	criticalTypes := []string{
@@ -273,13 +273,13 @@ func (eb *EventBus) Start() error {
 		eb.startRouter(eventType, queue)
 	}
 
-	log.Println("[EventBus] Critical routers pre-started")
+	logger.Info("EventBus", "Critical routers pre-started")
 	return nil
 }
 
 // Stop gracefully shuts down the event bus
 func (eb *EventBus) Stop() error {
-	log.Println("[EventBus] Stopping event bus")
+	logger.Info("EventBus", "Stopping event bus")
 
 	// Cancel context to signal shutdown
 	eb.cancel()
@@ -294,7 +294,7 @@ func (eb *EventBus) Stop() error {
 	// Wait for routers to finish
 	eb.wg.Wait()
 
-	log.Println("[EventBus] Event bus stopped")
+	logger.Info("EventBus", "Event bus stopped")
 	return nil
 }
 
@@ -364,13 +364,13 @@ func (eb *EventBus) startRouter(eventType string, queue *messageQueue) {
 
 // routeEvents routes events to subscribers
 func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
-	log.Printf("[EventBus] Router started for %s", eventType)
+	logger.Info("EventBus", "Router started for %s", eventType)
 
 	for {
 		// Check if we should stop
 		select {
 		case <-eb.ctx.Done():
-			log.Printf("[EventBus] Router stopping for %s", eventType)
+			logger.Info("EventBus", "Router stopping for %s", eventType)
 			return
 		default:
 		}
@@ -378,7 +378,7 @@ func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
 		// Pop message from queue (blocking)
 		msg, ok := queue.pop()
 		if !ok {
-			log.Printf("[EventBus] Queue closed for %s", eventType)
+			logger.Info("EventBus", "Queue closed for %s", eventType)
 			return
 		}
 
@@ -393,7 +393,7 @@ func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
 				defer timer.ObserveDuration()
 
 				if err := s.Handler(m.Event); err != nil {
-					log.Printf("[EventBus] Handler error for %s: %v", eventType, err)
+					logger.Error("EventBus", "Handler error for %s: %v", eventType, err)
 				}
 
 				// Track successful processing
@@ -421,7 +421,7 @@ func (eb *EventBus) getMatchingSubscribers(eventType string, msg *eventMessage) 
 	for _, sub := range eb.patternSubscribers {
 		matched, err := path.Match(sub.Pattern, eventType)
 		if err != nil {
-			log.Printf("[EventBus] Invalid pattern %s: %v", sub.Pattern, err)
+			logger.Error("EventBus", "Invalid pattern %s: %v", sub.Pattern, err)
 			continue
 		}
 		if matched && eb.matchesTags(sub.Tags, msg.Metadata) {
@@ -546,7 +546,7 @@ func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.Even
 		count := eb.droppedEvents[eventType]
 		eb.metricsMu.Unlock()
 
-		log.Printf("[EventBus] WARNING: Dropped event %s - queue closed (total dropped: %d)", eventType, count)
+		logger.Warn("EventBus", "Dropped event %s - queue closed (total dropped: %d)", eventType, count)
 		return nil
 	}
 
@@ -614,7 +614,7 @@ func (eb *EventBus) Request(ctx context.Context, target string, eventType string
 	// Send request with metadata
 	// log.Printf("[EventBus.Request] Sending request to %s: correlationID=%s", target, correlationID)
 	if err := eb.SendWithMetadata(target, eventType, data, metadata); err != nil {
-		log.Printf("[EventBus.Request] Failed to send request: correlationID=%s, error=%v", correlationID, err)
+		logger.Error("EventBus", "Failed to send request: correlationID=%s, error=%v", correlationID, err)
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	// log.Printf("[EventBus.Request] Request sent successfully: correlationID=%s", correlationID)
@@ -635,13 +635,13 @@ func (eb *EventBus) Request(ctx context.Context, target string, eventType string
 		// log.Printf("[EventBus.Request] Context done while waiting for response: correlationID=%s, err=%v", correlationID, ctx.Err())
 		switch ctx.Err() {
 		case context.DeadlineExceeded:
-			log.Printf("[EventBus.Request] Request timed out: correlationID=%s, target=%s", correlationID, target)
+			logger.Error("EventBus", "Request timed out: correlationID=%s, target=%s", correlationID, target)
 			return nil, fmt.Errorf("request to %s timed out: %w", target, ctx.Err())
 		case context.Canceled:
-			log.Printf("[EventBus.Request] Request cancelled: correlationID=%s, target=%s", correlationID, target)
+			logger.Warn("EventBus", "Request cancelled: correlationID=%s, target=%s", correlationID, target)
 			return nil, fmt.Errorf("request to %s was cancelled: %w", target, ctx.Err())
 		default:
-			log.Printf("[EventBus.Request] Request failed: correlationID=%s, target=%s, err=%v", correlationID, target, ctx.Err())
+			logger.Error("EventBus", "Request failed: correlationID=%s, target=%s, err=%v", correlationID, target, ctx.Err())
 			return nil, fmt.Errorf("request to %s failed: %w", target, ctx.Err())
 		}
 	}
@@ -668,7 +668,7 @@ func (eb *EventBus) DeliverResponse(correlationID string, response *framework.Ev
 			// log.Printf("[EventBus.DeliverResponse] Response delivered successfully: correlationID=%s", correlationID)
 		default:
 			// Channel full or closed, log error
-			log.Printf("[EventBus.DeliverResponse] ERROR: Failed to deliver response (channel full/closed): correlationID=%s", correlationID)
+			logger.Error("EventBus", "Failed to deliver response (channel full/closed): correlationID=%s", correlationID)
 		}
 	} else {
 		// log.Printf("[EventBus.DeliverResponse] WARNING: No pending request found for correlationID=%s", correlationID)
@@ -693,6 +693,6 @@ func (eb *EventBus) UnregisterPlugin(name string) error {
 	}
 
 	delete(eb.plugins, name)
-	log.Printf("[EventBus] Unregistered plugin: %s", name)
+	logger.Info("EventBus", "Unregistered plugin: %s", name)
 	return nil
 }

@@ -5,12 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/logger"
 	"github.com/hildolfr/daz/internal/metrics"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -126,7 +126,7 @@ func (p *Plugin) Init(configData json.RawMessage, bus framework.EventBus) error 
 
 	p.loggerRules = p.config.LoggerRules
 
-	log.Printf("[SQL Plugin] Initialized with %d logger rules", len(p.loggerRules))
+	logger.Info("SQL", "Initialized with %d logger rules", len(p.loggerRules))
 	return nil
 }
 
@@ -139,45 +139,45 @@ func (p *Plugin) Start() error {
 
 	// Connect to database in a goroutine to avoid blocking
 	go func() {
-		log.Printf("[SQL Plugin] Starting database connection...")
+		logger.Info("SQL", "Starting database connection...")
 		startTime := time.Now()
 
 		if err := p.connectDatabase(); err != nil {
-			log.Printf("[SQL Plugin] Failed to connect to database after %v: %v", time.Since(startTime), err)
+			logger.Error("SQL", "Failed to connect to database after %v: %v", time.Since(startTime), err)
 			// Don't close readyChan on error, let handlers return errors
 			return
 		}
 
-		log.Printf("[SQL Plugin] Database connected successfully after %v", time.Since(startTime))
+		logger.Info("SQL", "Database connected successfully after %v", time.Since(startTime))
 
 		// Subscribe to event handlers after database is connected
-		log.Printf("[SQL Plugin] Subscribing to event handlers...")
+		logger.Debug("SQL", "Subscribing to event handlers...")
 
 		if err := p.eventBus.Subscribe("log.request", p.handleLogRequest); err != nil {
-			log.Printf("[SQL Plugin] Failed to subscribe to log.request: %v", err)
+			logger.Error("SQL", "Failed to subscribe to log.request: %v", err)
 			return
 		}
-		log.Printf("[SQL Plugin] Subscribed to log.request")
+		logger.Debug("SQL", "Subscribed to log.request")
 
 		if err := p.eventBus.Subscribe("log.batch", p.handleBatchLogRequest); err != nil {
-			log.Printf("[SQL Plugin] Failed to subscribe to log.batch: %v", err)
+			logger.Error("SQL", "Failed to subscribe to log.batch: %v", err)
 			return
 		}
-		log.Printf("[SQL Plugin] Subscribed to log.batch")
+		logger.Debug("SQL", "Subscribed to log.batch")
 
 		if err := p.eventBus.Subscribe("log.configure", p.handleConfigureLogging); err != nil {
-			log.Printf("[SQL Plugin] Failed to subscribe to log.configure: %v", err)
+			logger.Error("SQL", "Failed to subscribe to log.configure: %v", err)
 			return
 		}
-		log.Printf("[SQL Plugin] Subscribed to log.configure")
+		logger.Debug("SQL", "Subscribed to log.configure")
 
 		// Subscribe to plugin.request for ALL synchronous requests
 		// This is the standard pattern for handling eventBus.Request() calls
 		if err := p.eventBus.Subscribe("plugin.request", p.handlePluginRequest); err != nil {
-			log.Printf("[SQL Plugin] Failed to subscribe to plugin.request: %v", err)
+			logger.Error("SQL", "Failed to subscribe to plugin.request: %v", err)
 			return
 		}
-		log.Printf("[SQL Plugin] Subscribed to plugin.request")
+		logger.Debug("SQL", "Subscribed to plugin.request")
 
 		// NOTE: All SQL synchronous requests (query, exec, batch) are handled through plugin.request
 		// The handlePluginRequest function inspects the EventData and routes to the appropriate handler:
@@ -188,10 +188,10 @@ func (p *Plugin) Start() error {
 		// Subscribe to logger rules after database is connected
 		for _, rule := range p.loggerRules {
 			if rule.Enabled && rule.regex != nil {
-				log.Printf("[SQL Plugin] Subscribing to pattern: %s", rule.EventPattern)
+				logger.Debug("SQL", "Subscribing to pattern: %s", rule.EventPattern)
 				for _, eventType := range p.findMatchingEventTypes(rule.EventPattern) {
 					if err := p.eventBus.Subscribe(eventType, p.createLoggerHandler(rule)); err != nil {
-						log.Printf("[SQL Plugin] Failed to subscribe to %s: %v", eventType, err)
+						logger.Error("SQL", "Failed to subscribe to %s: %v", eventType, err)
 					}
 				}
 			}
@@ -199,10 +199,10 @@ func (p *Plugin) Start() error {
 
 		// Signal that the plugin is ready after database is connected
 		close(p.readyChan)
-		log.Printf("[SQL Plugin] Started successfully and ready to accept requests after %v total startup time", time.Since(startTime))
+		logger.Info("SQL", "Started successfully and ready to accept requests after %v total startup time", time.Since(startTime))
 	}()
 
-	log.Printf("[SQL Plugin] Started (connecting to database in background)")
+	logger.Info("SQL", "Started (connecting to database in background)")
 	return nil
 }
 
@@ -214,11 +214,11 @@ func (p *Plugin) Stop() error {
 	}
 	if p.db != nil {
 		if err := p.db.Close(); err != nil {
-			log.Printf("[SQL Plugin] Failed to close database connection: %v", err)
+			logger.Error("SQL", "Failed to close database connection: %v", err)
 		}
 	}
 
-	log.Printf("[SQL Plugin] Stopped")
+	logger.Info("SQL", "Stopped")
 	return nil
 }
 
@@ -253,7 +253,7 @@ func (p *Plugin) emitFailureEvent(eventType, correlationID, source, operationTyp
 	// Emit the failure event asynchronously
 	go func() {
 		if err := p.eventBus.Broadcast(eventType, failureData); err != nil {
-			log.Printf("[SQL Plugin] Failed to emit failure event: %v", err)
+			logger.Error("SQL", "Failed to emit failure event: %v", err)
 		}
 	}()
 }
@@ -270,7 +270,7 @@ func (p *Plugin) connectDatabase() error {
 		p.config.Database.Database,
 	)
 
-	log.Printf("[SQL Plugin] Connecting to database at %s:%d/%s",
+	logger.Info("SQL", "Connecting to database at %s:%d/%s",
 		p.config.Database.Host, p.config.Database.Port, p.config.Database.Database)
 
 	poolConfig, err := pgxpool.ParseConfig(connStr)
@@ -314,25 +314,25 @@ func (p *Plugin) connectDatabase() error {
 	if err := db.PingContext(ctx); err != nil {
 		pool.Close()
 		if closeErr := db.Close(); closeErr != nil {
-			log.Printf("[SQL Plugin] Failed to close database after ping error: %v", closeErr)
+			logger.Error("SQL", "Failed to close database after ping error: %v", closeErr)
 		}
 		return fmt.Errorf("failed to ping stdlib database: %w", err)
 	}
 
 	p.db = db
 
-	log.Printf("[SQL Plugin] Initializing database schema...")
+	logger.Info("SQL", "Initializing database schema...")
 	schemaStart := time.Now()
 	if err := p.initializeSchema(ctx); err != nil {
 		pool.Close()
 		if closeErr := db.Close(); closeErr != nil {
-			log.Printf("[SQL Plugin] Failed to close database after schema init error: %v", closeErr)
+			logger.Error("SQL", "Failed to close database after schema init error: %v", closeErr)
 		}
 		return fmt.Errorf("failed to initialize schema: %w", err)
 	}
-	log.Printf("[SQL Plugin] Schema initialization completed in %v", time.Since(schemaStart))
+	logger.Info("SQL", "Schema initialization completed in %v", time.Since(schemaStart))
 
-	log.Printf("[SQL Plugin] Connected to database successfully")
+	logger.Info("SQL", "Connected to database successfully")
 	return nil
 }
 
@@ -425,7 +425,7 @@ func (p *Plugin) initializeSchema(ctx context.Context) error {
 		}
 	}
 
-	log.Printf("[SQL Plugin] Database schema initialized")
+	logger.Info("SQL", "Database schema initialized")
 	return nil
 }
 
@@ -595,7 +595,7 @@ func (p *Plugin) logEventData(rule LoggerRule, event *framework.DataEvent) error
 	_, err := p.pool.Exec(ctx, query, values...)
 	if err != nil {
 		metrics.DatabaseErrors.Inc()
-		log.Printf("[SQL Plugin] Failed to log event to %s: %v", rule.Table, err)
+		logger.Error("SQL", "Failed to log event to %s: %v", rule.Table, err)
 		return err
 	}
 

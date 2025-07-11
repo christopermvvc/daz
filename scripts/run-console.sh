@@ -39,8 +39,16 @@ echo "Logging output to: $LOG_FILE"
 echo "Press Ctrl+C to stop"
 echo "----------------------------------------"
 
+# Check for verbose flag
+VERBOSE_FLAG=""
+if [ "$1" = "-v" ] || [ "$1" = "--verbose" ] || [ "$1" = "-verbose" ]; then
+    VERBOSE_FLAG="-verbose"
+    echo "Running in verbose mode..."
+fi
+
 # Run Daz and tee output to both console and log file
-./bin/daz \
+# Set FORCE_COLOR to preserve colors when piping through tee
+FORCE_COLOR=1 ./bin/daz \
     -channel "$DAZ_CYTUBE_CHANNEL" \
     -username "$DAZ_CYTUBE_USERNAME" \
     -password "$DAZ_CYTUBE_PASSWORD" \
@@ -49,4 +57,5 @@ echo "----------------------------------------"
     -db-user "$DAZ_DB_USER" \
     -db-pass "$DAZ_DB_PASSWORD" \
     -db-name "${DAZ_DB_NAME:-daz}" \
+    $VERBOSE_FLAG \
     2>&1 | tee "$LOG_FILE"

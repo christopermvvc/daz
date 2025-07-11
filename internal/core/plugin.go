@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/hildolfr/daz/internal/logger"
 	"sync"
 	"time"
 
@@ -161,16 +161,16 @@ func (p *Plugin) Start() error {
 	// Start connection monitoring (but don't connect yet)
 	go p.roomManager.MonitorConnections(p.ctx)
 
-	log.Printf("[Core] Plugin started successfully with %d rooms configured", len(p.config.Rooms))
+	logger.Info("Core", "Plugin started successfully with %d rooms configured", len(p.config.Rooms))
 	return nil
 }
 
 // StartRoomConnections starts all room connections
 // This should be called after all plugins are ready
 func (p *Plugin) StartRoomConnections() {
-	log.Printf("[Core] Starting room connections...")
+	logger.Info("Core", "Starting room connections...")
 	p.roomManager.StartAll()
-	log.Printf("[Core] Room connections initiated")
+	logger.Info("Core", "Room connections initiated")
 }
 
 // Stop gracefully shuts down the plugin
@@ -189,7 +189,7 @@ func (p *Plugin) Stop() error {
 		p.roomManager.StopAll()
 	}
 
-	log.Printf("[Core] Plugin stopped")
+	logger.Info("Core", "Plugin stopped")
 	return nil
 }
 
@@ -207,23 +207,23 @@ func (p *Plugin) HandleEvent(event framework.Event) error {
 
 // handleCytubeSend handles requests to send messages to Cytube
 func (p *Plugin) handleCytubeSend(event framework.Event) error {
-	log.Printf("[Core] Received cytube.send event")
+	logger.Debug("Core", "Received cytube.send event")
 
 	// Check if this is a DataEvent which carries EventData
 	dataEvent, ok := event.(*framework.DataEvent)
 	if !ok {
-		log.Printf("[Core] Event is not DataEvent, got %T", event)
+		logger.Error("Core", "Event is not DataEvent, got %T", event)
 		return nil
 	}
 
 	if dataEvent.Data == nil || dataEvent.Data.RawMessage == nil {
-		log.Printf("[Core] No RawMessage in event data")
+		logger.Error("Core", "No RawMessage in event data")
 		return nil
 	}
 
 	// Send chat message to Cytube
 	msg := dataEvent.Data.RawMessage.Message
-	log.Printf("[Core] Sending message to Cytube: %d chars", len(msg))
+	logger.Debug("Core", "Sending message to Cytube: %d chars", len(msg))
 
 	// Determine which room to send to
 	roomID := ""
@@ -249,14 +249,14 @@ func (p *Plugin) handleCytubeSend(event framework.Event) error {
 	// Send message to the room
 	err := p.roomManager.SendToRoom(roomID, msg)
 	if err != nil {
-		log.Printf("[Core] Failed to send message to room '%s': %v", roomID, err)
+		logger.Error("Core", "Failed to send message to room '%s': %v", roomID, err)
 		return err
 	}
 
 	// Track message sent
 	metrics.CytubeMessagesSent.Inc()
 
-	log.Printf("[Core] Message sent successfully to room '%s'", roomID)
+	logger.Debug("Core", "Message sent successfully to room '%s'", roomID)
 	return nil
 }
 
@@ -270,7 +270,7 @@ func (p *Plugin) handleCytubeSendPM(event framework.Event) error {
 
 	// Check for PM data
 	if dataEvent.Data == nil || dataEvent.Data.PrivateMessage == nil {
-		log.Printf("[Core] No PrivateMessage in event data")
+		logger.Error("Core", "No PrivateMessage in event data")
 		return nil
 	}
 
@@ -280,7 +280,7 @@ func (p *Plugin) handleCytubeSendPM(event framework.Event) error {
 	msg := pm.Message
 	channel := pm.Channel
 
-	log.Printf("[Core] Sending PM to user '%s': %d chars", toUser, len(msg))
+	logger.Debug("Core", "Sending PM to user '%s': %d chars", toUser, len(msg))
 
 	// Determine which room to send to
 	roomID := ""
@@ -307,7 +307,7 @@ func (p *Plugin) handleCytubeSendPM(event framework.Event) error {
 	// Send PM to the room
 	err := p.roomManager.SendPMToRoom(roomID, toUser, msg)
 	if err != nil {
-		log.Printf("[Core] Failed to send PM to room '%s': %v", roomID, err)
+		logger.Error("Core", "Failed to send PM to room '%s': %v", roomID, err)
 		return err
 	}
 
@@ -320,7 +320,7 @@ func (p *Plugin) handleCytubeSendPM(event framework.Event) error {
 		}
 	}
 
-	log.Printf("[Core] PM sent successfully to user '%s' in channel '%s'", toUser, channelName)
+	logger.Debug("Core", "PM sent successfully to user '%s' in channel '%s'", toUser, channelName)
 
 	// Log the outgoing PM to SQL
 	logEvent := framework.NewDataEvent("cytube.event.pm.sent", &framework.EventData{
@@ -333,7 +333,7 @@ func (p *Plugin) handleCytubeSendPM(event framework.Event) error {
 		},
 	})
 	if err := p.eventBus.Broadcast("cytube.event.pm.sent", logEvent.Data); err != nil {
-		log.Printf("[Core] Failed to log outgoing PM: %v", err)
+		logger.Error("Core", "Failed to log outgoing PM: %v", err)
 	}
 
 	return nil
@@ -341,7 +341,7 @@ func (p *Plugin) handleCytubeSendPM(event framework.Event) error {
 
 // handlePlaylistRequest handles requests to fetch the playlist
 func (p *Plugin) handlePlaylistRequest(event framework.Event) error {
-	log.Printf("[Core] Received playlist request command")
+	logger.Debug("Core", "Received playlist request command")
 
 	// For now, request playlist from all connected rooms
 	// In the future, we might want to specify which room
@@ -356,9 +356,9 @@ func (p *Plugin) handlePlaylistRequest(event framework.Event) error {
 
 		if connected && client != nil {
 			if err := client.RequestPlaylist(); err != nil {
-				log.Printf("[Core] Failed to request playlist for room '%s': %v", roomID, err)
+				logger.Error("Core", "Failed to request playlist for room '%s': %v", roomID, err)
 			} else {
-				log.Printf("[Core] Playlist request sent for room '%s'", roomID)
+				logger.Debug("Core", "Playlist request sent for room '%s'", roomID)
 				successCount++
 			}
 		}
@@ -368,7 +368,7 @@ func (p *Plugin) handlePlaylistRequest(event framework.Event) error {
 		return fmt.Errorf("no rooms available for playlist request")
 	}
 
-	log.Printf("[Core] Playlist request sent to %d room(s)", successCount)
+	logger.Info("Core", "Playlist request sent to %d room(s)", successCount)
 	return nil
 }
 

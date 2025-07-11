@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/hildolfr/daz/internal/logger"
 	"sync"
 	"time"
 
@@ -140,7 +140,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
-	log.Printf("[UserTracker] Initialized with inactivity timeout: %v", p.config.InactivityTimeout)
+	logger.Info("UserTracker", "Initialized with inactivity timeout: %v", p.config.InactivityTimeout)
 	return nil
 }
 
@@ -159,11 +159,23 @@ func (p *Plugin) Start() error {
 		return fmt.Errorf("usertracker plugin already running")
 	}
 
-	// Create database tables now that database is connected
-	if err := p.createTables(); err != nil {
-		p.status.LastError = err
-		return fmt.Errorf("failed to create tables: %w", err)
-	}
+	// Create database tables in background to avoid blocking startup
+	go func() {
+		// Wait a moment to allow SQL plugin to fully initialize
+		timer := time.NewTimer(4 * time.Second)
+		defer timer.Stop()
+
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-timer.C:
+			if err := p.createTables(); err != nil {
+				logger.Error("UserTracker", "Failed to create tables: %v", err)
+				p.status.LastError = err
+				// Don't fail plugin startup, it can retry later
+			}
+		}
+	}()
 
 	// Subscribe to user events
 	if err := p.eventBus.Subscribe(eventbus.EventCytubeUserJoin, p.handleUserJoin); err != nil {
@@ -199,7 +211,7 @@ func (p *Plugin) Start() error {
 	// Signal that the plugin is ready
 	close(p.readyChan)
 
-	log.Println("[UserTracker] Started user tracking")
+	logger.Info("UserTracker", "Started user tracking")
 	return nil
 }
 
@@ -220,7 +232,7 @@ func (p *Plugin) Stop() error {
 
 	p.running = false
 	p.status.State = "stopped"
-	log.Println("[UserTracker] Stopped user tracking")
+	logger.Info("UserTracker", "Stopped user tracking")
 	return nil
 }
 
@@ -306,7 +318,7 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	// Get channel from event (must be present)
 	channel := userJoin.Channel
 	if channel == "" {
-		log.Printf("[UserTracker] Skipping user join event without channel information")
+		logger.Warn("UserTracker", "Skipping user join event without channel information")
 		return nil
 	}
 	now := time.Now()
@@ -335,7 +347,7 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 		now,
 		now)
 	if err != nil {
-		log.Printf("[UserTracker] Error recording user join: %v", err)
+		logger.Error("UserTracker", "Error recording user join: %v", err)
 	}
 
 	// Record in history
@@ -351,10 +363,10 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 		now,
 		metadata)
 	if err != nil {
-		log.Printf("[UserTracker] Error recording join history: %v", err)
+		logger.Error("UserTracker", "Error recording join history: %v", err)
 	}
 
-	log.Printf("[UserTracker] User joined: %s (rank %d)", userJoin.Username, userJoin.UserRank)
+	logger.Info("UserTracker", "User joined: %s (rank %d)", userJoin.Username, userJoin.UserRank)
 	p.status.EventsHandled++
 	return nil
 }
@@ -370,7 +382,7 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 	// Get channel from event (must be present)
 	channel := userLeave.Channel
 	if channel == "" {
-		log.Printf("[UserTracker] Skipping user leave event without channel information")
+		logger.Warn("UserTracker", "Skipping user leave event without channel information")
 		return nil
 	}
 	now := time.Now()
@@ -394,7 +406,7 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 		channel,
 		userLeave.Username)
 	if err != nil {
-		log.Printf("[UserTracker] Error recording user leave: %v", err)
+		logger.Error("UserTracker", "Error recording user leave: %v", err)
 	}
 
 	// Record in history
@@ -408,10 +420,10 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 		userLeave.Username,
 		now)
 	if err != nil {
-		log.Printf("[UserTracker] Error recording leave history: %v", err)
+		logger.Error("UserTracker", "Error recording leave history: %v", err)
 	}
 
-	log.Printf("[UserTracker] User left: %s", userLeave.Username)
+	logger.Info("UserTracker", "User left: %s", userLeave.Username)
 	p.status.EventsHandled++
 	return nil
 }
@@ -444,7 +456,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		chat.Channel,
 		chat.Username)
 	if err != nil {
-		log.Printf("[UserTracker] Error updating activity: %v", err)
+		logger.Error("UserTracker", "Error updating activity: %v", err)
 	}
 
 	p.status.EventsHandled++
@@ -465,7 +477,7 @@ func (p *Plugin) handleSeenRequest(event framework.Event) error {
 		channel = dataEvent.Data.ChatMessage.Channel
 	}
 	if channel == "" {
-		log.Printf("[UserTracker] Skipping seen request without channel context")
+		logger.Warn("UserTracker", "Skipping seen request without channel context")
 		return nil
 	}
 
@@ -496,7 +508,7 @@ func (p *Plugin) handleSeenRequest(event framework.Event) error {
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			log.Printf("Failed to close rows: %v", err)
+			logger.Error("UserTracker", "Failed to close rows: %v", err)
 		}
 	}()
 
@@ -564,7 +576,7 @@ func (p *Plugin) doCleanup() {
 	err := p.sqlClient.Exec(updateSQL,
 		cutoffTime)
 	if err != nil {
-		log.Printf("[UserTracker] Error cleaning up inactive sessions: %v", err)
+		logger.Error("UserTracker", "Error cleaning up inactive sessions: %v", err)
 	}
 
 	// Clean up in-memory state

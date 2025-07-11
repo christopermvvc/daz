@@ -3,7 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
-	"log"
+	"github.com/hildolfr/daz/internal/logger"
 	"math/rand"
 	"sync"
 	"time"
@@ -56,11 +56,11 @@ func (rm *RoomManager) AddRoom(room RoomConfig) error {
 			return fmt.Errorf("room channel cannot be empty")
 		}
 		room.ID = room.Channel
-		log.Printf("[RoomManager] Auto-generated room ID '%s' from channel name", room.ID)
+		logger.Info("RoomManager", "Auto-generated room ID '%s' from channel name", room.ID)
 	}
 
 	if !room.Enabled {
-		log.Printf("[RoomManager] Room '%s' is disabled, skipping", room.ID)
+		logger.Info("RoomManager", "Room '%s' is disabled, skipping", room.ID)
 		return nil
 	}
 
@@ -88,7 +88,7 @@ func (rm *RoomManager) AddRoom(room RoomConfig) error {
 	}
 
 	rm.connections[room.ID] = conn
-	log.Printf("[RoomManager] Added room '%s' (channel: %s)", room.ID, room.Channel)
+	logger.Info("RoomManager", "Added room '%s' (channel: %s)", room.ID, room.Channel)
 
 	return nil
 }
@@ -108,9 +108,9 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 
 	// Ensure we're disconnected before attempting to connect
 	if conn.Client.IsConnected() {
-		log.Printf("[RoomManager] Room '%s': Client still connected, disconnecting first", roomID)
+		logger.Info("RoomManager", "Room '%s': Client still connected, disconnecting first", roomID)
 		if err := conn.Client.Disconnect(); err != nil {
-			log.Printf("[RoomManager] Room '%s': Error during disconnect: %v", roomID, err)
+			logger.Error("RoomManager", "Room '%s': Error during disconnect: %v", roomID, err)
 		}
 		// Wait for disconnect to complete
 		disconnectDone := make(chan struct{})
@@ -126,7 +126,7 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 
 	// Create a new client for reconnection to ensure fresh context
 	if conn.ReconnectAttempt > 0 {
-		log.Printf("[RoomManager] Room '%s': Creating new client for reconnection", roomID)
+		logger.Info("RoomManager", "Room '%s': Creating new client for reconnection", roomID)
 		newClient, err := cytube.NewWebSocketClient(conn.Room.Channel, conn.Room.ID, conn.EventChan)
 		if err != nil {
 			return fmt.Errorf("failed to create new client for reconnection: %w", err)
@@ -151,7 +151,7 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 			jitter := time.Duration(rand.Float64() * 0.5 * float64(waitTime))
 			waitTime = waitTime + jitter - (jitter / 2)
 
-			log.Printf("[RoomManager] Room '%s': Waiting %v before retry %d/%d (exponential backoff with jitter)",
+			logger.Info("RoomManager", "Room '%s': Waiting %v before retry %d/%d (exponential backoff with jitter)",
 				roomID, waitTime, attempt+1, conn.Room.ReconnectAttempts)
 			retryTimer := time.NewTimer(waitTime)
 			select {
@@ -162,18 +162,18 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 			}
 		}
 
-		log.Printf("[RoomManager] Room '%s': Connecting to %s (attempt %d/%d)",
+		logger.Info("RoomManager", "Room '%s': Connecting to %s (attempt %d/%d)",
 			roomID, conn.Room.Channel, attempt+1, conn.Room.ReconnectAttempts)
 
 		if err := conn.Client.Connect(); err != nil {
-			log.Printf("[RoomManager] Room '%s': Connection failed: %v", roomID, err)
+			logger.Error("RoomManager", "Room '%s': Connection failed: %v", roomID, err)
 			continue
 		}
 
 		conn.Connected = true
 		conn.ReconnectAttempt = 0
 		conn.LastMediaUpdate = time.Now() // Reset timestamp on successful connection
-		log.Printf("[RoomManager] Room '%s': Connected successfully", roomID)
+		logger.Info("RoomManager", "Room '%s': Connected successfully", roomID)
 
 		// Start event processing for this room
 		go rm.processRoomEvents(roomID)
@@ -189,29 +189,29 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 
 		// Login if credentials provided
 		if conn.Room.Username != "" && conn.Room.Password != "" {
-			log.Printf("[RoomManager] Room '%s': Logging in as %s", roomID, conn.Room.Username)
+			logger.Info("RoomManager", "Room '%s': Logging in as %s", roomID, conn.Room.Username)
 			if err := conn.Client.Login(conn.Room.Username, conn.Room.Password); err != nil {
-				log.Printf("[RoomManager] Room '%s': Login failed: %v", roomID, err)
+				logger.Error("RoomManager", "Room '%s': Login failed: %v", roomID, err)
 			} else {
-				log.Printf("[RoomManager] Room '%s': Login successful", roomID)
+				logger.Info("RoomManager", "Room '%s': Login successful", roomID)
 
 				// Now join the channel after successful login
-				log.Printf("[RoomManager] Room '%s': Joining channel as authenticated user", roomID)
+				logger.Info("RoomManager", "Room '%s': Joining channel as authenticated user", roomID)
 				if err := conn.Client.JoinChannel(); err != nil {
-					log.Printf("[RoomManager] Room '%s': Failed to join channel: %v", roomID, err)
+					logger.Error("RoomManager", "Room '%s': Failed to join channel: %v", roomID, err)
 					return fmt.Errorf("failed to join channel: %w", err)
 				}
 
 				// Request playlist after joining
 				if err := conn.Client.RequestPlaylist(); err != nil {
-					log.Printf("[RoomManager] Room '%s': Failed to request playlist: %v", roomID, err)
+					logger.Error("RoomManager", "Room '%s': Failed to request playlist: %v", roomID, err)
 				}
 			}
 		} else {
 			// Join channel as anonymous if no credentials
-			log.Printf("[RoomManager] Room '%s': Joining channel as anonymous user", roomID)
+			logger.Info("RoomManager", "Room '%s': Joining channel as anonymous user", roomID)
 			if err := conn.Client.JoinChannel(); err != nil {
-				log.Printf("[RoomManager] Room '%s': Failed to join channel: %v", roomID, err)
+				logger.Error("RoomManager", "Room '%s': Failed to join channel: %v", roomID, err)
 				return fmt.Errorf("failed to join channel: %w", err)
 			}
 		}
@@ -251,7 +251,7 @@ func (rm *RoomManager) processRoomEvents(roomID string) {
 
 			// Handle disconnect events immediately
 			if event.Type() == "disconnect" {
-				log.Printf("[RoomManager] Room '%s': Received disconnect event, marking as disconnected", roomID)
+				logger.Info("RoomManager", "Room '%s': Received disconnect event, marking as disconnected", roomID)
 				conn.mu.Lock()
 				conn.Connected = false
 				conn.mu.Unlock()
@@ -259,7 +259,7 @@ func (rm *RoomManager) processRoomEvents(roomID string) {
 				// Check if this was an unexpected disconnect
 				if cytubeEvent, ok := event.(*framework.CytubeEvent); ok {
 					if reason, exists := cytubeEvent.Metadata["reason"]; exists && reason == "connection_lost" {
-						log.Printf("[RoomManager] Room '%s': Connection lost unexpectedly, triggering immediate reconnection", roomID)
+						logger.Warn("RoomManager", "Room '%s': Connection lost unexpectedly, triggering immediate reconnection", roomID)
 						// Trigger immediate reconnection in a goroutine
 						go func() {
 							// Small delay to avoid immediate reconnection storms
@@ -317,7 +317,7 @@ func (rm *RoomManager) processRoomEvents(roomID string) {
 
 			// Broadcast with metadata
 			if err := rm.eventBus.BroadcastWithMetadata(eventType, eventData, metadata); err != nil {
-				log.Printf("[RoomManager] Room '%s': Failed to broadcast event: %v", roomID, err)
+				logger.Error("RoomManager", "Room '%s': Failed to broadcast event: %v", roomID, err)
 			}
 		}
 	}
@@ -338,7 +338,7 @@ func (rm *RoomManager) StopRoom(roomID string) error {
 
 	if conn.Connected {
 		if err := conn.Client.Disconnect(); err != nil {
-			log.Printf("[RoomManager] Room '%s': Error disconnecting: %v", roomID, err)
+			logger.Error("RoomManager", "Room '%s': Error disconnecting: %v", roomID, err)
 		}
 		conn.Connected = false
 	}
@@ -363,7 +363,7 @@ func (rm *RoomManager) StartAll() {
 		go func(id string) {
 			defer wg.Done()
 			if err := rm.StartRoom(id); err != nil {
-				log.Printf("[RoomManager] Failed to start room '%s': %v", id, err)
+				logger.Error("RoomManager", "Failed to start room '%s': %v", id, err)
 			}
 		}(roomID)
 	}
@@ -385,7 +385,7 @@ func (rm *RoomManager) StopAll() {
 
 	for _, roomID := range roomIDs {
 		if err := rm.StopRoom(roomID); err != nil {
-			log.Printf("[RoomManager] Failed to stop room '%s': %v", roomID, err)
+			logger.Error("RoomManager", "Failed to stop room '%s': %v", roomID, err)
 		}
 	}
 }
@@ -460,7 +460,7 @@ func (rm *RoomManager) SendPMToRoom(roomID string, toUser string, message string
 	}
 
 	// Debug log with actual channel name
-	log.Printf("[RoomManager] Sending PM via websocket - Channel: '%s', To: '%s', Message length: %d",
+	logger.Debug("RoomManager", "Sending PM via websocket - Channel: '%s', To: '%s', Message length: %d",
 		conn.Room.Channel, toUser, len(message))
 
 	return conn.Client.Send("pm", pmData)
@@ -488,7 +488,7 @@ func (rm *RoomManager) handleReconnection(roomID string) {
 	rm.mu.RUnlock()
 
 	if !exists {
-		log.Printf("[RoomManager] Room '%s': Cannot reconnect - room not found", roomID)
+		logger.Error("RoomManager", "Room '%s': Cannot reconnect - room not found", roomID)
 		return
 	}
 
@@ -496,7 +496,7 @@ func (rm *RoomManager) handleReconnection(roomID string) {
 	conn.mu.Lock()
 	if conn.reconnectInProgress {
 		conn.mu.Unlock()
-		log.Printf("[RoomManager] Room '%s': Reconnection already in progress, skipping", roomID)
+		logger.Info("RoomManager", "Room '%s': Reconnection already in progress, skipping", roomID)
 		return
 	}
 	conn.reconnectInProgress = true
@@ -516,7 +516,7 @@ func (rm *RoomManager) handleReconnection(roomID string) {
 	conn.mu.RUnlock()
 
 	if timeSinceLastReconnect < cooldownMinutes {
-		log.Printf("[RoomManager] Room '%s': Still in cooldown period (%v remaining)",
+		logger.Info("RoomManager", "Room '%s': Still in cooldown period (%v remaining)",
 			roomID, cooldownMinutes-timeSinceLastReconnect)
 		return
 	}
@@ -528,9 +528,9 @@ func (rm *RoomManager) handleReconnection(roomID string) {
 	conn.ReconnectAttempt++
 	conn.mu.Unlock()
 
-	log.Printf("[RoomManager] Room '%s': Attempting reconnection (attempt %d)", roomID, conn.ReconnectAttempt)
+	logger.Info("RoomManager", "Room '%s': Attempting reconnection (attempt %d)", roomID, conn.ReconnectAttempt)
 	if err := rm.StartRoom(roomID); err != nil {
-		log.Printf("[RoomManager] Room '%s': Reconnection failed: %v", roomID, err)
+		logger.Error("RoomManager", "Room '%s': Reconnection failed: %v", roomID, err)
 	}
 }
 
@@ -663,16 +663,16 @@ func (rm *RoomManager) checkConnections() {
 
 		if !connected || !clientConnected {
 			needsReconnect = true
-			log.Printf("[RoomManager] Room '%s': Not connected (manager: %v, client: %v), will attempt reconnection",
+			logger.Warn("RoomManager", "Room '%s': Not connected (manager: %v, client: %v), will attempt reconnection",
 				roomID, connected, clientConnected)
 		} else if time.Since(lastMediaUpdate) > 5*time.Minute {
 			needsReconnect = true
-			log.Printf("[RoomManager] Room '%s': No MediaUpdate for %v, assuming disconnected",
+			logger.Warn("RoomManager", "Room '%s': No MediaUpdate for %v, assuming disconnected",
 				roomID, time.Since(lastMediaUpdate))
 		}
 
 		if needsReconnect {
-			log.Printf("[RoomManager] Room '%s': Triggering reconnection via handleReconnection", roomID)
+			logger.Info("RoomManager", "Room '%s': Triggering reconnection via handleReconnection", roomID)
 			go rm.handleReconnection(roomID)
 		}
 	}

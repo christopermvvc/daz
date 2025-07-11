@@ -3,7 +3,7 @@ package framework
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/hildolfr/daz/internal/logger"
 	"time"
 )
 
@@ -63,7 +63,7 @@ func (pm *PluginManager) InitializeAll(configs map[string]json.RawMessage, event
 		plugin := pm.plugins[name]
 		config := configs[name]
 
-		log.Printf("Initializing %s plugin...", name)
+		logger.Info("PluginManager", "Initializing %s plugin...", name)
 
 		// Prepare config JSON
 		configJSON := prepareConfigJSON(config)
@@ -86,18 +86,18 @@ func (pm *PluginManager) StartAll() error {
 			return fmt.Errorf("dependencies not ready for %s: %w", name, err)
 		}
 
-		log.Printf("Starting %s plugin...", name)
+		logger.Info("PluginManager", "Starting %s plugin...", name)
 		if err := plugin.Start(); err != nil {
 			return fmt.Errorf("failed to start %s plugin: %w", name, err)
 		}
 
 		// Wait for plugin to be ready
-		if err := pm.waitForReady(name, 10*time.Second); err != nil {
+		if err := pm.waitForReady(name, 30*time.Second); err != nil {
 			return fmt.Errorf("%s plugin failed to become ready: %w", name, err)
 		}
 
 		pm.ready[name] = true
-		log.Printf("%s plugin is ready", name)
+		logger.Info("PluginManager", "%s plugin is ready", name)
 	}
 
 	return nil
@@ -110,9 +110,9 @@ func (pm *PluginManager) StopAll() {
 		name := pm.startOrder[i]
 		plugin := pm.plugins[name]
 
-		log.Printf("Stopping %s plugin...", name)
+		logger.Info("PluginManager", "Stopping %s plugin...", name)
 		if err := plugin.Stop(); err != nil {
-			log.Printf("Error stopping %s plugin: %v", name, err)
+			logger.Error("PluginManager", "Error stopping %s plugin: %v", name, err)
 		}
 		pm.ready[name] = false
 	}

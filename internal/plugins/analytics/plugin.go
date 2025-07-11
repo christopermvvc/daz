@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/hildolfr/daz/internal/logger"
 	"sync"
 	"time"
 
@@ -165,7 +165,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
-	log.Printf("[Analytics] Initialized with hourly interval: %v, daily interval: %v",
+	logger.Info("Analytics", "Initialized with hourly interval: %v, daily interval: %v",
 		p.config.HourlyInterval, p.config.DailyInterval)
 	return nil
 }
@@ -196,7 +196,7 @@ func (p *Plugin) Start() error {
 		select {
 		case <-timer.C:
 			if err := p.createTables(); err != nil {
-				log.Printf("[Analytics] Failed to create tables: %v (will retry on first use)", err)
+				logger.Error("Analytics", "Failed to create tables: %v (will retry on first use)", err)
 				p.status.LastError = err
 			}
 		case <-p.ctx.Done():
@@ -228,7 +228,7 @@ func (p *Plugin) Start() error {
 	// Signal that the plugin is ready
 	close(p.readyChan)
 
-	log.Println("[Analytics] Started analytics tracking")
+	logger.Info("Analytics", "Started analytics tracking")
 	return nil
 }
 
@@ -249,7 +249,7 @@ func (p *Plugin) Stop() error {
 
 	p.running = false
 	p.status.State = "stopped"
-	log.Println("[Analytics] Stopped analytics tracking")
+	logger.Info("Analytics", "Stopped analytics tracking")
 	return nil
 }
 
@@ -352,7 +352,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	// Get channel from event (must be present)
 	channel := chat.Channel
 	if channel == "" {
-		log.Printf("[Analytics] Skipping chat message without channel information")
+		logger.Warn("Analytics", "Skipping chat message without channel information")
 		return nil
 	}
 
@@ -376,7 +376,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	ctx := context.Background()
 	_, err := p.sqlClient.ExecSync(ctx, userStatsSQL, channel, chat.Username)
 	if err != nil {
-		log.Printf("[Analytics] Error updating user stats: %v", err)
+		logger.Error("Analytics", "Error updating user stats: %v", err)
 	}
 
 	return nil
@@ -395,7 +395,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 		channel = dataEvent.Data.ChatMessage.Channel
 	}
 	if channel == "" {
-		log.Printf("[Analytics] Skipping stats request without channel context")
+		logger.Warn("Analytics", "Skipping stats request without channel context")
 		return nil
 	}
 
@@ -418,7 +418,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 	if rows != nil {
 		defer func() {
 			if err := rows.Close(); err != nil {
-				log.Printf("Failed to close rows: %v", err)
+				logger.Error("Analytics", "Failed to close rows: %v", err)
 			}
 		}()
 	}
@@ -427,7 +427,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 	if rows != nil && rows.Next() {
 		err = rows.Scan(&hourMessages, &hourUsers, &hourPlays)
 		if err != nil {
-			log.Printf("[Analytics] Error scanning hour stats: %v", err)
+			logger.Error("Analytics", "Error scanning hour stats: %v", err)
 		}
 	}
 
@@ -445,7 +445,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 	if rows2 != nil {
 		defer func() {
 			if err := rows2.Close(); err != nil {
-				log.Printf("Failed to close rows2: %v", err)
+				logger.Error("Analytics", "Failed to close rows2: %v", err)
 			}
 		}()
 	}
@@ -454,7 +454,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 	if rows2 != nil && rows2.Next() {
 		err = rows2.Scan(&todayMessages, &todayUsers, &todayPlays)
 		if err != nil {
-			log.Printf("[Analytics] Error scanning today stats: %v", err)
+			logger.Error("Analytics", "Error scanning today stats: %v", err)
 		}
 	}
 
@@ -474,7 +474,7 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 	if rows3 != nil {
 		defer func() {
 			if err := rows3.Close(); err != nil {
-				log.Printf("Failed to close rows3: %v", err)
+				logger.Error("Analytics", "Failed to close rows3: %v", err)
 			}
 		}()
 	}
@@ -545,7 +545,7 @@ func (p *Plugin) runHourlyAggregation() {
 // doHourlyAggregation performs the actual hourly aggregation
 func (p *Plugin) doHourlyAggregation() {
 	// Skip aggregation in multi-room mode for now
-	log.Printf("[Analytics] Skipping hourly aggregation in multi-room mode")
+	logger.Info("Analytics", "Skipping hourly aggregation in multi-room mode")
 	p.lastHourlyRun = time.Now()
 }
 
@@ -579,6 +579,6 @@ func (p *Plugin) runDailyAggregation() {
 // doDailyAggregation performs the actual daily aggregation
 func (p *Plugin) doDailyAggregation() {
 	// Skip aggregation in multi-room mode for now
-	log.Printf("[Analytics] Skipping daily aggregation in multi-room mode")
+	logger.Info("Analytics", "Skipping daily aggregation in multi-room mode")
 	p.lastDailyRun = time.Now()
 }
