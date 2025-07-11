@@ -396,6 +396,22 @@ func (p *Plugin) initializeSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_plugin_logs_event ON daz_plugin_logs (event_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_plugin_logs_timestamp ON daz_plugin_logs (timestamp)`,
 
+		`CREATE TABLE IF NOT EXISTS daz_private_messages (
+			id BIGSERIAL PRIMARY KEY,
+			event_type VARCHAR(50) NOT NULL,
+			from_user VARCHAR(100) NOT NULL,
+			to_user VARCHAR(100) NOT NULL,
+			message TEXT NOT NULL,
+			channel VARCHAR(100) NOT NULL,
+			message_time BIGINT NOT NULL,
+			timestamp TIMESTAMP NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_pm_users ON daz_private_messages (from_user, to_user)`,
+		`CREATE INDEX IF NOT EXISTS idx_pm_channel ON daz_private_messages (channel)`,
+		`CREATE INDEX IF NOT EXISTS idx_pm_time ON daz_private_messages (message_time)`,
+		`CREATE INDEX IF NOT EXISTS idx_pm_timestamp ON daz_private_messages (timestamp)`,
+
 		// Migrations to add missing columns
 		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS video_id VARCHAR(255)`,
 		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS video_type VARCHAR(50)`,
@@ -483,7 +499,12 @@ func (p *Plugin) logEventData(rule LoggerRule, event *framework.DataEvent) error
 
 	// Add non-empty fields
 	if fields.Username != "" {
-		columns = append(columns, "username")
+		// Use "from_user" for PM table, "username" for others
+		columnName := "username"
+		if rule.Table == "daz_private_messages" {
+			columnName = "from_user"
+		}
+		columns = append(columns, columnName)
 		values = append(values, fields.Username)
 		placeholders = append(placeholders, fmt.Sprintf("$%d", i))
 		i++
@@ -507,9 +528,9 @@ func (p *Plugin) logEventData(rule LoggerRule, event *framework.DataEvent) error
 		i++
 	}
 	if fields.Channel != "" {
-		// Use "channel" for daz_chat_log table, "channel_name" for others
+		// Use "channel" for daz_chat_log and daz_private_messages tables, "channel_name" for others
 		columnName := "channel_name"
-		if rule.Table == "daz_chat_log" {
+		if rule.Table == "daz_chat_log" || rule.Table == "daz_private_messages" {
 			columnName = "channel"
 		}
 		columns = append(columns, columnName)
