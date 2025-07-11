@@ -17,19 +17,36 @@ import (
 func (p *Plugin) handlePluginRequest(event framework.Event) error {
 	// This handler receives all "plugin.request" events and routes them based on metadata
 	// For now, we'll just pass through to the appropriate handler based on the event data
+	log.Printf("[SQL Plugin] Received plugin.request event")
+
 	dataEvent, ok := event.(*framework.DataEvent)
 	if !ok || dataEvent.Data == nil {
+		log.Printf("[SQL Plugin] plugin.request event has no data")
 		return nil
 	}
 
 	// Check what type of request this is and route accordingly
 	if dataEvent.Data.SQLExecRequest != nil {
+		log.Printf("[SQL Plugin] Routing to SQL exec handler")
 		return p.handleSQLExec(event)
 	}
 	if dataEvent.Data.SQLQueryRequest != nil {
+		log.Printf("[SQL Plugin] Routing to SQL query handler")
 		return p.handleSQLQuery(event)
 	}
+	if dataEvent.Data.SQLBatchRequest != nil {
+		log.Printf("[SQL Plugin] Routing to SQL batch handler")
+		// Determine if it's a query or exec batch
+		if len(dataEvent.Data.SQLBatchRequest.Operations) > 0 {
+			firstOp := dataEvent.Data.SQLBatchRequest.Operations[0]
+			if firstOp.OperationType == "query" {
+				return p.handleBatchQueryRequest(event)
+			}
+			return p.handleBatchExecRequest(event)
+		}
+	}
 
+	log.Printf("[SQL Plugin] plugin.request event has no SQL request data")
 	return nil
 }
 
@@ -224,13 +241,19 @@ func (p *Plugin) handleConfigureLogging(event framework.Event) error {
 
 // handleSQLQuery handles SQL query requests
 func (p *Plugin) handleSQLQuery(event framework.Event) error {
+	// startTime := time.Now()
+	// log.Printf("[SQL Plugin] handleSQLQuery called at %v", startTime)
+
 	dataEvent, ok := event.(*framework.DataEvent)
 	if !ok || dataEvent.Data == nil || dataEvent.Data.SQLQueryRequest == nil {
+		log.Printf("[SQL Plugin] Invalid SQL query event data")
 		return nil
 	}
 
 	req := dataEvent.Data.SQLQueryRequest
 	p.eventsHandled++
+
+	// log.Printf("[SQL Plugin] Processing SQL query request: ID=%s, CorrelationID=%s, Query=%s at %v", req.ID, req.CorrelationID, req.Query, time.Now())
 
 	// Track metrics
 	timer := prometheus.NewTimer(metrics.DatabaseQueryDuration)
@@ -255,6 +278,7 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 					Error:         err.Error(),
 				},
 			}
+			log.Printf("[SQL Plugin] Delivering error response for query CorrelationID: %s, error: %v", req.CorrelationID, err)
 			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
 			return nil
 		}
@@ -278,6 +302,7 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 					Error:         err.Error(),
 				},
 			}
+			log.Printf("[SQL Plugin] Delivering error response for query CorrelationID: %s, error: %v", req.CorrelationID, err)
 			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
 			return nil
 		}
@@ -298,9 +323,16 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 	}
 
 	// Execute query
+	// queryStartTime := time.Now()
+	// log.Printf("[SQL Plugin] Starting database query at %v", queryStartTime)
 	rows, err := p.db.QueryContext(ctx, req.Query, params...)
+	// queryEndTime := time.Now()
+	// queryDuration := queryEndTime.Sub(queryStartTime)
+	// log.Printf("[SQL Plugin] Database query completed at %v (took %v)", queryEndTime, queryDuration)
+
 	if err != nil {
 		metrics.DatabaseErrors.Inc()
+		log.Printf("[SQL Plugin] Query failed: %v", err)
 
 		// Emit failure event for retry mechanism
 		p.emitFailureEvent("sql.query.failed", req.CorrelationID, req.RequestBy, "sql.query", err)
@@ -315,7 +347,10 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 					Error:         err.Error(),
 				},
 			}
+			// deliverStartTime := time.Now()
+			// log.Printf("[SQL Plugin] Delivering error response for query CorrelationID: %s at %v, error: %v", req.CorrelationID, deliverStartTime, err)
 			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
+			// log.Printf("[SQL Plugin] Error response delivered at %v (took %v)", time.Now(), time.Since(deliverStartTime))
 			return nil
 		}
 		return fmt.Errorf("query failed: %w", err)
@@ -323,13 +358,18 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 	defer rows.Close()
 
 	// Convert rows to response format
+	// rowProcessingStartTime := time.Now()
+	// log.Printf("[SQL Plugin] Starting row processing at %v", rowProcessingStartTime)
+
 	columns, err := rows.Columns()
 	if err != nil {
 		return fmt.Errorf("failed to get columns: %w", err)
 	}
 
 	var resultRows [][]json.RawMessage
+	rowCount := 0
 	for rows.Next() {
+		rowCount++
 		// Create slice of interface{} to hold column values
 		values := make([]interface{}, len(columns))
 		scanArgs := make([]interface{}, len(columns))
@@ -361,6 +401,10 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 		return fmt.Errorf("rows iteration error: %w", err)
 	}
 
+	// rowProcessingEndTime := time.Now()
+	// rowProcessingDuration := rowProcessingEndTime.Sub(rowProcessingStartTime)
+	// log.Printf("[SQL Plugin] Row processing completed at %v (took %v, processed %d rows)", rowProcessingEndTime, rowProcessingDuration, rowCount)
+
 	// Send successful response
 	if req.CorrelationID != "" {
 		resp := &framework.EventData{
@@ -372,24 +416,37 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 				Rows:          resultRows,
 			},
 		}
+		// deliverStartTime := time.Now()
+		// log.Printf("[SQL Plugin] Delivering query response for CorrelationID: %s at %v", req.CorrelationID, deliverStartTime)
 		p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
+		// deliverEndTime := time.Now()
+		// deliverDuration := deliverEndTime.Sub(deliverStartTime)
+		// log.Printf("[SQL Plugin] Successfully delivered query response for CorrelationID: %s at %v (took %v)", req.CorrelationID, deliverEndTime, deliverDuration)
+
+		// totalDuration := time.Since(startTime)
+		// log.Printf("[SQL Plugin] Total handleSQLQuery execution time: %v", totalDuration)
 		return nil
 	}
 
+	log.Printf("[SQL Plugin] WARNING: No CorrelationID provided for query response")
 	return nil
 }
 
 // handleSQLExec handles SQL exec requests
 func (p *Plugin) handleSQLExec(event framework.Event) error {
+	// startTime := time.Now()
+	// log.Printf("[SQL Plugin] handleSQLExec called at %v", startTime)
+
 	dataEvent, ok := event.(*framework.DataEvent)
 	if !ok || dataEvent.Data == nil || dataEvent.Data.SQLExecRequest == nil {
+		log.Printf("[SQL Plugin] Invalid SQL exec event data")
 		return nil
 	}
 
 	req := dataEvent.Data.SQLExecRequest
 	p.eventsHandled++
 
-	// Debug logging removed - request/response flow is working correctly
+	// log.Printf("[SQL Plugin] Processing SQL exec request: ID=%s, CorrelationID=%s, Query=%s at %v", req.ID, req.CorrelationID, req.Query, time.Now())
 
 	// Track metrics
 	timer := prometheus.NewTimer(metrics.DatabaseQueryDuration)
@@ -414,6 +471,7 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 					Error:         err.Error(),
 				},
 			}
+			log.Printf("[SQL Plugin] Delivering error response for exec CorrelationID: %s, error: %v", req.CorrelationID, err)
 			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
 			return nil
 		}
@@ -437,6 +495,7 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 					Error:         err.Error(),
 				},
 			}
+			log.Printf("[SQL Plugin] Delivering error response for exec CorrelationID: %s, error: %v", req.CorrelationID, err)
 			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
 			return nil
 		}
@@ -457,9 +516,16 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 	}
 
 	// Execute statement
+	// execStartTime := time.Now()
+	// log.Printf("[SQL Plugin] Starting database exec at %v", execStartTime)
 	result, err := p.db.ExecContext(ctx, req.Query, params...)
+	// execEndTime := time.Now()
+	// execDuration := execEndTime.Sub(execStartTime)
+	// log.Printf("[SQL Plugin] Database exec completed at %v (took %v)", execEndTime, execDuration)
+
 	if err != nil {
 		metrics.DatabaseErrors.Inc()
+		log.Printf("[SQL Plugin] Exec failed: %v", err)
 
 		// Emit failure event for retry mechanism
 		p.emitFailureEvent("sql.exec.failed", req.CorrelationID, req.RequestBy, "sql.exec", err)
@@ -474,7 +540,10 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 					Error:         err.Error(),
 				},
 			}
+			// deliverStartTime := time.Now()
+			// log.Printf("[SQL Plugin] Delivering error response for exec CorrelationID: %s at %v, error: %v", req.CorrelationID, deliverStartTime, err)
 			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
+			// log.Printf("[SQL Plugin] Error response delivered at %v (took %v)", time.Now(), time.Since(deliverStartTime))
 			return nil
 		}
 		return fmt.Errorf("exec failed: %w", err)
@@ -495,10 +564,19 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 				LastInsertID:  lastInsertID,
 			},
 		}
+		// deliverStartTime := time.Now()
+		// log.Printf("[SQL Plugin] Delivering exec response for CorrelationID: %s at %v", req.CorrelationID, deliverStartTime)
 		p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
+		// deliverEndTime := time.Now()
+		// deliverDuration := deliverEndTime.Sub(deliverStartTime)
+		// log.Printf("[SQL Plugin] Successfully delivered exec response for CorrelationID: %s at %v (took %v)", req.CorrelationID, deliverEndTime, deliverDuration)
+
+		// totalDuration := time.Since(startTime)
+		// log.Printf("[SQL Plugin] Total handleSQLExec execution time: %v", totalDuration)
 		return nil
 	}
 
+	log.Printf("[SQL Plugin] WARNING: No CorrelationID provided for exec response")
 	return nil
 }
 

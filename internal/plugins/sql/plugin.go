@@ -134,34 +134,8 @@ func (p *Plugin) Start() error {
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	p.startTime = time.Now()
 
-	// Subscribe to event handlers first before connecting to database
-	if err := p.eventBus.Subscribe("log.request", p.handleLogRequest); err != nil {
-		return fmt.Errorf("failed to subscribe to log.request: %w", err)
-	}
-	if err := p.eventBus.Subscribe("log.batch", p.handleBatchLogRequest); err != nil {
-		return fmt.Errorf("failed to subscribe to log.batch: %w", err)
-	}
-	if err := p.eventBus.Subscribe("log.configure", p.handleConfigureLogging); err != nil {
-		return fmt.Errorf("failed to subscribe to log.configure: %w", err)
-	}
-
-	// Subscribe to plugin.request for targeted requests
-	if err := p.eventBus.Subscribe("plugin.request", p.handlePluginRequest); err != nil {
-		return fmt.Errorf("failed to subscribe to plugin.request: %w", err)
-	}
-
-	if err := p.eventBus.Subscribe("sql.query.request", p.handleSQLQuery); err != nil {
-		return fmt.Errorf("failed to subscribe to sql.query.request: %w", err)
-	}
-	if err := p.eventBus.Subscribe("sql.exec.request", p.handleSQLExec); err != nil {
-		return fmt.Errorf("failed to subscribe to sql.exec.request: %w", err)
-	}
-	if err := p.eventBus.Subscribe("sql.batch.query", p.handleBatchQueryRequest); err != nil {
-		return fmt.Errorf("failed to subscribe to sql.batch.query: %w", err)
-	}
-	if err := p.eventBus.Subscribe("sql.batch.exec", p.handleBatchExecRequest); err != nil {
-		return fmt.Errorf("failed to subscribe to sql.batch.exec: %w", err)
-	}
+	// Don't subscribe to events until database is connected
+	// This prevents handling requests before we're ready
 
 	// Connect to database in a goroutine to avoid blocking
 	go func() {
@@ -175,6 +149,41 @@ func (p *Plugin) Start() error {
 		}
 
 		log.Printf("[SQL Plugin] Database connected successfully after %v", time.Since(startTime))
+
+		// Subscribe to event handlers after database is connected
+		log.Printf("[SQL Plugin] Subscribing to event handlers...")
+
+		if err := p.eventBus.Subscribe("log.request", p.handleLogRequest); err != nil {
+			log.Printf("[SQL Plugin] Failed to subscribe to log.request: %v", err)
+			return
+		}
+		log.Printf("[SQL Plugin] Subscribed to log.request")
+
+		if err := p.eventBus.Subscribe("log.batch", p.handleBatchLogRequest); err != nil {
+			log.Printf("[SQL Plugin] Failed to subscribe to log.batch: %v", err)
+			return
+		}
+		log.Printf("[SQL Plugin] Subscribed to log.batch")
+
+		if err := p.eventBus.Subscribe("log.configure", p.handleConfigureLogging); err != nil {
+			log.Printf("[SQL Plugin] Failed to subscribe to log.configure: %v", err)
+			return
+		}
+		log.Printf("[SQL Plugin] Subscribed to log.configure")
+
+		// Subscribe to plugin.request for ALL synchronous requests
+		// This is the standard pattern for handling eventBus.Request() calls
+		if err := p.eventBus.Subscribe("plugin.request", p.handlePluginRequest); err != nil {
+			log.Printf("[SQL Plugin] Failed to subscribe to plugin.request: %v", err)
+			return
+		}
+		log.Printf("[SQL Plugin] Subscribed to plugin.request")
+
+		// NOTE: All SQL synchronous requests (query, exec, batch) are handled through plugin.request
+		// The handlePluginRequest function inspects the EventData and routes to the appropriate handler:
+		// - SQLQueryRequest -> handleSQLQuery
+		// - SQLExecRequest -> handleSQLExec
+		// - SQLBatchRequest -> handleBatchQueryRequest or handleBatchExecRequest
 
 		// Subscribe to logger rules after database is connected
 		for _, rule := range p.loggerRules {

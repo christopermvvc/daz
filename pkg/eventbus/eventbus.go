@@ -261,8 +261,8 @@ func (eb *EventBus) Start() error {
 	// Pre-start routers for critical event types
 	criticalTypes := []string{
 		"cytube.event",
-		"sql.query",
-		"sql.exec",
+		"sql.query.request",
+		"sql.exec.request",
 		"log.request",
 		"plugin.request",
 		"plugin.response",
@@ -573,20 +573,29 @@ func (eb *EventBus) Request(ctx context.Context, target string, eventType string
 	metadata.Target = target
 	metadata.ReplyTo = "eventbus"
 
+	// log.Printf("[EventBus.Request] Starting request: target=%s, eventType=%s, correlationID=%s", target, eventType, correlationID)
+
 	// Create response channel with buffer to prevent blocking
 	respCh := make(chan *pluginResponse, 1)
 
 	// Register pending request
 	eb.syncMu.Lock()
 	eb.pendingRequests[correlationID] = respCh
+	// pendingCount := len(eb.pendingRequests)
 	eb.syncMu.Unlock()
+
+	// log.Printf("[EventBus.Request] Registered pending request: correlationID=%s, pending requests count=%d", correlationID, pendingCount)
 
 	// Enhanced cleanup function with context cancellation awareness
 	cleanup := func() {
+		// log.Printf("[EventBus.Request] Cleanup called for correlationID=%s", correlationID)
 		eb.syncMu.Lock()
 		// Check if the request is still pending before deleting
 		if _, exists := eb.pendingRequests[correlationID]; exists {
 			delete(eb.pendingRequests, correlationID)
+			// log.Printf("[EventBus.Request] Removed pending request: correlationID=%s", correlationID)
+		} else {
+			// log.Printf("[EventBus.Request] Pending request already removed: correlationID=%s", correlationID)
 		}
 		eb.syncMu.Unlock()
 
@@ -594,6 +603,7 @@ func (eb *EventBus) Request(ctx context.Context, target string, eventType string
 		select {
 		case <-respCh:
 			// Channel had pending data, drain it
+			// log.Printf("[EventBus.Request] Drained pending data from response channel: correlationID=%s", correlationID)
 		default:
 			// Channel is empty
 		}
@@ -602,25 +612,36 @@ func (eb *EventBus) Request(ctx context.Context, target string, eventType string
 	defer cleanup()
 
 	// Send request with metadata
+	// log.Printf("[EventBus.Request] Sending request to %s: correlationID=%s", target, correlationID)
 	if err := eb.SendWithMetadata(target, eventType, data, metadata); err != nil {
+		log.Printf("[EventBus.Request] Failed to send request: correlationID=%s, error=%v", correlationID, err)
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
+	// log.Printf("[EventBus.Request] Request sent successfully: correlationID=%s", correlationID)
 
 	// Wait for response with enhanced timeout handling
+	// log.Printf("[EventBus.Request] Waiting for response: correlationID=%s", correlationID)
 	select {
 	case resp := <-respCh:
+		// log.Printf("[EventBus.Request] Received response: correlationID=%s, hasData=%v, hasError=%v",
+		// 	correlationID, resp != nil && resp.data != nil, resp != nil && resp.err != nil)
 		if resp == nil {
+			// log.Printf("[EventBus.Request] Received nil response: correlationID=%s", correlationID)
 			return nil, fmt.Errorf("received nil response for correlation ID %s", correlationID)
 		}
 		return resp.data, resp.err
 	case <-ctx.Done():
 		// Context cancelled - determine the specific cause
+		// log.Printf("[EventBus.Request] Context done while waiting for response: correlationID=%s, err=%v", correlationID, ctx.Err())
 		switch ctx.Err() {
 		case context.DeadlineExceeded:
+			log.Printf("[EventBus.Request] Request timed out: correlationID=%s, target=%s", correlationID, target)
 			return nil, fmt.Errorf("request to %s timed out: %w", target, ctx.Err())
 		case context.Canceled:
+			log.Printf("[EventBus.Request] Request cancelled: correlationID=%s, target=%s", correlationID, target)
 			return nil, fmt.Errorf("request to %s was cancelled: %w", target, ctx.Err())
 		default:
+			log.Printf("[EventBus.Request] Request failed: correlationID=%s, target=%s, err=%v", correlationID, target, ctx.Err())
 			return nil, fmt.Errorf("request to %s failed: %w", target, ctx.Err())
 		}
 	}
@@ -628,18 +649,37 @@ func (eb *EventBus) Request(ctx context.Context, target string, eventType string
 
 // DeliverResponse delivers a response to a waiting request
 func (eb *EventBus) DeliverResponse(correlationID string, response *framework.EventData, err error) {
+	// log.Printf("[EventBus.DeliverResponse] Called: correlationID=%s, hasResponse=%v, hasError=%v",
+	// 	correlationID, response != nil, err != nil)
+
 	eb.syncMu.RLock()
 	respCh, exists := eb.pendingRequests[correlationID]
+	// pendingCount := len(eb.pendingRequests)
 	eb.syncMu.RUnlock()
 
+	// log.Printf("[EventBus.DeliverResponse] Pending request exists: correlationID=%s, exists=%v, pending count=%d",
+	// 	correlationID, exists, pendingCount)
+
 	if exists {
+		// log.Printf("[EventBus.DeliverResponse] Attempting to send response: correlationID=%s", correlationID)
 		select {
 		case respCh <- &pluginResponse{data: response, err: err}:
 			// Delivered successfully
+			// log.Printf("[EventBus.DeliverResponse] Response delivered successfully: correlationID=%s", correlationID)
 		default:
 			// Channel full or closed, log error
-			log.Printf("[EventBus] Failed to deliver response for %s", correlationID)
+			log.Printf("[EventBus.DeliverResponse] ERROR: Failed to deliver response (channel full/closed): correlationID=%s", correlationID)
 		}
+	} else {
+		// log.Printf("[EventBus.DeliverResponse] WARNING: No pending request found for correlationID=%s", correlationID)
+		// Log all pending correlation IDs for debugging
+		// eb.syncMu.RLock()
+		// var pendingIDs []string
+		// for id := range eb.pendingRequests {
+		// 	pendingIDs = append(pendingIDs, id)
+		// }
+		// eb.syncMu.RUnlock()
+		// log.Printf("[EventBus.DeliverResponse] Current pending requests: %v", pendingIDs)
 	}
 }
 

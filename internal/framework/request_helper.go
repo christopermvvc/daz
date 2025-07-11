@@ -217,6 +217,20 @@ func (h *RequestHelper) requestWithRetry(
 		Timeout:       config.Timeout,
 	}
 
+	// Update correlation ID in SQL request data if present
+	// This ensures the SQL plugin uses the same correlation ID that EventBus is tracking
+	if data != nil {
+		if data.SQLQueryRequest != nil {
+			data.SQLQueryRequest.CorrelationID = correlationID
+		}
+		if data.SQLExecRequest != nil {
+			data.SQLExecRequest.CorrelationID = correlationID
+		}
+		if data.SQLBatchRequest != nil {
+			data.SQLBatchRequest.CorrelationID = correlationID
+		}
+	}
+
 	var lastErr error
 	retryDelay := config.RetryDelay
 
@@ -333,14 +347,18 @@ func (h *SQLRequestHelper) QueryWithTimeout(
 		params[i] = NewSQLParam(arg)
 	}
 
+	// Generate correlation ID for this request
+	correlationID := fmt.Sprintf("%s-%d", h.source, time.Now().UnixNano())
+
 	// Create request data
 	request := &EventData{
 		SQLQueryRequest: &SQLQueryRequest{
-			ID:        fmt.Sprintf("%s-%d", h.source, time.Now().UnixNano()),
-			Query:     query,
-			Params:    params,
-			Timeout:   timeout,
-			RequestBy: h.source,
+			ID:            correlationID,
+			CorrelationID: correlationID, // This is critical for response delivery
+			Query:         query,
+			Params:        params,
+			Timeout:       timeout,
+			RequestBy:     h.source,
 		},
 	}
 
@@ -391,14 +409,18 @@ func (h *SQLRequestHelper) ExecWithTimeout(
 		params[i] = NewSQLParam(arg)
 	}
 
+	// Generate correlation ID for this request
+	correlationID := fmt.Sprintf("%s-%d", h.source, time.Now().UnixNano())
+
 	// Create request data
 	request := &EventData{
 		SQLExecRequest: &SQLExecRequest{
-			ID:        fmt.Sprintf("%s-%d", h.source, time.Now().UnixNano()),
-			Query:     query,
-			Params:    params,
-			Timeout:   timeout,
-			RequestBy: h.source,
+			ID:            correlationID,
+			CorrelationID: correlationID, // This is critical for response delivery
+			Query:         query,
+			Params:        params,
+			Timeout:       timeout,
+			RequestBy:     h.source,
 		},
 	}
 
@@ -511,11 +533,14 @@ func (h *SQLRequestHelper) BatchWithTimeout(
 	timeout time.Duration,
 	atomic bool,
 ) (*SQLBatchResponse, error) {
+	// Generate correlation ID for this request
+	correlationID := fmt.Sprintf("%s-%d", h.source, time.Now().UnixNano())
+
 	// Create request data
 	request := &EventData{
 		SQLBatchRequest: &SQLBatchRequest{
-			ID:            fmt.Sprintf("%s-%d", h.source, time.Now().UnixNano()),
-			CorrelationID: fmt.Sprintf("%s-batch-%d", h.source, time.Now().UnixNano()),
+			ID:            correlationID,
+			CorrelationID: correlationID, // This is critical for response delivery
 			Operations:    operations,
 			Atomic:        atomic,
 			Timeout:       timeout,
