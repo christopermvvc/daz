@@ -124,3 +124,124 @@ func (r *QueryRows) Columns() ([]string, error) {
 func (r *QueryRows) Err() error {
 	return nil
 }
+
+// BatchQuery executes multiple queries in a batch (non-atomic)
+func (c *SQLClient) BatchQuery(queries []BatchOperation) (*SQLBatchResponse, error) {
+	ctx := context.Background()
+	return c.sqlHelper.NormalBatch(ctx, queries, false)
+}
+
+// BatchExec executes multiple exec operations in a batch (non-atomic)
+func (c *SQLClient) BatchExec(operations []BatchOperation) (*SQLBatchResponse, error) {
+	ctx := context.Background()
+	return c.sqlHelper.NormalBatch(ctx, operations, false)
+}
+
+// BatchQueryAtomic executes multiple queries in a single transaction
+func (c *SQLClient) BatchQueryAtomic(queries []BatchOperation) (*SQLBatchResponse, error) {
+	ctx := context.Background()
+	return c.sqlHelper.NormalBatch(ctx, queries, true)
+}
+
+// BatchExecAtomic executes multiple exec operations in a single transaction
+func (c *SQLClient) BatchExecAtomic(operations []BatchOperation) (*SQLBatchResponse, error) {
+	ctx := context.Background()
+	return c.sqlHelper.NormalBatch(ctx, operations, true)
+}
+
+// BatchQueryContext executes multiple queries with context (non-atomic)
+func (c *SQLClient) BatchQueryContext(ctx context.Context, queries []BatchOperation) (*SQLBatchResponse, error) {
+	// Determine timeout from context and use appropriate helper method
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout := time.Until(deadline)
+		return c.sqlHelper.BatchWithTimeout(ctx, queries, timeout, false)
+	}
+
+	// Use normal batch if no deadline is set (15s timeout, 3 retries)
+	return c.sqlHelper.NormalBatch(ctx, queries, false)
+}
+
+// BatchExecContext executes multiple exec operations with context (non-atomic)
+func (c *SQLClient) BatchExecContext(ctx context.Context, operations []BatchOperation) (*SQLBatchResponse, error) {
+	// Determine timeout from context and use appropriate helper method
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout := time.Until(deadline)
+		return c.sqlHelper.BatchWithTimeout(ctx, operations, timeout, false)
+	}
+
+	// Use normal batch if no deadline is set (15s timeout, 3 retries)
+	return c.sqlHelper.NormalBatch(ctx, operations, false)
+}
+
+// BatchQueryAtomicContext executes multiple queries in a single transaction with context
+func (c *SQLClient) BatchQueryAtomicContext(ctx context.Context, queries []BatchOperation) (*SQLBatchResponse, error) {
+	// Determine timeout from context and use appropriate helper method
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout := time.Until(deadline)
+		return c.sqlHelper.BatchWithTimeout(ctx, queries, timeout, true)
+	}
+
+	// Use normal batch if no deadline is set (15s timeout, 3 retries)
+	return c.sqlHelper.NormalBatch(ctx, queries, true)
+}
+
+// BatchExecAtomicContext executes multiple exec operations in a single transaction with context
+func (c *SQLClient) BatchExecAtomicContext(ctx context.Context, operations []BatchOperation) (*SQLBatchResponse, error) {
+	// Determine timeout from context and use appropriate helper method
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout := time.Until(deadline)
+		return c.sqlHelper.BatchWithTimeout(ctx, operations, timeout, true)
+	}
+
+	// Use normal batch if no deadline is set (15s timeout, 3 retries)
+	return c.sqlHelper.NormalBatch(ctx, operations, true)
+}
+
+// BatchOperationBuilder provides a fluent interface for building batch operations
+type BatchOperationBuilder struct {
+	operations []BatchOperation
+}
+
+// NewBatchOperationBuilder creates a new batch operation builder
+func NewBatchOperationBuilder() *BatchOperationBuilder {
+	return &BatchOperationBuilder{
+		operations: make([]BatchOperation, 0),
+	}
+}
+
+// AddQuery adds a query operation to the batch
+func (b *BatchOperationBuilder) AddQuery(query string, args ...interface{}) *BatchOperationBuilder {
+	params := make([]SQLParam, len(args))
+	for i, arg := range args {
+		params[i] = NewSQLParam(arg)
+	}
+
+	b.operations = append(b.operations, BatchOperation{
+		ID:            fmt.Sprintf("query-%d-%d", len(b.operations), time.Now().UnixNano()),
+		OperationType: "query",
+		Query:         query,
+		Params:        params,
+	})
+	return b
+}
+
+// AddExec adds an exec operation to the batch
+func (b *BatchOperationBuilder) AddExec(query string, args ...interface{}) *BatchOperationBuilder {
+	params := make([]SQLParam, len(args))
+	for i, arg := range args {
+		params[i] = NewSQLParam(arg)
+	}
+
+	b.operations = append(b.operations, BatchOperation{
+		ID:            fmt.Sprintf("exec-%d-%d", len(b.operations), time.Now().UnixNano()),
+		OperationType: "exec",
+		Query:         query,
+		Params:        params,
+	})
+	return b
+}
+
+// Build returns the built batch operations
+func (b *BatchOperationBuilder) Build() []BatchOperation {
+	return b.operations
+}

@@ -472,6 +472,7 @@ type TestPlugin struct {
 	eventsHandled  int
 	eventBus       EventBus
 	requestHandler func(*PluginRequest) (*EventData, error)
+	mu             sync.Mutex
 }
 
 func NewTestPlugin(name string) *TestPlugin {
@@ -497,7 +498,9 @@ func (p *TestPlugin) Stop() error {
 }
 
 func (p *TestPlugin) HandleEvent(event Event) error {
+	p.mu.Lock()
 	p.eventsHandled++
+	p.mu.Unlock()
 
 	// Handle plugin requests
 	if dataEvent, ok := event.(*DataEvent); ok {

@@ -162,6 +162,9 @@ func (p *Plugin) Start() error {
 	if err := p.eventBus.Subscribe("sql.batch.query", p.handleBatchQueryRequest); err != nil {
 		return fmt.Errorf("failed to subscribe to sql.batch.query: %w", err)
 	}
+	if err := p.eventBus.Subscribe("sql.batch.exec", p.handleBatchExecRequest); err != nil {
+		return fmt.Errorf("failed to subscribe to sql.batch.exec: %w", err)
+	}
 
 	for _, rule := range p.loggerRules {
 		if rule.Enabled && rule.regex != nil {

@@ -24,6 +24,8 @@ type EventData struct {
 	SQLQueryResponse *SQLQueryResponse `json:"sql_query_response,omitempty"`
 	SQLExecRequest   *SQLExecRequest   `json:"sql_exec_request,omitempty"`
 	SQLExecResponse  *SQLExecResponse  `json:"sql_exec_response,omitempty"`
+	SQLBatchRequest  *SQLBatchRequest  `json:"sql_batch_request,omitempty"`
+	SQLBatchResponse *SQLBatchResponse `json:"sql_batch_response,omitempty"`
 
 	// For plugin communication
 	PluginRequest  *PluginRequest  `json:"plugin_request,omitempty"`

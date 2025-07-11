@@ -503,3 +503,85 @@ func (h *SQLRequestHelper) CriticalExec(
 ) (int64, error) {
 	return h.ExecWithTimeout(ctx, query, 45*time.Second, args...)
 }
+
+// BatchWithTimeout executes a batch of SQL operations with the specified timeout
+func (h *SQLRequestHelper) BatchWithTimeout(
+	ctx context.Context,
+	operations []BatchOperation,
+	timeout time.Duration,
+	atomic bool,
+) (*SQLBatchResponse, error) {
+	// Create request data
+	request := &EventData{
+		SQLBatchRequest: &SQLBatchRequest{
+			ID:            fmt.Sprintf("%s-%d", h.source, time.Now().UnixNano()),
+			CorrelationID: fmt.Sprintf("%s-batch-%d", h.source, time.Now().UnixNano()),
+			Operations:    operations,
+			Atomic:        atomic,
+			Timeout:       timeout,
+			RequestBy:     h.source,
+		},
+	}
+
+	// Use appropriate config based on timeout
+	var configName string
+	switch {
+	case timeout <= 5*time.Second:
+		configName = "fast"
+	case timeout <= 15*time.Second:
+		configName = "normal"
+	case timeout <= 30*time.Second:
+		configName = "slow"
+	default:
+		configName = "critical"
+	}
+
+	// Make the request
+	response, err := h.RequestWithConfig(ctx, "sql", "sql.batch.request", request, configName)
+	if err != nil {
+		return nil, fmt.Errorf("batch request failed: %w", err)
+	}
+
+	// Process response
+	if response != nil && response.SQLBatchResponse != nil {
+		return response.SQLBatchResponse, nil
+	}
+
+	return nil, fmt.Errorf("no response received")
+}
+
+// FastBatch executes a fast batch of SQL operations (5s timeout, 1 retry)
+func (h *SQLRequestHelper) FastBatch(
+	ctx context.Context,
+	operations []BatchOperation,
+	atomic bool,
+) (*SQLBatchResponse, error) {
+	return h.BatchWithTimeout(ctx, operations, 5*time.Second, atomic)
+}
+
+// NormalBatch executes a normal batch of SQL operations (15s timeout, 3 retries)
+func (h *SQLRequestHelper) NormalBatch(
+	ctx context.Context,
+	operations []BatchOperation,
+	atomic bool,
+) (*SQLBatchResponse, error) {
+	return h.BatchWithTimeout(ctx, operations, 15*time.Second, atomic)
+}
+
+// SlowBatch executes a slow batch of SQL operations (30s timeout, 2 retries)
+func (h *SQLRequestHelper) SlowBatch(
+	ctx context.Context,
+	operations []BatchOperation,
+	atomic bool,
+) (*SQLBatchResponse, error) {
+	return h.BatchWithTimeout(ctx, operations, 30*time.Second, atomic)
+}
+
+// CriticalBatch executes a critical batch of SQL operations (45s timeout, 5 retries)
+func (h *SQLRequestHelper) CriticalBatch(
+	ctx context.Context,
+	operations []BatchOperation,
+	atomic bool,
+) (*SQLBatchResponse, error) {
+	return h.BatchWithTimeout(ctx, operations, 45*time.Second, atomic)
+}

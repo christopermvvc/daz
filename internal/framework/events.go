@@ -310,3 +310,45 @@ type PrivateMessageEvent struct {
 	Message     string `json:"message"`
 	MessageTime int64  `json:"message_time"`
 }
+
+// BatchOperation represents a single operation in a batch SQL request
+type BatchOperation struct {
+	ID            string        `json:"id"`
+	OperationType string        `json:"operation_type"` // "query" or "exec"
+	Query         string        `json:"query"`
+	Params        []SQLParam    `json:"params"`
+	Timeout       time.Duration `json:"timeout,omitempty"`
+}
+
+// BatchOperationResult represents the result of a single batch operation
+type BatchOperationResult struct {
+	ID            string `json:"id"`
+	OperationType string `json:"operation_type"` // "query" or "exec"
+	Success       bool   `json:"success"`
+	Error         string `json:"error,omitempty"`
+	// For query operations
+	Columns []string            `json:"columns,omitempty"`
+	Rows    [][]json.RawMessage `json:"rows,omitempty"`
+	// For exec operations
+	RowsAffected int64 `json:"rows_affected,omitempty"`
+	LastInsertID int64 `json:"last_insert_id,omitempty"`
+}
+
+// SQLBatchRequest represents a batch SQL request for multiple queries/execs
+type SQLBatchRequest struct {
+	ID            string           `json:"id"`
+	CorrelationID string           `json:"correlation_id"`
+	Operations    []BatchOperation `json:"operations"`
+	Atomic        bool             `json:"atomic"`  // If true, all operations run in a single transaction
+	Timeout       time.Duration    `json:"timeout"` // Overall timeout for the batch
+	RequestBy     string           `json:"request_by"`
+}
+
+// SQLBatchResponse represents the response to a batch SQL request
+type SQLBatchResponse struct {
+	ID            string                 `json:"id"`
+	CorrelationID string                 `json:"correlation_id"`
+	Success       bool                   `json:"success"`         // Overall success (false if any operation failed in atomic mode)
+	Error         string                 `json:"error,omitempty"` // Overall error message
+	Results       []BatchOperationResult `json:"results"`
+}
