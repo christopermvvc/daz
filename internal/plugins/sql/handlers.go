@@ -237,6 +237,30 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 	defer timer.ObserveDuration()
 	metrics.DatabaseQueries.WithLabelValues("query").Inc()
 
+	// Check if plugin is ready
+	if !p.Ready() {
+		metrics.DatabaseErrors.Inc()
+		err := fmt.Errorf("SQL plugin not ready - database connection in progress")
+
+		// Emit failure event for retry mechanism
+		p.emitFailureEvent("sql.query.failed", req.CorrelationID, req.RequestBy, "sql.query", err)
+
+		// Send error response via event
+		if req.CorrelationID != "" {
+			resp := &framework.EventData{
+				SQLQueryResponse: &framework.SQLQueryResponse{
+					ID:            req.ID,
+					CorrelationID: req.CorrelationID,
+					Success:       false,
+					Error:         err.Error(),
+				},
+			}
+			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
+			return nil
+		}
+		return err
+	}
+
 	if p.pool == nil {
 		metrics.DatabaseErrors.Inc()
 		err := fmt.Errorf("database not connected")
@@ -371,6 +395,30 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 	timer := prometheus.NewTimer(metrics.DatabaseQueryDuration)
 	defer timer.ObserveDuration()
 	metrics.DatabaseQueries.WithLabelValues("exec").Inc()
+
+	// Check if plugin is ready
+	if !p.Ready() {
+		metrics.DatabaseErrors.Inc()
+		err := fmt.Errorf("SQL plugin not ready - database connection in progress")
+
+		// Emit failure event for retry mechanism
+		p.emitFailureEvent("sql.exec.failed", req.CorrelationID, req.RequestBy, "sql.exec", err)
+
+		// Send error response via event
+		if req.CorrelationID != "" {
+			resp := &framework.EventData{
+				SQLExecResponse: &framework.SQLExecResponse{
+					ID:            req.ID,
+					CorrelationID: req.CorrelationID,
+					Success:       false,
+					Error:         err.Error(),
+				},
+			}
+			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
+			return nil
+		}
+		return err
+	}
 
 	if p.pool == nil {
 		metrics.DatabaseErrors.Inc()

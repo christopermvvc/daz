@@ -134,10 +134,7 @@ func (p *Plugin) Start() error {
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	p.startTime = time.Now()
 
-	if err := p.connectDatabase(); err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
-	}
-
+	// Subscribe to event handlers first before connecting to database
 	if err := p.eventBus.Subscribe("log.request", p.handleLogRequest); err != nil {
 		return fmt.Errorf("failed to subscribe to log.request: %w", err)
 	}
@@ -166,21 +163,37 @@ func (p *Plugin) Start() error {
 		return fmt.Errorf("failed to subscribe to sql.batch.exec: %w", err)
 	}
 
-	for _, rule := range p.loggerRules {
-		if rule.Enabled && rule.regex != nil {
-			log.Printf("[SQL Plugin] Subscribing to pattern: %s", rule.EventPattern)
-			for _, eventType := range p.findMatchingEventTypes(rule.EventPattern) {
-				if err := p.eventBus.Subscribe(eventType, p.createLoggerHandler(rule)); err != nil {
-					return fmt.Errorf("failed to subscribe to %s: %w", eventType, err)
+	// Connect to database in a goroutine to avoid blocking
+	go func() {
+		log.Printf("[SQL Plugin] Starting database connection...")
+		startTime := time.Now()
+
+		if err := p.connectDatabase(); err != nil {
+			log.Printf("[SQL Plugin] Failed to connect to database after %v: %v", time.Since(startTime), err)
+			// Don't close readyChan on error, let handlers return errors
+			return
+		}
+
+		log.Printf("[SQL Plugin] Database connected successfully after %v", time.Since(startTime))
+
+		// Subscribe to logger rules after database is connected
+		for _, rule := range p.loggerRules {
+			if rule.Enabled && rule.regex != nil {
+				log.Printf("[SQL Plugin] Subscribing to pattern: %s", rule.EventPattern)
+				for _, eventType := range p.findMatchingEventTypes(rule.EventPattern) {
+					if err := p.eventBus.Subscribe(eventType, p.createLoggerHandler(rule)); err != nil {
+						log.Printf("[SQL Plugin] Failed to subscribe to %s: %v", eventType, err)
+					}
 				}
 			}
 		}
-	}
 
-	// Signal that the plugin is ready
-	close(p.readyChan)
+		// Signal that the plugin is ready after database is connected
+		close(p.readyChan)
+		log.Printf("[SQL Plugin] Started successfully and ready to accept requests after %v total startup time", time.Since(startTime))
+	}()
 
-	log.Printf("[SQL Plugin] Started successfully")
+	log.Printf("[SQL Plugin] Started (connecting to database in background)")
 	return nil
 }
 
@@ -216,6 +229,26 @@ func (p *Plugin) Status() framework.PluginStatus {
 	}
 }
 
+// emitFailureEvent emits a failure event that can be picked up by the retry plugin
+func (p *Plugin) emitFailureEvent(eventType, correlationID, source, operationType string, err error) {
+	failureData := &framework.EventData{
+		KeyValue: map[string]string{
+			"correlation_id": correlationID,
+			"source":         source,
+			"operation_type": operationType,
+			"error":          err.Error(),
+			"timestamp":      time.Now().Format(time.RFC3339),
+		},
+	}
+
+	// Emit the failure event asynchronously
+	go func() {
+		if err := p.eventBus.Broadcast(eventType, failureData); err != nil {
+			log.Printf("[SQL Plugin] Failed to emit failure event: %v", err)
+		}
+	}()
+}
+
 func (p *Plugin) connectDatabase() error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(p.config.Database.ConnectTimeout)*time.Second)
 	defer cancel()
@@ -227,6 +260,9 @@ func (p *Plugin) connectDatabase() error {
 		p.config.Database.Password,
 		p.config.Database.Database,
 	)
+
+	log.Printf("[SQL Plugin] Connecting to database at %s:%d/%s",
+		p.config.Database.Host, p.config.Database.Port, p.config.Database.Database)
 
 	poolConfig, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
@@ -276,6 +312,8 @@ func (p *Plugin) connectDatabase() error {
 
 	p.db = db
 
+	log.Printf("[SQL Plugin] Initializing database schema...")
+	schemaStart := time.Now()
 	if err := p.initializeSchema(ctx); err != nil {
 		pool.Close()
 		if closeErr := db.Close(); closeErr != nil {
@@ -283,6 +321,7 @@ func (p *Plugin) connectDatabase() error {
 		}
 		return fmt.Errorf("failed to initialize schema: %w", err)
 	}
+	log.Printf("[SQL Plugin] Schema initialization completed in %v", time.Since(schemaStart))
 
 	log.Printf("[SQL Plugin] Connected to database successfully")
 	return nil

@@ -334,25 +334,17 @@ func TestPluginStart(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	// Use a channel to wait for startup tasks to complete
-	startupDone := make(chan struct{})
-	go func() {
-		// Wait for startup operations
-		timer := time.NewTimer(10 * time.Millisecond)
-		defer timer.Stop()
-		<-timer.C
-		close(startupDone)
-	}()
-	<-startupDone
+	// Wait for async table creation to complete
+	time.Sleep(3 * time.Second)
 
-	// Check that tables were created during Start (with proper locking)
+	// Check that tables were created asynchronously
 	// Expected: 3 table creations (hourly aggregation is skipped in multi-room mode)
 	expectedExecCalls := 3
 	bus.mu.Lock()
 	actualExecCalls := len(bus.execCalls)
 	bus.mu.Unlock()
 	if actualExecCalls != expectedExecCalls {
-		t.Errorf("Expected %d exec calls during Start (3 tables only), got %d", expectedExecCalls, actualExecCalls)
+		t.Errorf("Expected %d exec calls after async table creation (3 tables only), got %d", expectedExecCalls, actualExecCalls)
 	}
 
 	// Check that it subscribed to the right events

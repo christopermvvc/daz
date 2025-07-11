@@ -300,10 +300,16 @@ func TestPluginStart(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	// Check that tables were created during Start
+	// Wait for async table creation to complete
+	time.Sleep(3 * time.Second)
+
+	// Check that tables were created asynchronously
 	expectedTables := 4 // plays, queue, stats, library
-	if len(bus.execCalls) != expectedTables {
-		t.Errorf("Expected %d table creation calls during Start, got %d", expectedTables, len(bus.execCalls))
+	bus.mu.Lock()
+	actualTables := len(bus.execCalls)
+	bus.mu.Unlock()
+	if actualTables != expectedTables {
+		t.Errorf("Expected %d table creation calls after async creation, got %d", expectedTables, actualTables)
 	}
 
 	// Check that it subscribed to the right events
