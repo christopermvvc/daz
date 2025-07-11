@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -133,14 +134,24 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 		conn.Client = newClient
 	}
 
-	// Connect with retry logic
+	// Connect with retry logic using exponential backoff
 	for attempt := 0; attempt < conn.Room.ReconnectAttempts; attempt++ {
 		if attempt > 0 {
-			waitTime := time.Duration(attempt) * 5 * time.Second
-			if waitTime > 30*time.Second {
-				waitTime = 30 * time.Second
+			// Exponential backoff with jitter
+			baseDelay := 2 * time.Second
+			maxDelay := 5 * time.Minute
+
+			// Calculate exponential delay
+			waitTime := baseDelay * time.Duration(1<<uint(attempt-1))
+			if waitTime > maxDelay {
+				waitTime = maxDelay
 			}
-			log.Printf("[RoomManager] Room '%s': Waiting %v before retry %d/%d",
+
+			// Add jitter (±25%)
+			jitter := time.Duration(rand.Float64() * 0.5 * float64(waitTime))
+			waitTime = waitTime + jitter - (jitter / 2)
+
+			log.Printf("[RoomManager] Room '%s': Waiting %v before retry %d/%d (exponential backoff with jitter)",
 				roomID, waitTime, attempt+1, conn.Room.ReconnectAttempts)
 			retryTimer := time.NewTimer(waitTime)
 			select {

@@ -311,7 +311,12 @@ func (p *Plugin) createSchema() error {
 		CREATE INDEX IF NOT EXISTS idx_eventfilter_history_user ON daz_eventfilter_history(username, executed_at);
 	`
 
-	return p.sqlClient.Exec(schema)
+	if err := p.sqlClient.Exec(schema); err != nil {
+		// Emit failure event for retry
+		p.emitFailureEvent("eventfilter.database.failed", "schema-creation", "database_schema", err)
+		return err
+	}
+	return nil
 }
 
 // handleCytubeEvent routes Cytube events to appropriate plugins
@@ -439,6 +444,8 @@ func (p *Plugin) handleRegisterEvent(event framework.Event) error {
 		// Save to database
 		if err := p.saveCommand(cmd, info); err != nil {
 			log.Printf("[EventFilter] Failed to save command %s: %v", cmd, err)
+			// Emit failure event for retry
+			p.emitFailureEvent("eventfilter.database.failed", req.ID, "command_registration", err)
 		}
 
 		log.Printf("[EventFilter] Registered command '%s' for plugin '%s'", cmd, pluginName)
@@ -470,6 +477,9 @@ func (p *Plugin) routeToPlugin(targetPlugin string, event *framework.DataEvent) 
 	err := p.eventBus.Send(targetPlugin, eventType, eventData)
 	if err != nil {
 		log.Printf("[EventFilter] Failed to route event to %s: %v", targetPlugin, err)
+		// Emit failure event for retry
+		correlationID := fmt.Sprintf("route-%s-%d", targetPlugin, time.Now().UnixNano())
+		p.emitFailureEvent("eventfilter.routing.failed", correlationID, "event_routing", err)
 	}
 }
 
@@ -690,12 +700,20 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 
 	if !exists {
 		log.Printf("[EventFilter] Unknown command: %s", cmdName)
+		// Emit failure event for unknown command
+		correlationID := fmt.Sprintf("unknown-%s-%d", cmdName, time.Now().UnixNano())
+		err := fmt.Errorf("unknown command: %s", cmdName)
+		p.emitFailureEvent("eventfilter.command.error", correlationID, "unknown_command", err)
 		return
 	}
 
 	// Check if command is enabled
 	if !cmdInfo.Enabled {
 		log.Printf("[EventFilter] Command disabled: %s", cmdName)
+		// Emit failure event for disabled command
+		correlationID := fmt.Sprintf("disabled-%s-%d", cmdName, time.Now().UnixNano())
+		err := fmt.Errorf("command disabled: %s", cmdName)
+		p.emitFailureEvent("eventfilter.command.error", correlationID, "disabled_command", err)
 		return
 	}
 
@@ -704,6 +722,10 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 		if chatData.UserRank < cmdInfo.MinRank {
 			log.Printf("[EventFilter] User %s lacks rank for command %s (has: %d, needs: %d)",
 				chatData.Username, cmdName, chatData.UserRank, cmdInfo.MinRank)
+			// Emit failure event for insufficient rank
+			correlationID := fmt.Sprintf("rank-%s-%d", cmdName, time.Now().UnixNano())
+			err := fmt.Errorf("insufficient rank for command %s: user has %d, needs %d", cmdName, chatData.UserRank, cmdInfo.MinRank)
+			p.emitFailureEvent("eventfilter.command.error", correlationID, "insufficient_rank", err)
 			return
 		}
 	}
@@ -747,12 +769,18 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 	go func() {
 		if err := p.logCommand(cmdName, chatData.Username, chatData.Channel, args); err != nil {
 			log.Printf("[EventFilter] Failed to log command execution: %v", err)
+			// Emit failure event for retry
+			correlationID := fmt.Sprintf("cmdlog-%s-%d", cmdName, time.Now().UnixNano())
+			p.emitFailureEvent("eventfilter.database.failed", correlationID, "command_logging", err)
 		}
 	}()
 
 	err := p.eventBus.Broadcast(eventType, cmdData)
 	if err != nil {
 		log.Printf("[EventFilter] Failed to route command: %v", err)
+		// Emit failure event for retry
+		correlationID := fmt.Sprintf("cmd-%s-%d", cmdName, time.Now().UnixNano())
+		p.emitFailureEvent("eventfilter.command.failed", correlationID, "command_routing", err)
 	}
 }
 
@@ -837,6 +865,8 @@ func (p *Plugin) handleCommandResponse(response *framework.PluginResponse) error
 
 	if err := p.eventBus.Broadcast("cytube.send.pm", pmData); err != nil {
 		log.Printf("[EventFilter] Failed to send command response PM: %v", err)
+		// Emit failure event for retry
+		p.emitFailureEvent("eventfilter.pm.failed", response.ID, "pm_response", err)
 		return err
 	}
 
@@ -869,9 +899,31 @@ func (p *Plugin) handleErrorResponse(response *framework.PluginResponse) error {
 
 		if err := p.eventBus.Broadcast("cytube.send.pm", pmData); err != nil {
 			log.Printf("[EventFilter] Failed to send error response PM: %v", err)
+			// Emit failure event for retry
+			p.emitFailureEvent("eventfilter.pm.failed", response.ID, "pm_response", err)
 			return err
 		}
 	}
 
 	return nil
+}
+
+// emitFailureEvent emits a failure event for the retry mechanism
+func (p *Plugin) emitFailureEvent(eventType, correlationID, operationType string, err error) {
+	failureData := &framework.EventData{
+		KeyValue: map[string]string{
+			"correlation_id": correlationID,
+			"source":         p.name,
+			"operation_type": operationType,
+			"error":          err.Error(),
+			"timestamp":      time.Now().Format(time.RFC3339),
+		},
+	}
+
+	// Emit failure event asynchronously
+	go func() {
+		if err := p.eventBus.Broadcast(eventType, failureData); err != nil {
+			log.Printf("[EventFilter] Failed to emit failure event: %v", err)
+		}
+	}()
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/uptime"
 	"github.com/hildolfr/daz/internal/plugins/eventfilter"
 	"github.com/hildolfr/daz/internal/plugins/mediatracker"
+	"github.com/hildolfr/daz/internal/plugins/retry"
 	"github.com/hildolfr/daz/internal/plugins/sql"
 	"github.com/hildolfr/daz/internal/plugins/usertracker"
 	"github.com/hildolfr/daz/pkg/eventbus"
@@ -164,6 +165,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 		plugin framework.Plugin
 	}{
 		{"sql", sql.NewPlugin()},
+		{"retry", retry.NewPlugin()},
 		{"eventfilter", eventfilter.New()},
 		{"usertracker", usertracker.New()},
 		{"mediatracker", mediatracker.New()},
@@ -184,6 +186,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 	// Prepare plugin configurations
 	pluginConfigs := make(map[string]json.RawMessage)
 	pluginConfigs["sql"] = cfg.GetPluginConfig("sql")
+	pluginConfigs["retry"] = cfg.GetPluginConfig("retry")
 	pluginConfigs["eventfilter"] = cfg.GetPluginConfig("eventfilter")
 	pluginConfigs["usertracker"] = cfg.GetPluginConfig("usertracker")
 	pluginConfigs["mediatracker"] = cfg.GetPluginConfig("mediatracker")

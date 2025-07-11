@@ -240,6 +240,10 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 	if p.pool == nil {
 		metrics.DatabaseErrors.Inc()
 		err := fmt.Errorf("database not connected")
+
+		// Emit failure event for retry mechanism
+		p.emitFailureEvent("sql.query.failed", req.CorrelationID, req.RequestBy, "sql.query", err)
+
 		// Send error response via event
 		if req.CorrelationID != "" {
 			resp := &framework.EventData{
@@ -273,6 +277,10 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 	rows, err := p.db.QueryContext(ctx, req.Query, params...)
 	if err != nil {
 		metrics.DatabaseErrors.Inc()
+
+		// Emit failure event for retry mechanism
+		p.emitFailureEvent("sql.query.failed", req.CorrelationID, req.RequestBy, "sql.query", err)
+
 		// Send error response via event
 		if req.CorrelationID != "" {
 			resp := &framework.EventData{
@@ -367,6 +375,10 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 	if p.pool == nil {
 		metrics.DatabaseErrors.Inc()
 		err := fmt.Errorf("database not connected")
+
+		// Emit failure event for retry mechanism
+		p.emitFailureEvent("sql.exec.failed", req.CorrelationID, req.RequestBy, "sql.exec", err)
+
 		// Send error response via event
 		if req.CorrelationID != "" {
 			resp := &framework.EventData{
@@ -400,6 +412,10 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 	result, err := p.db.ExecContext(ctx, req.Query, params...)
 	if err != nil {
 		metrics.DatabaseErrors.Inc()
+
+		// Emit failure event for retry mechanism
+		p.emitFailureEvent("sql.exec.failed", req.CorrelationID, req.RequestBy, "sql.exec", err)
+
 		// Send error response via event
 		if req.CorrelationID != "" {
 			resp := &framework.EventData{

@@ -185,11 +185,24 @@ func (p *Plugin) Start() error {
 		return fmt.Errorf("analytics plugin already running")
 	}
 
-	// Create database tables now that database is connected
-	if err := p.createTables(); err != nil {
-		p.status.LastError = err
-		return fmt.Errorf("failed to create tables: %w", err)
-	}
+	// Defer table creation to avoid blocking during startup
+	// Tables will be created lazily on first use
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		// Wait for SQL plugin to be ready using a timer
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			if err := p.createTables(); err != nil {
+				log.Printf("[Analytics] Failed to create tables: %v (will retry on first use)", err)
+				p.status.LastError = err
+			}
+		case <-p.ctx.Done():
+			return
+		}
+	}()
 
 	// Subscribe to chat events for real-time counting
 	if err := p.eventBus.Subscribe(eventbus.EventCytubeChatMsg, p.handleChatMessage); err != nil {

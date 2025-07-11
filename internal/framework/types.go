@@ -2,6 +2,7 @@ package framework
 
 import (
 	"encoding/json"
+	"time"
 )
 
 // EventData represents all possible data types that can be sent through the event bus
@@ -30,6 +31,10 @@ type EventData struct {
 	// For plugin communication
 	PluginRequest  *PluginRequest  `json:"plugin_request,omitempty"`
 	PluginResponse *PluginResponse `json:"plugin_response,omitempty"`
+
+	// For retry operations
+	RetryRequest *RetryRequest `json:"retry_request,omitempty"`
+	RetryStatus  *RetryStatus  `json:"retry_status,omitempty"`
 
 	// For raw messages (e.g., sending to Cytube)
 	RawMessage *RawMessageData `json:"raw_message,omitempty"`
@@ -173,4 +178,27 @@ type CommandResultData struct {
 	Success bool   `json:"success"`
 	Output  string `json:"output"`
 	Error   string `json:"error,omitempty"`
+}
+
+// RetryRequest represents a request to retry a failed operation
+type RetryRequest struct {
+	OperationID   string            `json:"operation_id"`
+	OperationType string            `json:"operation_type"`
+	TargetPlugin  string            `json:"target_plugin"`
+	EventType     string            `json:"event_type"`
+	Payload       json.RawMessage   `json:"payload"`
+	Metadata      map[string]string `json:"metadata"`
+	Priority      int               `json:"priority"`
+}
+
+// RetryStatus represents the status of a retry operation
+type RetryStatus struct {
+	OperationID   string    `json:"operation_id"`
+	OperationType string    `json:"operation_type"`
+	RetryCount    int       `json:"retry_count"`
+	MaxRetries    int       `json:"max_retries"`
+	Status        string    `json:"status"` // queued, processing, success, failed, dead_letter
+	LastError     string    `json:"last_error,omitempty"`
+	NextRetryTime time.Time `json:"next_retry_time,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }

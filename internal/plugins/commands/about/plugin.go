@@ -70,6 +70,8 @@ func (p *Plugin) Start() error {
 
 	// Subscribe to about command execution events
 	if err := p.eventBus.Subscribe("command.about.execute", p.handleCommand); err != nil {
+		// Emit failure event for retry
+		p.emitFailureEvent("command.about.failed", "subscription", "event_subscription", err)
 		return fmt.Errorf("failed to subscribe to command events: %w", err)
 	}
 
@@ -139,6 +141,8 @@ func (p *Plugin) registerCommand() {
 
 	if err := p.eventBus.Broadcast("command.register", regEvent); err != nil {
 		log.Printf("[ERROR] Failed to register about command: %v", err)
+		// Emit failure event for retry
+		p.emitFailureEvent("command.about.failed", "registration", "command_registration", err)
 	}
 }
 
@@ -288,5 +292,27 @@ func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
 	// Broadcast to plugin.response event for routing
 	if err := p.eventBus.Broadcast("plugin.response", response); err != nil {
 		log.Printf("[ERROR] Failed to send about plugin response: %v", err)
+		// Emit failure event for retry
+		p.emitFailureEvent("command.about.failed", req.ID, "response_delivery", err)
 	}
+}
+
+// emitFailureEvent emits a failure event for the retry mechanism
+func (p *Plugin) emitFailureEvent(eventType, correlationID, operationType string, err error) {
+	failureData := &framework.EventData{
+		KeyValue: map[string]string{
+			"correlation_id": correlationID,
+			"source":         p.name,
+			"operation_type": operationType,
+			"error":          err.Error(),
+			"timestamp":      time.Now().Format(time.RFC3339),
+		},
+	}
+
+	// Emit failure event asynchronously
+	go func() {
+		if err := p.eventBus.Broadcast(eventType, failureData); err != nil {
+			log.Printf("[About] Failed to emit failure event: %v", err)
+		}
+	}()
 }
