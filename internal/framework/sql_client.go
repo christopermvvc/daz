@@ -9,126 +9,51 @@ import (
 
 // SQLClient provides a convenient interface for event-based SQL operations
 type SQLClient struct {
-	eventBus EventBus
-	source   string
+	eventBus  EventBus
+	source    string
+	sqlHelper *SQLRequestHelper
 }
 
 // NewSQLClient creates a new SQL client
 func NewSQLClient(eventBus EventBus, source string) *SQLClient {
 	return &SQLClient{
-		eventBus: eventBus,
-		source:   source,
+		eventBus:  eventBus,
+		source:    source,
+		sqlHelper: NewSQLRequestHelper(eventBus, source),
 	}
 }
 
 // ExecContext executes a SQL statement with context
 func (c *SQLClient) ExecContext(ctx context.Context, query string, args ...interface{}) (int64, error) {
-	// Convert args to SQLParam
-	params := make([]SQLParam, len(args))
-	for i, arg := range args {
-		params[i] = NewSQLParam(arg)
+	// Determine timeout from context and use appropriate helper method
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout := time.Until(deadline)
+		return c.sqlHelper.ExecWithTimeout(ctx, query, timeout, args...)
 	}
 
-	// Generate correlation ID
-	correlationID := fmt.Sprintf("%s-%d", c.source, time.Now().UnixNano())
-
-	// Create exec request
-	request := &EventData{
-		SQLExecRequest: &SQLExecRequest{
-			ID:            correlationID,
-			CorrelationID: correlationID,
-			Query:         query,
-			Params:        params,
-			Timeout:       30 * time.Second,
-			RequestBy:     c.source,
-		},
-	}
-
-	// Create metadata
-	metadata := &EventMetadata{
-		CorrelationID: correlationID,
-		Timestamp:     time.Now(),
-		Source:        c.source,
-		Target:        "sql",
-	}
-
-	// Send request and wait for response
-	// Note: This sends to the sql plugin directly, not via broadcast
-	response, err := c.eventBus.Request(ctx, "sql", "sql.exec.request", request, metadata)
-	if err != nil {
-		return 0, fmt.Errorf("exec request failed: %w", err)
-	}
-
-	// Check response
-	if response != nil && response.SQLExecResponse != nil {
-		if !response.SQLExecResponse.Success {
-			return 0, fmt.Errorf("exec failed: %s", response.SQLExecResponse.Error)
-		}
-		return response.SQLExecResponse.RowsAffected, nil
-	}
-
-	return 0, fmt.Errorf("no response received")
+	// Use normal exec if no deadline is set (15s timeout, 3 retries)
+	return c.sqlHelper.NormalExec(ctx, query, args...)
 }
 
 // Exec executes a SQL statement (convenience method)
 func (c *SQLClient) Exec(query string, args ...interface{}) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := context.Background()
 
-	_, err := c.ExecContext(ctx, query, args...)
+	// Use slow exec for convenience method (30s timeout, 2 retries)
+	_, err := c.sqlHelper.SlowExec(ctx, query, args...)
 	return err
 }
 
 // QueryContext executes a SQL query with context
 func (c *SQLClient) QueryContext(ctx context.Context, query string, args ...interface{}) (*QueryRows, error) {
-	// Convert args to SQLParam
-	params := make([]SQLParam, len(args))
-	for i, arg := range args {
-		params[i] = NewSQLParam(arg)
+	// Determine timeout from context and use appropriate helper method
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout := time.Until(deadline)
+		return c.sqlHelper.QueryWithTimeout(ctx, query, timeout, args...)
 	}
 
-	// Generate correlation ID
-	correlationID := fmt.Sprintf("%s-%d", c.source, time.Now().UnixNano())
-
-	// Create query request
-	request := &EventData{
-		SQLQueryRequest: &SQLQueryRequest{
-			ID:            correlationID,
-			CorrelationID: correlationID,
-			Query:         query,
-			Params:        params,
-			Timeout:       30 * time.Second,
-			RequestBy:     c.source,
-		},
-	}
-
-	// Create metadata
-	metadata := &EventMetadata{
-		CorrelationID: correlationID,
-		Timestamp:     time.Now(),
-		Source:        c.source,
-		Target:        "sql",
-	}
-
-	// Send request and wait for response
-	response, err := c.eventBus.Request(ctx, "sql", "sql.query.request", request, metadata)
-	if err != nil {
-		return nil, fmt.Errorf("query request failed: %w", err)
-	}
-
-	// Check response
-	if response != nil && response.SQLQueryResponse != nil {
-		if !response.SQLQueryResponse.Success {
-			return nil, fmt.Errorf("query failed: %s", response.SQLQueryResponse.Error)
-		}
-		return &QueryRows{
-			columns: response.SQLQueryResponse.Columns,
-			rows:    response.SQLQueryResponse.Rows,
-			current: -1,
-		}, nil
-	}
-
-	return nil, fmt.Errorf("no response received")
+	// Use normal query if no deadline is set (15s timeout, 3 retries)
+	return c.sqlHelper.NormalQuery(ctx, query, args...)
 }
 
 // QuerySync performs a synchronous query (compatibility method)

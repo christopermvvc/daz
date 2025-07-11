@@ -573,7 +573,7 @@ func (eb *EventBus) Request(ctx context.Context, target string, eventType string
 	metadata.Target = target
 	metadata.ReplyTo = "eventbus"
 
-	// Create response channel
+	// Create response channel with buffer to prevent blocking
 	respCh := make(chan *pluginResponse, 1)
 
 	// Register pending request
@@ -581,25 +581,48 @@ func (eb *EventBus) Request(ctx context.Context, target string, eventType string
 	eb.pendingRequests[correlationID] = respCh
 	eb.syncMu.Unlock()
 
-	// Clean up on exit
-	defer func() {
+	// Enhanced cleanup function with context cancellation awareness
+	cleanup := func() {
 		eb.syncMu.Lock()
-		delete(eb.pendingRequests, correlationID)
+		// Check if the request is still pending before deleting
+		if _, exists := eb.pendingRequests[correlationID]; exists {
+			delete(eb.pendingRequests, correlationID)
+		}
 		eb.syncMu.Unlock()
+
+		// Close channel safely (check if not already closed)
+		select {
+		case <-respCh:
+			// Channel had pending data, drain it
+		default:
+			// Channel is empty
+		}
 		close(respCh)
-	}()
+	}
+	defer cleanup()
 
 	// Send request with metadata
 	if err := eb.SendWithMetadata(target, eventType, data, metadata); err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
-	// Wait for response with timeout
+	// Wait for response with enhanced timeout handling
 	select {
 	case resp := <-respCh:
+		if resp == nil {
+			return nil, fmt.Errorf("received nil response for correlation ID %s", correlationID)
+		}
 		return resp.data, resp.err
 	case <-ctx.Done():
-		return nil, fmt.Errorf("request timeout: %w", ctx.Err())
+		// Context cancelled - determine the specific cause
+		switch ctx.Err() {
+		case context.DeadlineExceeded:
+			return nil, fmt.Errorf("request to %s timed out: %w", target, ctx.Err())
+		case context.Canceled:
+			return nil, fmt.Errorf("request to %s was cancelled: %w", target, ctx.Err())
+		default:
+			return nil, fmt.Errorf("request to %s failed: %w", target, ctx.Err())
+		}
 	}
 }
 

@@ -160,20 +160,30 @@ func (p *Plugin) handleHelpCommand(req *framework.PluginRequest) {
 }
 
 func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
-	// Send response as PM to the requesting user
+	// Send response via plugin response system
 	username := req.Data.Command.Params["username"]
 	channel := req.Data.Command.Params["channel"]
 
 	response := &framework.EventData{
-		PrivateMessage: &framework.PrivateMessageData{
-			ToUser:  username,
-			Message: message,
-			Channel: channel,
+		PluginResponse: &framework.PluginResponse{
+			ID:      req.ID,
+			From:    p.name,
+			Success: true,
+			Data: &framework.ResponseData{
+				CommandResult: &framework.CommandResultData{
+					Success: true,
+					Output:  message,
+				},
+				KeyValue: map[string]string{
+					"username": username,
+					"channel":  channel,
+				},
+			},
 		},
 	}
 
-	// Broadcast to cytube.send.pm event
-	if err := p.eventBus.Broadcast("cytube.send.pm", response); err != nil {
-		log.Printf("[ERROR] Failed to send help PM response: %v", err)
+	// Broadcast to plugin.response event for routing
+	if err := p.eventBus.Broadcast("plugin.response", response); err != nil {
+		log.Printf("[ERROR] Failed to send help plugin response: %v", err)
 	}
 }

@@ -255,47 +255,39 @@ func (d *DatabaseChecker) HealthCheck(ctx context.Context) ComponentHealth {
 		Details:   &HealthDetails{},
 	}
 
-	// Try a simple query using event-based approach
+	// Use the new SQL request helper with retry logic for critical health checks
 	start := time.Now()
-	correlationID := fmt.Sprintf("health-check-%d", time.Now().UnixNano())
+	sqlHelper := framework.NewSQLRequestHelper(d.eventBus, "health-check")
 
-	// Create query request
-	request := &framework.EventData{
-		SQLQueryRequest: &framework.SQLQueryRequest{
-			ID:            correlationID,
-			CorrelationID: correlationID,
-			Query:         "SELECT 1",
-			Params:        []framework.SQLParam{},
-			Timeout:       5 * time.Second,
-			RequestBy:     "health-check",
-		},
-	}
-
-	// Create metadata for the request
-	metadata := &framework.EventMetadata{
-		CorrelationID: correlationID,
-		Timestamp:     time.Now(),
-		Source:        "health",
-		Target:        "sql",
-	}
-
-	// Send request and wait for response
-	responseData, err := d.eventBus.Request(ctx, "sql", "sql.query.request", request, metadata)
+	// Try a simple query using the critical request helper (5 retries, 45s timeout)
+	rows, err := sqlHelper.CriticalQuery(ctx, "SELECT 1")
 	if err != nil {
 		health.Status = StatusDown
 		health.Error = fmt.Sprintf("connection check failed: %v", err)
 		return health
 	}
 
-	// Check response
-	if responseData != nil && responseData.SQLQueryResponse != nil {
-		if !responseData.SQLQueryResponse.Success {
+	// Check if we got a result
+	if rows != nil {
+		defer rows.Close()
+		if !rows.Next() {
 			health.Status = StatusDown
-			health.Error = fmt.Sprintf("query failed: %s", responseData.SQLQueryResponse.Error)
+			health.Error = "query returned no results"
+			return health
 		}
-	} else {
-		health.Status = StatusDown
-		health.Error = "no response received"
+
+		var result int
+		if err := rows.Scan(&result); err != nil {
+			health.Status = StatusDown
+			health.Error = fmt.Sprintf("failed to scan result: %v", err)
+			return health
+		}
+
+		if result != 1 {
+			health.Status = StatusDown
+			health.Error = fmt.Sprintf("unexpected result: got %d, expected 1", result)
+			return health
+		}
 	}
 
 	health.Details.ResponseTimeMS = time.Since(start).Milliseconds()

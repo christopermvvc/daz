@@ -394,11 +394,11 @@ func TestHandleCommand(t *testing.T) {
 
 			// Check that a response was broadcast
 			bus.mu.Lock()
-			// Find the cytube.send.pm broadcast
+			// Find the plugin.response broadcast
 			var broadcast broadcastCall
 			found := false
 			for _, b := range bus.broadcasts {
-				if b.eventType == "cytube.send.pm" {
+				if b.eventType == "plugin.response" {
 					broadcast = b
 					found = true
 					break
@@ -406,21 +406,36 @@ func TestHandleCommand(t *testing.T) {
 			}
 			bus.mu.Unlock()
 			if !found {
-				t.Errorf("Expected cytube.send.pm broadcast not found")
+				t.Errorf("Expected plugin.response broadcast not found")
 				return
 			}
 
 			// Check message content
-			if broadcast.data.PrivateMessage == nil {
-				t.Fatal("Expected PrivateMessage data")
+			if broadcast.data.PluginResponse == nil {
+				t.Fatal("Expected PluginResponse data")
 			}
 
-			// Verify PM is sent to the correct user
-			if broadcast.data.PrivateMessage.ToUser != "testuser" {
-				t.Errorf("Expected PM to be sent to 'testuser', got '%s'", broadcast.data.PrivateMessage.ToUser)
+			// Verify response is from the about plugin
+			if broadcast.data.PluginResponse.From != "about" {
+				t.Errorf("Expected response from 'about', got '%s'", broadcast.data.PluginResponse.From)
 			}
 
-			message := broadcast.data.PrivateMessage.Message
+			// Verify response contains user information
+			if broadcast.data.PluginResponse.Data == nil || broadcast.data.PluginResponse.Data.KeyValue == nil {
+				t.Fatal("Expected KeyValue data in response")
+			}
+
+			username := broadcast.data.PluginResponse.Data.KeyValue["username"]
+			if username != "testuser" {
+				t.Errorf("Expected username 'testuser', got '%s'", username)
+			}
+
+			// Get the message from CommandResult
+			if broadcast.data.PluginResponse.Data.CommandResult == nil {
+				t.Fatal("Expected CommandResult data")
+			}
+
+			message := broadcast.data.PluginResponse.Data.CommandResult.Output
 			// Check for expected content based on admin status
 			for _, expectedStr := range tc.expectedContent {
 				if !strings.Contains(message, expectedStr) {

@@ -16,11 +16,12 @@ import (
 
 // mockEventBus implements framework.EventBus for testing
 type mockEventBus struct {
-	subscribers map[string][]framework.EventHandler
-	execCalls   []string
-	queryCalls  []string
-	sendCalls   []sendCall
-	mu          sync.Mutex
+	subscribers    map[string][]framework.EventHandler
+	execCalls      []string
+	queryCalls     []string
+	sendCalls      []sendCall
+	broadcastCalls []broadcastCall
+	mu             sync.Mutex
 
 	// Control query responses
 	queryResponses map[string]*mockQueryResult
@@ -32,17 +33,26 @@ type sendCall struct {
 	data      *framework.EventData
 }
 
+type broadcastCall struct {
+	eventType string
+	data      *framework.EventData
+}
+
 func newMockEventBus() *mockEventBus {
 	return &mockEventBus{
 		subscribers:    make(map[string][]framework.EventHandler),
 		execCalls:      []string{},
 		queryCalls:     []string{},
 		sendCalls:      []sendCall{},
+		broadcastCalls: []broadcastCall{},
 		queryResponses: make(map[string]*mockQueryResult),
 	}
 }
 
 func (m *mockEventBus) Broadcast(eventType string, data *framework.EventData) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.broadcastCalls = append(m.broadcastCalls, broadcastCall{eventType, data})
 	return nil
 }
 
@@ -472,12 +482,23 @@ func TestHandleStatsRequest(t *testing.T) {
 		t.Errorf("Expected at least 3 query calls, got %d", len(bus.queryCalls))
 	}
 
-	// Check that response was sent
-	if len(bus.sendCalls) != 1 {
-		t.Fatal("Expected one send call")
+	// Check that response was broadcast
+	if len(bus.broadcastCalls) != 1 {
+		t.Fatal("Expected one broadcast call")
 	}
-	if bus.sendCalls[0].target != "commandrouter" {
-		t.Errorf("Expected send to 'commandrouter', got '%s'", bus.sendCalls[0].target)
+	if bus.broadcastCalls[0].eventType != "plugin.response" {
+		t.Errorf("Expected broadcast to 'plugin.response', got '%s'", bus.broadcastCalls[0].eventType)
+	}
+
+	// Check that the response contains the expected data
+	if bus.broadcastCalls[0].data.PluginResponse == nil {
+		t.Fatal("Expected PluginResponse in broadcast data")
+	}
+	if bus.broadcastCalls[0].data.PluginResponse.From != "analytics" {
+		t.Errorf("Expected response from 'analytics', got '%s'", bus.broadcastCalls[0].data.PluginResponse.From)
+	}
+	if !bus.broadcastCalls[0].data.PluginResponse.Success {
+		t.Error("Expected successful response")
 	}
 }
 

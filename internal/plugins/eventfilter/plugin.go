@@ -203,6 +203,12 @@ func (p *Plugin) Start() error {
 		return fmt.Errorf("failed to subscribe to PM events: %w", err)
 	}
 
+	// Subscribe to plugin responses for routing
+	err = p.eventBus.Subscribe(eventbus.EventPluginResponse, p.handlePluginResponse)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to plugin response events: %w", err)
+	}
+
 	// Load admin users from file
 	p.loadAdminUsers()
 
@@ -748,4 +754,124 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 	if err != nil {
 		log.Printf("[EventFilter] Failed to route command: %v", err)
 	}
+}
+
+// handlePluginResponse processes plugin response events and routes them appropriately
+func (p *Plugin) handlePluginResponse(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok {
+		return fmt.Errorf("invalid event type for plugin response")
+	}
+
+	// Check if EventData and PluginResponse are present
+	if dataEvent.Data == nil || dataEvent.Data.PluginResponse == nil {
+		return fmt.Errorf("no plugin response data in event")
+	}
+
+	response := dataEvent.Data.PluginResponse
+
+	log.Printf("[EventFilter] Processing plugin response from %s (success: %v)",
+		response.From, response.Success)
+
+	// Handle different types of plugin responses
+	if response.Data != nil && response.Data.CommandResult != nil {
+		// This is a command response, route it as a PM
+		return p.handleCommandResponse(response)
+	}
+
+	// Handle error responses
+	if !response.Success && response.Error != "" {
+		log.Printf("[EventFilter] Plugin response error from %s: %s",
+			response.From, response.Error)
+		return p.handleErrorResponse(response)
+	}
+
+	// Log other response types for debugging
+	if response.Data != nil && response.Data.KeyValue != nil {
+		log.Printf("[EventFilter] Plugin response from %s with key-value data: %v",
+			response.From, response.Data.KeyValue)
+	}
+
+	return nil
+}
+
+// handleCommandResponse processes command responses and sends them as PMs
+func (p *Plugin) handleCommandResponse(response *framework.PluginResponse) error {
+	cmdResult := response.Data.CommandResult
+	if cmdResult == nil {
+		return fmt.Errorf("no command result in response")
+	}
+
+	// Extract user information from response data
+	var username, channel string
+	if response.Data.KeyValue != nil {
+		username = response.Data.KeyValue["username"]
+		channel = response.Data.KeyValue["channel"]
+	}
+
+	// If we don't have user info, try to extract from command result
+	if username == "" {
+		log.Printf("[EventFilter] No username found in command response from %s", response.From)
+		return nil
+	}
+
+	// Prepare the message
+	var message string
+	if cmdResult.Success {
+		message = cmdResult.Output
+	} else {
+		message = fmt.Sprintf("Command failed: %s", cmdResult.Error)
+	}
+
+	// Send as PM
+	pmData := &framework.EventData{
+		PrivateMessage: &framework.PrivateMessageData{
+			ToUser:  username,
+			Message: message,
+			Channel: channel,
+		},
+	}
+
+	log.Printf("[EventFilter] Routing command response from %s to PM for user %s",
+		response.From, username)
+
+	if err := p.eventBus.Broadcast("cytube.send.pm", pmData); err != nil {
+		log.Printf("[EventFilter] Failed to send command response PM: %v", err)
+		return err
+	}
+
+	return nil
+}
+
+// handleErrorResponse processes error responses from plugins
+func (p *Plugin) handleErrorResponse(response *framework.PluginResponse) error {
+	// Extract user information if available
+	var username, channel string
+	if response.Data != nil && response.Data.KeyValue != nil {
+		username = response.Data.KeyValue["username"]
+		channel = response.Data.KeyValue["channel"]
+	}
+
+	// If we have user information, send error as PM
+	if username != "" {
+		errorMessage := fmt.Sprintf("Error from %s: %s", response.From, response.Error)
+
+		pmData := &framework.EventData{
+			PrivateMessage: &framework.PrivateMessageData{
+				ToUser:  username,
+				Message: errorMessage,
+				Channel: channel,
+			},
+		}
+
+		log.Printf("[EventFilter] Routing error response from %s to PM for user %s",
+			response.From, username)
+
+		if err := p.eventBus.Broadcast("cytube.send.pm", pmData); err != nil {
+			log.Printf("[EventFilter] Failed to send error response PM: %v", err)
+			return err
+		}
+	}
+
+	return nil
 }

@@ -401,11 +401,11 @@ func TestHandleCommand(t *testing.T) {
 	// Check that a response was broadcast
 	bus.mu.Lock()
 	broadcastCount := len(bus.broadcasts)
-	// Find the cytube.send broadcast
+	// Find the plugin.response broadcast
 	var broadcast broadcastCall
 	found := false
 	for _, b := range bus.broadcasts {
-		if b.eventType == "cytube.send.pm" {
+		if b.eventType == "plugin.response" {
 			broadcast = b
 			found = true
 			break
@@ -413,14 +413,22 @@ func TestHandleCommand(t *testing.T) {
 	}
 	bus.mu.Unlock()
 	if !found {
-		t.Errorf("Expected cytube.send.pm broadcast not found in %d broadcasts", broadcastCount)
+		t.Errorf("Expected plugin.response broadcast not found in %d broadcasts", broadcastCount)
 		return
 	}
-	if broadcast.data.PrivateMessage == nil {
-		t.Error("Expected PrivateMessage data")
+	if broadcast.data.PluginResponse == nil {
+		t.Error("Expected PluginResponse data")
 	}
-	// Verify PM is sent to the requesting user
-	if broadcast.data.PrivateMessage.ToUser != "testuser" {
-		t.Errorf("Expected PM to user 'testuser', got '%s'", broadcast.data.PrivateMessage.ToUser)
+	// Verify response is from the help plugin
+	if broadcast.data.PluginResponse.From != "help" {
+		t.Errorf("Expected response from 'help', got '%s'", broadcast.data.PluginResponse.From)
+	}
+	// Verify response contains user information
+	if broadcast.data.PluginResponse.Data == nil || broadcast.data.PluginResponse.Data.KeyValue == nil {
+		t.Fatal("Expected KeyValue data in response")
+	}
+	username := broadcast.data.PluginResponse.Data.KeyValue["username"]
+	if username != "testuser" {
+		t.Errorf("Expected username 'testuser', got '%s'", username)
 	}
 }

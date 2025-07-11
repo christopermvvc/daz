@@ -469,6 +469,12 @@ func (p *Plugin) handleSeenRequest(event framework.Event) error {
 		return nil
 	}
 
+	// Extract correlation ID from plugin request if available
+	correlationID := ""
+	if dataEvent.Data.PluginRequest != nil {
+		correlationID = dataEvent.Data.PluginRequest.ID
+	}
+
 	// Query database for user info
 	query := `
 		SELECT username, joined_at, left_at, last_activity, is_active
@@ -482,7 +488,9 @@ func (p *Plugin) handleSeenRequest(event framework.Event) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	rows, err := p.sqlClient.QuerySync(ctx, query, channel, targetUser)
+	// Use the new SQL request helper with retry logic for user info queries
+	sqlHelper := framework.NewSQLRequestHelper(p.eventBus, "usertracker")
+	rows, err := sqlHelper.SlowQuery(ctx, query, channel, targetUser)
 	if err != nil {
 		return fmt.Errorf("failed to query user info: %w", err)
 	}
@@ -517,22 +525,13 @@ func (p *Plugin) handleSeenRequest(event framework.Event) error {
 			response = fmt.Sprintf("%s was last seen %s ago", username, formatDuration(duration))
 		}
 
-		// Send response
-		responseData := &framework.EventData{
-			RawMessage: &framework.RawMessageData{
-				Message: response,
-			},
-		}
-		return p.eventBus.Send("commandrouter", "plugin.response", responseData)
+		// Send proper plugin response
+		return p.sendPluginResponse(correlationID, response, true, "")
 	}
 
 	// User not found
-	responseData := &framework.EventData{
-		RawMessage: &framework.RawMessageData{
-			Message: fmt.Sprintf("I haven't seen %s", targetUser),
-		},
-	}
-	return p.eventBus.Send("commandrouter", "plugin.response", responseData)
+	notFoundResponse := fmt.Sprintf("I haven't seen %s", targetUser)
+	return p.sendPluginResponse(correlationID, notFoundResponse, true, "")
 }
 
 // cleanupInactiveSessions periodically marks inactive sessions
@@ -576,6 +575,29 @@ func (p *Plugin) doCleanup() {
 		}
 	}
 	p.mu.Unlock()
+}
+
+// sendPluginResponse sends a properly formatted plugin response
+func (p *Plugin) sendPluginResponse(correlationID, message string, success bool, errorMsg string) error {
+	// Create the response data structure
+	responseData := &framework.EventData{
+		PluginResponse: &framework.PluginResponse{
+			ID:      correlationID,
+			From:    p.name,
+			Success: success,
+			Error:   errorMsg,
+			Data: &framework.ResponseData{
+				CommandResult: &framework.CommandResultData{
+					Success: success,
+					Output:  message,
+					Error:   errorMsg,
+				},
+			},
+		},
+	}
+
+	// Broadcast the response using the proper event type
+	return p.eventBus.Broadcast(eventbus.EventPluginResponse, responseData)
 }
 
 // formatDuration formats a duration in human-readable form

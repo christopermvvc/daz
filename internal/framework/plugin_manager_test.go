@@ -172,7 +172,7 @@ func TestPluginManagerDependencyResolution(t *testing.T) {
 			if tt.expectError {
 				if err == nil {
 					t.Error("Expected error but got nil")
-				} else if tt.errorMsg != "" && !contains(err.Error(), tt.errorMsg) {
+				} else if tt.errorMsg != "" && !stringContains(err.Error(), tt.errorMsg) {
 					t.Errorf("Expected error containing '%s', got '%s'", tt.errorMsg, err.Error())
 				}
 			} else {
@@ -325,6 +325,6 @@ func TestPrepareConfigJSON(t *testing.T) {
 }
 
 // Helper function
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && (s[0:len(substr)] == substr || contains(s[1:], substr)))
+func stringContains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && (s[0:len(substr)] == substr || stringContains(s[1:], substr)))
 }

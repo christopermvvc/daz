@@ -134,6 +134,41 @@ var (
 			Help: "Uptime of the bot in seconds",
 		},
 	)
+
+	// Request success/failure rate metrics
+	RequestSuccessRate = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "daz_request_success_rate",
+			Help: "Success rate of requests (0-1)",
+		},
+		[]string{"target", "event_type"},
+	)
+
+	RequestFailureRate = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "daz_request_failure_rate",
+			Help: "Failure rate of requests (0-1)",
+		},
+		[]string{"target", "event_type"},
+	)
+
+	// Request timeout metrics
+	RequestTimeouts = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "daz_request_timeouts_total",
+			Help: "Total number of request timeouts",
+		},
+		[]string{"target", "event_type"},
+	)
+
+	// Average response time metrics
+	AverageResponseTime = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "daz_average_response_time_seconds",
+			Help: "Average response time for requests in seconds",
+		},
+		[]string{"target", "event_type"},
+	)
 )
 
 // Collector wraps metrics collection functionality
@@ -165,5 +200,29 @@ func UpdatePluginMetrics(pluginName string, running bool, eventsHandled int64, e
 func UpdateEventBusMetrics(droppedCounts map[string]int64) {
 	for eventType, count := range droppedCounts {
 		EventsDropped.WithLabelValues(eventType).Add(float64(count))
+	}
+}
+
+// UpdateRequestMetrics updates request-related metrics
+func UpdateRequestMetrics(target, eventType string, success bool, duration float64, isTimeout bool) {
+	if success {
+		RequestSuccessRate.WithLabelValues(target, eventType).Inc()
+	} else {
+		RequestFailureRate.WithLabelValues(target, eventType).Inc()
+	}
+
+	if isTimeout {
+		RequestTimeouts.WithLabelValues(target, eventType).Inc()
+	}
+
+	AverageResponseTime.WithLabelValues(target, eventType).Set(duration)
+}
+
+// CalculateRequestSuccessRate calculates and updates the success rate for a target/event type
+func CalculateRequestSuccessRate(target, eventType string, successCount, totalCount int64) {
+	if totalCount > 0 {
+		rate := float64(successCount) / float64(totalCount)
+		RequestSuccessRate.WithLabelValues(target, eventType).Set(rate)
+		RequestFailureRate.WithLabelValues(target, eventType).Set(1.0 - rate)
 	}
 }

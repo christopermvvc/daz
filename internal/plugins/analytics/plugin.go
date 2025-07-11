@@ -393,10 +393,12 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 		WHERE channel = $1 AND hour_start = date_trunc('hour', NOW())
 	`
 
-	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
 	defer cancel()
 
-	rows, err := p.sqlClient.QuerySync(ctx, currentHourQuery, channel)
+	// Use the new SQL request helper with retry logic for critical analytics queries
+	sqlHelper := framework.NewSQLRequestHelper(p.eventBus, "analytics")
+	rows, err := sqlHelper.NormalQuery(ctx, currentHourQuery, channel)
 	if err != nil {
 		return fmt.Errorf("failed to query current hour stats: %w", err)
 	}
@@ -489,14 +491,22 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 		todayMessages, todayUsers, todayPlays,
 		topChatters)
 
-	// Send response
+	// Send response using proper plugin response broadcasting
 	responseData := &framework.EventData{
-		RawMessage: &framework.RawMessageData{
-			Message: response,
+		PluginResponse: &framework.PluginResponse{
+			ID:      "stats-response",
+			From:    p.name,
+			Success: true,
+			Data: &framework.ResponseData{
+				KeyValue: map[string]string{
+					"message": response,
+					"type":    "stats",
+				},
+			},
 		},
 	}
 	p.status.EventsHandled++
-	return p.eventBus.Send("commandrouter", "plugin.response", responseData)
+	return p.eventBus.Broadcast("plugin.response", responseData)
 }
 
 // runHourlyAggregation performs hourly stats aggregation

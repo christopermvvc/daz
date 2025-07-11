@@ -194,15 +194,10 @@ func (p *Plugin) Start() error {
 		return fmt.Errorf("failed to subscribe to media update events: %w", err)
 	}
 
-	// Subscribe to command requests for media info
-	if err := p.eventBus.Subscribe("plugin.mediatracker.nowplaying", p.handleNowPlayingRequest); err != nil {
+	// Subscribe to command execution events
+	if err := p.eventBus.Subscribe("command.mediatracker.execute", p.handleCommand); err != nil {
 		p.status.LastError = err
-		return fmt.Errorf("failed to subscribe to nowplaying requests: %w", err)
-	}
-
-	if err := p.eventBus.Subscribe("plugin.mediatracker.stats", p.handleStatsRequest); err != nil {
-		p.status.LastError = err
-		return fmt.Errorf("failed to subscribe to stats requests: %w", err)
+		return fmt.Errorf("failed to subscribe to command execution events: %w", err)
 	}
 
 	// Subscribe to playlist events to populate library from initial playlist load
@@ -228,6 +223,9 @@ func (p *Plugin) Start() error {
 	p.running = true
 	p.status.State = "running"
 	p.status.Uptime = time.Since(time.Now())
+
+	// Register commands with the eventfilter plugin
+	p.registerCommands()
 
 	// Signal that the plugin is ready
 	close(p.readyChan)
@@ -717,8 +715,70 @@ func (p *Plugin) bulkAddToLibrary(channel string, items []framework.QueueItem) e
 	return p.sqlClient.Exec(sqlStr.String(), params...)
 }
 
-// handleNowPlayingRequest handles requests for current media info
-func (p *Plugin) handleNowPlayingRequest(event framework.Event) error {
+// registerCommands registers commands with the eventfilter plugin
+func (p *Plugin) registerCommands() {
+	// Register nowplaying and stats commands
+	regEvent := &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			To:   "eventfilter",
+			From: p.name,
+			Type: "register",
+			Data: &framework.RequestData{
+				KeyValue: map[string]string{
+					"commands": "nowplaying,np,stats,mediastats",
+					"min_rank": "0",
+				},
+			},
+		},
+	}
+
+	if err := p.eventBus.Broadcast("command.register", regEvent); err != nil {
+		log.Printf("[ERROR] Failed to register mediatracker commands: %v", err)
+	}
+}
+
+// handleCommand handles plugin command requests
+func (p *Plugin) handleCommand(event framework.Event) error {
+	// Check if this is a DataEvent which carries EventData
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok {
+		return nil
+	}
+
+	// Handle DataEvent
+	if dataEvent.Data == nil || dataEvent.Data.PluginRequest == nil {
+		return nil
+	}
+
+	// Handle asynchronously
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.handleMediaTrackerCommand(dataEvent.Data.PluginRequest)
+	}()
+
+	return nil
+}
+
+// handleMediaTrackerCommand processes the actual command execution
+func (p *Plugin) handleMediaTrackerCommand(req *framework.PluginRequest) {
+	if req.Data == nil || req.Data.Command == nil {
+		return
+	}
+
+	cmdName := req.Data.Command.Name
+	switch cmdName {
+	case "nowplaying", "np":
+		p.handleNowPlayingCommand(req)
+	case "stats", "mediastats":
+		p.handleStatsCommand(req)
+	default:
+		log.Printf("[MediaTracker] Unknown command: %s", cmdName)
+	}
+}
+
+// handleNowPlayingCommand handles nowplaying command requests
+func (p *Plugin) handleNowPlayingCommand(req *framework.PluginRequest) {
 	p.mu.RLock()
 	current := p.currentMedia
 	p.mu.RUnlock()
@@ -741,31 +801,17 @@ func (p *Plugin) handleNowPlayingRequest(event framework.Event) error {
 			formatDuration(remaining))
 	}
 
-	// Send response
-	responseData := &framework.EventData{
-		RawMessage: &framework.RawMessageData{
-			Message: response,
-		},
-	}
+	p.sendResponse(req, response)
 	p.status.EventsHandled++
-	return p.eventBus.Send("commandrouter", "plugin.response", responseData)
 }
 
-// handleStatsRequest handles requests for media statistics
-func (p *Plugin) handleStatsRequest(event framework.Event) error {
-	// Get channel from event context
-	dataEvent, ok := event.(*framework.DataEvent)
-	if !ok || dataEvent.Data == nil {
-		return nil
-	}
-
-	channel := ""
-	if dataEvent.Data.ChatMessage != nil {
-		channel = dataEvent.Data.ChatMessage.Channel
-	}
+// handleStatsCommand handles stats command requests
+func (p *Plugin) handleStatsCommand(req *framework.PluginRequest) {
+	// Get channel from request context
+	channel := req.Data.Command.Params["channel"]
 	if channel == "" {
 		log.Printf("[MediaTracker] Skipping stats request without channel context")
-		return nil
+		return
 	}
 
 	// Query most played media
@@ -777,12 +823,16 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 		LIMIT 5
 	`
 
-	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
 	defer cancel()
 
-	rows, err := p.sqlClient.QuerySync(ctx, query, channel)
+	// Use the new SQL request helper with retry logic for media statistics queries
+	sqlHelper := framework.NewSQLRequestHelper(p.eventBus, "mediatracker")
+	rows, err := sqlHelper.NormalQuery(ctx, query, channel)
 	if err != nil {
-		return fmt.Errorf("failed to query stats: %w", err)
+		log.Printf("[MediaTracker] Failed to query stats: %v", err)
+		p.sendResponse(req, "Failed to retrieve media statistics")
+		return
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -813,14 +863,27 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 		response = "No media statistics available yet"
 	}
 
-	// Send response
-	responseData := &framework.EventData{
-		RawMessage: &framework.RawMessageData{
-			Message: response,
+	p.sendResponse(req, response)
+	p.status.EventsHandled++
+}
+
+// sendResponse sends a response as a private message to the requesting user
+func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
+	username := req.Data.Command.Params["username"]
+	channel := req.Data.Command.Params["channel"]
+
+	response := &framework.EventData{
+		PrivateMessage: &framework.PrivateMessageData{
+			ToUser:  username,
+			Message: message,
+			Channel: channel,
 		},
 	}
-	p.status.EventsHandled++
-	return p.eventBus.Send("commandrouter", "plugin.response", responseData)
+
+	// Broadcast to cytube.send.pm event
+	if err := p.eventBus.Broadcast("cytube.send.pm", response); err != nil {
+		log.Printf("[ERROR] Failed to send MediaTracker PM response: %v", err)
+	}
 }
 
 // endMediaPlay marks a media play as ended

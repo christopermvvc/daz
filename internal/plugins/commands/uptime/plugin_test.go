@@ -386,21 +386,36 @@ func TestHandleCommand(t *testing.T) {
 			// Get the second broadcast (the response)
 			broadcast := bus.broadcasts[1]
 			bus.mu.Unlock()
-			if broadcast.eventType != "cytube.send.pm" {
-				t.Errorf("Expected broadcast eventType 'cytube.send.pm', got '%s'", broadcast.eventType)
+			if broadcast.eventType != "plugin.response" {
+				t.Errorf("Expected broadcast eventType 'plugin.response', got '%s'", broadcast.eventType)
 			}
 
 			// Check message content
-			if broadcast.data.PrivateMessage == nil {
-				t.Fatal("Expected PrivateMessage data")
+			if broadcast.data.PluginResponse == nil {
+				t.Fatal("Expected PluginResponse data")
 			}
 
-			// Verify PM is sent to the correct user
-			if broadcast.data.PrivateMessage.ToUser != "testuser" {
-				t.Errorf("Expected PM to be sent to 'testuser', got '%s'", broadcast.data.PrivateMessage.ToUser)
+			// Verify response is from uptime plugin
+			if broadcast.data.PluginResponse.From != "uptime" {
+				t.Errorf("Expected response from 'uptime', got '%s'", broadcast.data.PluginResponse.From)
 			}
 
-			message := broadcast.data.PrivateMessage.Message
+			// Verify response contains user information
+			if broadcast.data.PluginResponse.Data == nil || broadcast.data.PluginResponse.Data.KeyValue == nil {
+				t.Fatal("Expected KeyValue data in response")
+			}
+
+			username := broadcast.data.PluginResponse.Data.KeyValue["username"]
+			if username != "testuser" {
+				t.Errorf("Expected username 'testuser', got '%s'", username)
+			}
+
+			// Get the message from CommandResult
+			if broadcast.data.PluginResponse.Data.CommandResult == nil {
+				t.Fatal("Expected CommandResult data")
+			}
+
+			message := broadcast.data.PluginResponse.Data.CommandResult.Output
 			if !strings.Contains(message, tc.expectedPrefix) {
 				t.Errorf("Expected message to contain '%s', got '%s'", tc.expectedPrefix, message)
 			}

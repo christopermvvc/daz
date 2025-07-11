@@ -16,11 +16,12 @@ import (
 
 // mockEventBus implements framework.EventBus for testing
 type mockEventBus struct {
-	subscribers map[string][]framework.EventHandler
-	execCalls   []string
-	queryCalls  []string
-	sendCalls   []sendCall
-	mu          sync.Mutex
+	subscribers    map[string][]framework.EventHandler
+	execCalls      []string
+	queryCalls     []string
+	sendCalls      []sendCall
+	broadcastCalls []sendCall
+	mu             sync.Mutex
 
 	// Control query responses
 	queryResponses map[string]*mockQueryResult
@@ -38,11 +39,15 @@ func newMockEventBus() *mockEventBus {
 		execCalls:      []string{},
 		queryCalls:     []string{},
 		sendCalls:      []sendCall{},
+		broadcastCalls: []sendCall{},
 		queryResponses: make(map[string]*mockQueryResult),
 	}
 }
 
 func (m *mockEventBus) Broadcast(eventType string, data *framework.EventData) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.broadcastCalls = append(m.broadcastCalls, sendCall{"", eventType, data})
 	return nil
 }
 
@@ -305,8 +310,9 @@ func TestPluginStart(t *testing.T) {
 	expectedSubscriptions := []string{
 		eventbus.EventCytubeVideoChange,
 		"cytube.event.queue",
-		"plugin.mediatracker.nowplaying",
-		"plugin.mediatracker.stats",
+		eventbus.EventCytubeMediaUpdate,
+		"cytube.event.playlist",
+		"command.mediatracker.execute",
 	}
 
 	for _, eventType := range expectedSubscriptions {
@@ -381,7 +387,7 @@ func TestHandleMediaChange(t *testing.T) {
 	}
 }
 
-func TestHandleNowPlayingRequest(t *testing.T) {
+func TestHandleNowPlayingCommand(t *testing.T) {
 	p := NewPlugin(nil)
 	bus := newMockEventBus()
 
@@ -391,22 +397,29 @@ func TestHandleNowPlayingRequest(t *testing.T) {
 	}
 
 	// Test with no current media
-	event := &framework.DataEvent{
-		EventType: "plugin.mediatracker.nowplaying",
-		Data:      &framework.EventData{},
+	req := &framework.PluginRequest{
+		From: "eventfilter",
+		To:   "mediatracker",
+		Type: "execute",
+		Data: &framework.RequestData{
+			Command: &framework.CommandData{
+				Name: "nowplaying",
+				Params: map[string]string{
+					"username": "testuser",
+					"channel":  "testchannel",
+				},
+			},
+		},
 	}
 
-	err = p.handleNowPlayingRequest(event)
-	if err != nil {
-		t.Fatalf("handleNowPlayingRequest failed: %v", err)
-	}
+	p.handleNowPlayingCommand(req)
 
-	// Check response
-	if len(bus.sendCalls) != 1 {
-		t.Fatal("Expected one send call")
+	// Check response - should be one broadcast call to cytube.send.pm
+	if len(bus.broadcastCalls) != 1 {
+		t.Fatal("Expected one broadcast call")
 	}
-	if bus.sendCalls[0].target != "commandrouter" {
-		t.Errorf("Expected send to 'commandrouter', got '%s'", bus.sendCalls[0].target)
+	if bus.broadcastCalls[0].eventType != "cytube.send.pm" {
+		t.Errorf("Expected broadcast to 'cytube.send.pm', got '%s'", bus.broadcastCalls[0].eventType)
 	}
 
 	// Set current media
@@ -419,14 +432,11 @@ func TestHandleNowPlayingRequest(t *testing.T) {
 	}
 
 	// Test with current media
-	err = p.handleNowPlayingRequest(event)
-	if err != nil {
-		t.Fatalf("handleNowPlayingRequest with media failed: %v", err)
-	}
+	p.handleNowPlayingCommand(req)
 
-	// Should have 2 send calls now
-	if len(bus.sendCalls) != 2 {
-		t.Fatal("Expected two send calls")
+	// Should have 2 broadcast calls now
+	if len(bus.broadcastCalls) != 2 {
+		t.Fatal("Expected two broadcast calls")
 	}
 }
 

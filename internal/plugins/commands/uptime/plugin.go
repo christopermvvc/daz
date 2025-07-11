@@ -211,17 +211,27 @@ func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
 		responseMessage = "This command is admin-only."
 	}
 
-	// Always respond via PM for both admins and non-admins
+	// Send response via plugin response system
 	response := &framework.EventData{
-		PrivateMessage: &framework.PrivateMessageData{
-			ToUser:  username,
-			Message: responseMessage,
-			Channel: channel,
+		PluginResponse: &framework.PluginResponse{
+			ID:      req.ID,
+			From:    p.name,
+			Success: true,
+			Data: &framework.ResponseData{
+				CommandResult: &framework.CommandResultData{
+					Success: true,
+					Output:  responseMessage,
+				},
+				KeyValue: map[string]string{
+					"username": username,
+					"channel":  channel,
+				},
+			},
 		},
 	}
 
-	// Broadcast to cytube.send.pm event
-	if err := p.eventBus.Broadcast("cytube.send.pm", response); err != nil {
-		log.Printf("[ERROR] Failed to send uptime PM response: %v", err)
+	// Broadcast to plugin.response event for routing
+	if err := p.eventBus.Broadcast("plugin.response", response); err != nil {
+		log.Printf("[ERROR] Failed to send uptime plugin response: %v", err)
 	}
 }
