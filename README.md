@@ -1,6 +1,8 @@
 <div align="center">
   <img src="logo.png" alt="Daz Logo" width="200"/>
   
+  <sub><i>AI-slop portrait of Dazza, a former brash bogan-flavored chatbot that lead to the development of Daz.</i></sub>
+  
   # Daz - Modular Cytube Chat Bot
   
   [![Go Version](https://img.shields.io/badge/go-1.23+-00ADD8?style=for-the-badge&logo=go)](https://golang.org/)
