@@ -5,27 +5,74 @@
   
   [![Go Version](https://img.shields.io/badge/go-1.23+-00ADD8?style=for-the-badge&logo=go)](https://golang.org/)
   [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14+-316192?style=for-the-badge&logo=postgresql)](https://www.postgresql.org/)
-  [![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
-  [![Docker](https://img.shields.io/badge/docker-ready-2496ED?style=for-the-badge&logo=docker)](https://www.docker.com/)
+  [![License](https://img.shields.io/badge/license-GPLv3-blue?style=for-the-badge)](LICENSE)
+  [![Build Status](https://img.shields.io/badge/build-passing-brightgreen?style=for-the-badge)](https://github.com/hildolfr/daz/actions)
+  [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=for-the-badge)](http://makeapullrequest.com)
   
-  *A resilient, plugin-based chat bot for Cytube channels built with Go*
+  *🚀 A resilient, plugin-based chat bot for Cytube channels built with Go*
+  
+  ### 🌟 The Ultimate Cytube Companion Bot
 </div>
+
+---
+
+<div align="center">
+  
+  ### ⚡ Lightning Fast • 🛡️ Rock Solid • 🎨 Infinitely Extensible
+  
+</div>
+
+---
 
 ## 🎯 Overview
 
-Daz is a modular, event-driven chat bot designed for [Cytube](https://cytu.be) channels. Built with Go, it features a robust plugin architecture, PostgreSQL persistence, and multi-room support. Whether you're managing a single channel or multiple rooms, Daz provides the flexibility and reliability you need.
+**Daz** is not just another chat bot – it's a powerhouse modular system designed for [Cytube](https://cytu.be) channels. Built with Go for blazing performance, featuring a robust plugin architecture, enterprise-grade PostgreSQL persistence, and seamless multi-room support. Whether you're managing a single channel or orchestrating multiple rooms, Daz delivers unmatched flexibility and reliability.
 
-## ✨ Features
+## ✨ Why Daz?
 
-- **🔌 Plugin-Based Architecture** - Extend functionality with custom plugins
-- **🏠 Multi-Room Support** - Connect to multiple Cytube channels simultaneously
-- **🗄️ PostgreSQL Integration** - Persistent storage for events, users, and media
-- **🔄 Resilient Connections** - Automatic reconnection with exponential backoff
-- **📊 Analytics & Tracking** - Monitor user activity, media plays, and chat statistics
-- **🎮 Command System** - Extensible command framework with cooldowns and permissions
-- **🚀 High Performance** - Event-driven architecture with priority queuing
-- **❤️ Health Monitoring** - Built-in health checks and Prometheus metrics
-- **🔧 Easy Deployment** - Docker support and systemd service included
+<table>
+<tr>
+<td width="50%">
+
+### 🚀 **Performance First**
+- Event-driven architecture with priority queuing
+- Non-blocking message delivery
+- Optimized for thousands of events per second
+
+### 🔌 **Infinitely Extensible**
+- Drop-in plugin system
+- Clean API for custom functionality
+- Hot-swappable configurations
+
+</td>
+<td width="50%">
+
+### 🛡️ **Built to Last**
+- Automatic reconnection with exponential backoff
+- Persistent retry mechanisms
+- Zero data loss on restarts
+
+### 📊 **Intelligence Built-In**
+- Real-time analytics and tracking
+- User behavior monitoring
+- Media play statistics
+
+</td>
+</tr>
+</table>
+
+## 🎯 Core Features
+
+> **"Daz doesn't just connect to Cytube – it transforms your channel experience"**
+
+- **🏠 Multi-Room Mastery** - Seamlessly manage multiple Cytube channels from a single instance
+- **🗄️ PostgreSQL Power** - Enterprise-grade data persistence for events, users, and media
+- **🎮 Smart Commands** - Intelligent command framework with cooldowns, permissions, and aliases
+- **📈 Live Analytics** - Real-time insights into your channel's activity and health
+- **🔄 Self-Healing** - Automatic recovery from failures with persistent retry queues
+- **⚡ Lightning Fast** - Handles thousands of events per second without breaking a sweat
+- **🛡️ Rock Solid** - Production-tested reliability with comprehensive error handling
+- **📡 Health Monitoring** - Built-in health checks and Prometheus metrics for observability
 
 ## 🚀 Quick Start
 
@@ -95,14 +142,30 @@ See [config.json.example](config.json.example) for a complete configuration refe
 
 ## 🏗️ Architecture
 
-Daz follows an event-driven architecture with these core components:
+<div align="center">
 
-- **Core Plugin** - Manages WebSocket connections to Cytube
-- **EventBus** - Central message broker for inter-plugin communication
-- **Plugin System** - Modular components for specific functionality
-- **SQL Plugin** - Handles database persistence
+```mermaid
+graph TD
+    A[Cytube WebSocket] -->|Events| B[Core Plugin]
+    B -->|Broadcast| C[EventBus]
+    C -->|Priority Queue| D[SQL Plugin]
+    C -->|Commands| E[EventFilter]
+    C -->|Track| F[UserTracker]
+    C -->|Monitor| G[MediaTracker]
+    C -->|Analyze| H[Analytics]
+    E -->|Route| I[Command Plugins]
+```
 
-For detailed architecture information, see [daz-chatbot-architecture.md](daz-chatbot-architecture.md).
+</div>
+
+Daz's event-driven architecture ensures maximum performance and reliability:
+
+- **⚡ Core Plugin** - Lightning-fast WebSocket connections to Cytube
+- **🚦 EventBus** - High-performance message broker with priority queuing
+- **🧩 Plugin System** - Drop-in components for endless customization
+- **💾 SQL Plugin** - Enterprise-grade PostgreSQL persistence
+
+> 📖 For the complete architecture deep-dive, see [daz-chatbot-architecture.md](daz-chatbot-architecture.md)
 
 ## 📦 Built-in Plugins
 
@@ -161,19 +224,30 @@ func (p *MyPlugin) Init(eventBus framework.EventBus, config json.RawMessage) err
 }
 ```
 
-## 🐳 Docker Deployment
+## 🚀 Deployment
 
-### Using Docker Compose
+### Systemd Service
 
 ```bash
-docker-compose up -d
+# Copy the service file
+sudo cp scripts/daz.service /etc/systemd/system/
+
+# Enable and start the service
+sudo systemctl enable daz
+sudo systemctl start daz
+
+# Check status
+sudo systemctl status daz
 ```
 
-### Building the Image
+### Manual Deployment
 
 ```bash
-docker build -t daz:latest .
-docker run -d --name daz -v ./config.json:/app/config.json daz:latest
+# Run in background with logging
+nohup ./bin/daz > daz.log 2>&1 &
+
+# Or use screen/tmux for persistent sessions
+screen -S daz ./bin/daz
 ```
 
 ## 📊 Monitoring
@@ -197,7 +271,17 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 
 ## 📝 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+
+```
+Daz - Modular Cytube Chat Bot
+Copyright (C) 2025 The Daz Contributors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+```
 
 ## 🙏 Acknowledgments
 
@@ -220,5 +304,15 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 <div align="center">
-  Made with ❤️ by the Daz community
+
+### 🌟 Join the Daz Revolution!
+
+**Daz** is transforming how Cytube channels operate. Be part of something amazing.
+
+[![Star](https://img.shields.io/github/stars/hildolfr/daz?style=social)](https://github.com/hildolfr/daz/stargazers)
+[![Fork](https://img.shields.io/github/forks/hildolfr/daz?style=social)](https://github.com/hildolfr/daz/network/members)
+[![Watch](https://img.shields.io/github/watchers/hildolfr/daz?style=social)](https://github.com/hildolfr/daz/subscription)
+
+Made with ❤️ by the Daz community
+
 </div>
