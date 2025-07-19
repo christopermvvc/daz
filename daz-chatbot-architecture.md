@@ -10,31 +10,34 @@ Daz is a modular Go chatbot system designed for Cytube channels. It features an 
 
 ```
 ┌─────────────────────────────────────────────────┐
+│              Core Plugin                        │
+│    (Standalone - Not Plugin Managed)            │
+│    • WebSocket connections to Cytube            │
+│    • Multi-room support                         │
+│    • Event parsing and broadcasting             │
+└─────────────────────┬───────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────┐
 │                  EventBus                       │
 │         (Central Message Broker)                │
 │    • Priority-based message queuing             │
 │    • Request/Response patterns                  │
-│    • Tag-based event filtering                  │
-└────────────┬────────────┬────────────┬──────────┘
-             │            │            │
-     ┌───────▼──────┐ ┌───▼────┐ ┌────▼─────┐
-     │ Core Plugin  │ │  SQL   │ │  Event   │
-     │              │ │ Plugin │ │  Filter  │
-     │ • WebSocket  │ │        │ │          │
-     │ • Cytube API │ │ • DB   │ │ • Routes │
-     │ • Multi-room │ │ • Log  │ │ • Cmds   │
-     └──────────────┘ └────────┘ └──────────┘
-              │                          │
-              └────────┬─────────────────┘
-                      │
-               ┌──────▼──────────────────┐
-               │   Feature Plugins       │
-               │ • UserTracker           │
-               │ • MediaTracker          │
-               │ • Analytics             │
-               │ • Retry                 │
-               │ • Commands              │
-               └─────────────────────────┘
+│    • Pattern-based subscriptions                │
+└──┬────────┬────────┬────────┬────────┬─────────┘
+   │        │        │        │        │
+   ▼        ▼        ▼        ▼        ▼
+┌─────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌────────┐
+│ SQL │ │Event │ │Retry │ │User  │ │Media   │
+│     │ │Filter│ │      │ │Track │ │Tracker │
+└─────┘ └──────┘ └──────┘ └──────┘ └────────┘
+   │                          │         │
+   ▼                          ▼         ▼
+┌─────────────┐         ┌──────────┐ ┌─────────┐
+│  Analytics  │         │ Commands │ │ Others  │
+└─────────────┘         └──────────┘ └─────────┘
+
+Plugin Manager controls all plugins except Core
 ```
 
 ### Design Principles
@@ -69,7 +72,13 @@ The EventBus is the central nervous system of Daz, handling all inter-component 
 
 ### Core Plugin
 
-Manages WebSocket connections to Cytube channels using the Socket.IO v4 protocol.
+Manages WebSocket connections to Cytube channels using the Socket.IO v4 protocol. This plugin is NOT managed by the PluginManager and has its own initialization flow.
+
+**Key Differences:**
+- Initialized separately before PluginManager
+- Has custom `Initialize()` method (not framework.Plugin interface)
+- Starts room connections only after all other plugins are ready
+- Directly integrated with main.go startup sequence
 
 **Responsibilities:**
 - Establish WebSocket connections to Cytube servers
@@ -77,6 +86,7 @@ Manages WebSocket connections to Cytube channels using the Socket.IO v4 protocol
 - Parse incoming Cytube events and convert to framework events
 - Handle reconnection with exponential backoff
 - Support multiple simultaneous channel connections
+- Broadcast all Cytube events to EventBus
 
 **Connection Flow:**
 1. Discover server URL via `/socketconfig/{channel}.json`
@@ -89,14 +99,16 @@ Manages WebSocket connections to Cytube channels using the Socket.IO v4 protocol
 
 ### SQL Plugin
 
-Provides database persistence and acts as the central event logger.
+Provides database persistence and handles logging requests from other plugins.
 
 **Features:**
 - PostgreSQL connection pooling via pgx/v5
-- Configurable logger middleware with pattern-based rules
-- Synchronous query/execute operations
+- Handles explicit log requests via `log.request` events
+- Synchronous query/execute operations via `plugin.request`
 - Batch operation support for performance
 - Schema management per plugin
+
+**Important**: The SQL plugin does NOT automatically subscribe to Cytube events. Other plugins must explicitly send `log.request` events to log data.
 
 **Logger Rules Example:**
 ```json
@@ -106,6 +118,7 @@ Provides database persistence and acts as the central event logger.
   "table": "daz_chat_log"
 }
 ```
+Note: These rules are stored but not actively used for subscriptions in the current implementation.
 
 ### EventFilter Plugin
 
@@ -162,9 +175,13 @@ Unified event filtering, routing, and command processing.
 ### Event Processing Pipeline
 
 ```
-Cytube WebSocket → Core Plugin → EventBus → EventFilter → Target Plugins
-                                    ↓
-                                SQL Plugin (selective logging)
+1. Cytube WebSocket → Core Plugin (parses events)
+2. Core Plugin → EventBus.Broadcast("cytube.event.*", data)
+3. EventBus → All subscribed plugins receive events
+4. Plugins process events and may:
+   - Send log.request → SQL Plugin for persistence
+   - Emit failure events → Retry Plugin for retry handling
+   - Send commands back → Core Plugin → Cytube
 ```
 
 ### Request/Response Flow
@@ -174,6 +191,14 @@ Plugin A → EventBus.Request() → Plugin B
    ↑                               ↓
    └──── EventBus.Response() ←─────┘
          (with correlation ID)
+```
+
+### Logging Flow
+
+```
+Plugin → EventBus.Broadcast("log.request", data) → SQL Plugin
+                                                       ↓
+                                                   Database
 ```
 
 ## Database Schema
@@ -250,6 +275,20 @@ Each plugin manages its own schema with prefixed table names:
 - PostgreSQL 14+
 - Linux/macOS/Windows
 - Network access to Cytube servers
+
+### Startup Sequence
+
+1. **EventBus Creation**: Initialize with configured buffer sizes
+2. **EventBus Start**: Begin message routing
+3. **Core Plugin Creation**: Create with room configurations
+4. **Core Plugin Initialize**: Connect to EventBus (not rooms yet)
+5. **PluginManager Creation**: For managing all other plugins
+6. **Plugin Registration**: Register all plugins with manager
+7. **Plugin Initialization**: Initialize all plugins (respects dependencies)
+8. **Core Plugin Start**: Start Core plugin
+9. **Plugin Start**: Start all other plugins via PluginManager
+10. **Room Connections**: Core plugin connects to Cytube rooms
+11. **Health Service**: Register all components for monitoring
 
 ### Running Daz
 
