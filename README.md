@@ -295,8 +295,8 @@ the Free Software Foundation, either version 3 of the License, or
 
 - [Architecture Guide](daz-chatbot-architecture.md)
 - [Configuration Reference](config.json.example)
-- [API Documentation](docs/api.md) *(coming soon)*
-- [Plugin Development Guide](docs/plugins.md) *(coming soon)*
+- [API Documentation](docs/api.md)
+- [Plugin Development Guide](docs/plugins.md)
 
 ## 💬 Support
 
