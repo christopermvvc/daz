@@ -135,39 +135,38 @@ func (p *Plugin) Status() framework.PluginStatus {
 
 ```go
 func (p *Plugin) handleChatMessage(event framework.Event) error {
-    chatEvent, ok := event.(*framework.ChatMessageEvent)
-    if !ok {
+    dataEvent, ok := event.(*framework.DataEvent)
+    if !ok || dataEvent.Data == nil || dataEvent.Data.ChatMessage == nil {
         return nil
     }
     
+    chatMessage := dataEvent.Data.ChatMessage
     p.eventsHandled++
     
     // Check if message contains a trigger word
-    messageLower := strings.ToLower(chatEvent.Message)
+    messageLower := strings.ToLower(chatMessage.Message)
     for _, trigger := range p.config.Triggers {
         if strings.Contains(messageLower, trigger) {
-            return p.sendGreeting(chatEvent)
+            return p.sendGreeting(chatMessage)
         }
     }
     
     return nil
 }
 
-func (p *Plugin) sendGreeting(chatEvent *framework.ChatMessageEvent) error {
+func (p *Plugin) sendGreeting(chatMessage *framework.ChatMessage) error {
     // Format greeting message
-    greeting := strings.ReplaceAll(p.config.Greeting, "{username}", chatEvent.Username)
+    greeting := strings.ReplaceAll(p.config.Greeting, "{username}", chatMessage.Username)
     
     // Create response event
     responseData := &framework.EventData{
-        Type:   "chat.send",
-        Source: p.Name(),
         KeyValue: map[string]string{
-            "channel": chatEvent.ChannelName,
+            "channel": chatMessage.ChannelName,
             "message": greeting,
         },
     }
     
-    // Send to core plugin
+    // Send to core plugin - core will handle the actual chat send
     return p.eventBus.Send("core", "chat.send", responseData)
 }
 ```
@@ -242,13 +241,19 @@ p.eventBus.SubscribeWithTags("cytube.event.chatMsg", p.handleTaggedChat, []strin
 
 ```go
 func (p *Plugin) handleEvent(event framework.Event) error {
-    switch e := event.(type) {
-    case *framework.ChatMessageEvent:
-        return p.handleChat(e)
-    case *framework.UserJoinEvent:
-        return p.handleUserJoin(e)
+    dataEvent, ok := event.(*framework.DataEvent)
+    if !ok || dataEvent.Data == nil {
+        return nil
+    }
+    
+    // Check different event types
+    switch {
+    case dataEvent.Data.ChatMessage != nil:
+        return p.handleChat(dataEvent.Data.ChatMessage)
+    case dataEvent.Data.UserJoin != nil:
+        return p.handleUserJoin(dataEvent.Data.UserJoin)
     default:
-        logger.Debug("MyPlugin", "Unhandled event type: %s", event.Type())
+        logger.Debug("MyPlugin", "Unhandled event type: %s", dataEvent.Type())
     }
     return nil
 }
@@ -259,13 +264,19 @@ func (p *Plugin) handleEvent(event framework.Event) error {
 ```go
 // Simple broadcast
 p.eventBus.Broadcast("myplugin.data.updated", &framework.EventData{
-    Source: p.Name(),
     KeyValue: map[string]string{
+        "source": p.Name(),
         "key": "value",
     },
 })
 
 // Broadcast with metadata
+data := &framework.EventData{
+    KeyValue: map[string]string{
+        "action": "user_logged_in",
+        "username": "john",
+    },
+}
 metadata := &framework.EventMetadata{
     Priority: 5,
     Tags:     []string{"notification", "user-action"},
@@ -309,13 +320,9 @@ func (p *Plugin) getGreetingCount(username string) (int, error) {
     ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
     defer cancel()
     
-    request := &framework.SQLQueryRequest{
-        Query:  "SELECT greeting_count FROM daz_greeting_stats WHERE username = $1",
-        Params: []framework.SQLParam{{Value: username}},
-        RequestBy: p.Name(),
-    }
-    
-    response, err := p.querySQLRequest(ctx, request)
+    response, err := p.querySQLRequest(ctx, 
+        "SELECT greeting_count FROM daz_greeting_stats WHERE username = $1",
+        []framework.SQLParam{{Value: username}})
     if err != nil {
         return 0, err
     }
@@ -336,34 +343,52 @@ func (p *Plugin) getGreetingCount(username string) (int, error) {
 ### Helper Methods
 
 ```go
-func (p *Plugin) executeSQLRequest(ctx context.Context, request *framework.SQLExecRequest) (*framework.SQLExecResponse, error) {
-    request.ID = uuid.New().String()
-    request.CorrelationID = uuid.New().String()
-    
-    data, err := json.Marshal(request)
-    if err != nil {
-        return nil, err
-    }
-    
-    eventData := &framework.EventData{
-        Source: p.Name(),
-        KeyValue: map[string]string{
-            "operation": "exec",
+func (p *Plugin) executeSQLRequest(ctx context.Context, query string, params []framework.SQLParam) (*framework.SQLExecResponse, error) {
+    request := &framework.EventData{
+        SQLExecRequest: &framework.SQLExecRequest{
+            ID:            uuid.New().String(),
+            CorrelationID: uuid.New().String(),
+            Query:         query,
+            Params:        params,
+            Timeout:       30 * time.Second,
+            RequestBy:     p.Name(),
         },
-        RawData: data,
     }
     
-    response, err := p.eventBus.Request(ctx, "sql", "plugin.request", eventData, nil)
+    response, err := p.eventBus.Request(ctx, "sql", "plugin.request", request, nil)
     if err != nil {
         return nil, err
     }
     
-    var execResponse framework.SQLExecResponse
-    if err := json.Unmarshal(response.RawData, &execResponse); err != nil {
+    if response == nil || response.SQLExecResponse == nil {
+        return nil, fmt.Errorf("invalid response from SQL plugin")
+    }
+    
+    return response.SQLExecResponse, nil
+}
+
+func (p *Plugin) querySQLRequest(ctx context.Context, query string, params []framework.SQLParam) (*framework.SQLQueryResponse, error) {
+    request := &framework.EventData{
+        SQLQueryRequest: &framework.SQLQueryRequest{
+            ID:            uuid.New().String(),
+            CorrelationID: uuid.New().String(),
+            Query:         query,
+            Params:        params,
+            Timeout:       30 * time.Second,
+            RequestBy:     p.Name(),
+        },
+    }
+    
+    response, err := p.eventBus.Request(ctx, "sql", "plugin.request", request, nil)
+    if err != nil {
         return nil, err
     }
     
-    return &execResponse, nil
+    if response == nil || response.SQLQueryResponse == nil {
+        return nil, fmt.Errorf("invalid response from SQL plugin")
+    }
+    
+    return response.SQLQueryResponse, nil
 }
 ```
 
@@ -422,34 +447,58 @@ type Plugin struct {
 func (p *Plugin) Start() error {
     // Register command with EventFilter
     cmdData := &framework.EventData{
-        Source: p.Name(),
-        KeyValue: map[string]string{
-            "command":     "mycommand",
-            "description": "Does something cool",
-            "usage":       "!mycommand [args]",
-            "min_rank":    "0",
+        PluginRequest: &framework.PluginRequest{
+            Action: "register_command",
+            Data: map[string]interface{}{
+                "command":     "mycommand",
+                "description": "Does something cool",
+                "usage":       "!mycommand [args]",
+                "min_rank":    0,
+                "plugin_name": p.Name(),
+            },
         },
     }
     
-    p.eventBus.Broadcast("eventfilter.command.register", cmdData)
-    
-    // Subscribe to command execution
-    return p.eventBus.Subscribe("plugin.command.mycommand", p.handleCommand)
+    return p.eventBus.Send("eventfilter", "plugin.request", cmdData)
 }
 
-func (p *Plugin) handleCommand(event framework.Event) error {
-    cmdEvent := event.(*framework.CommandEvent)
+func (p *Plugin) HandleEvent(event framework.Event) error {
+    dataEvent, ok := event.(*framework.DataEvent)
+    if !ok || dataEvent.Data == nil {
+        return nil
+    }
+    
+    // Check if this is a command for us
+    if dataEvent.Data.PluginRequest != nil && 
+       dataEvent.Data.PluginRequest.Action == "command" &&
+       dataEvent.Data.PluginRequest.Data["command"] == "mycommand" {
+        return p.handleCommand(dataEvent)
+    }
+    
+    return nil
+}
+
+func (p *Plugin) handleCommand(dataEvent *framework.DataEvent) error {
+    req := dataEvent.Data.PluginRequest
+    
+    // Extract command data
+    username, _ := req.Data["username"].(string)
+    channel, _ := req.Data["channel"].(string)
+    args, _ := req.Data["args"].([]interface{})
     
     // Process command
+    argStrings := make([]string, len(args))
+    for i, arg := range args {
+        argStrings[i] = fmt.Sprint(arg)
+    }
     response := fmt.Sprintf("Hello %s! You said: %s", 
-        cmdEvent.Username, 
-        strings.Join(cmdEvent.Args, " "))
+        username, 
+        strings.Join(argStrings, " "))
     
     // Send response
     return p.eventBus.Send("core", "chat.send", &framework.EventData{
-        Source: p.Name(),
         KeyValue: map[string]string{
-            "channel": cmdEvent.Channel,
+            "channel": channel,
             "message": response,
         },
     })

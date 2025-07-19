@@ -61,26 +61,54 @@ err := eventBus.SubscribeWithTags(pattern string, handler EventHandler, tags []s
 
 ### EventData Structure
 
+EventData is a union-type structure where each field represents a different type of event data. Only one of these fields should be populated for any given event.
+
 ```go
 type EventData struct {
-    // Core fields
-    Type      string              `json:"type"`
-    Source    string              `json:"source"`
-    Target    string              `json:"target,omitempty"`
-    Timestamp time.Time           `json:"timestamp"`
+    // Cytube Events
+    ChatMessage    *ChatMessage    `json:"chat_message,omitempty"`
+    PrivateMessage *PrivateMessage `json:"private_message,omitempty"`
+    UserJoin       *UserJoin       `json:"user_join,omitempty"`
+    UserLeave      *UserLeave      `json:"user_leave,omitempty"`
+    VideoChange    *VideoChange    `json:"video_change,omitempty"`
+    QueueUpdate    *QueueUpdate    `json:"queue_update,omitempty"`
+    MediaUpdate    *MediaUpdate    `json:"media_update,omitempty"`
     
-    // Request/Response fields
-    CorrelationID string          `json:"correlation_id,omitempty"`
-    ReplyTo       string          `json:"reply_to,omitempty"`
+    // SQL Operations
+    SQLQueryRequest  *SQLQueryRequest  `json:"sql_query_request,omitempty"`
+    SQLQueryResponse *SQLQueryResponse `json:"sql_query_response,omitempty"`
+    SQLExecRequest   *SQLExecRequest   `json:"sql_exec_request,omitempty"`
+    SQLExecResponse  *SQLExecResponse  `json:"sql_exec_response,omitempty"`
+    SQLBatchRequest  *SQLBatchRequest  `json:"sql_batch_request,omitempty"`
+    SQLBatchResponse *SQLBatchResponse `json:"sql_batch_response,omitempty"`
     
-    // Metadata
-    Priority  int                 `json:"priority"`
-    Tags      []string            `json:"tags,omitempty"`
-    Loggable  bool                `json:"loggable"`
+    // Plugin Communication
+    PluginRequest  *PluginRequest  `json:"plugin_request,omitempty"`
+    PluginResponse *PluginResponse `json:"plugin_response,omitempty"`
     
-    // Payload
-    KeyValue  map[string]string   `json:"key_value,omitempty"`
-    RawData   json.RawMessage     `json:"raw_data,omitempty"`
+    // Retry System
+    RetryRequest *RetryRequest `json:"retry_request,omitempty"`
+    RetryStatus  *RetryStatus  `json:"retry_status,omitempty"`
+    
+    // Generic Fields
+    KeyValue    map[string]string `json:"key_value,omitempty"`
+    RawMessage  string            `json:"raw_message,omitempty"`
+    
+    // Raw event fields (for backward compatibility)
+    RawEvent map[string]interface{} `json:"raw_event,omitempty"`
+}
+```
+
+### EventMetadata Structure
+
+Event metadata is passed separately through EventBus methods like `BroadcastWithMetadata` and `SendWithMetadata`:
+
+```go
+type EventMetadata struct {
+    Priority      int      `json:"priority"`
+    Tags          []string `json:"tags,omitempty"`
+    CorrelationID string   `json:"correlation_id,omitempty"`
+    ReplyTo       string   `json:"reply_to,omitempty"`
 }
 ```
 
@@ -180,7 +208,8 @@ Kubernetes liveness probe endpoint.
 **Response:**
 ```json
 {
-    "status": "UP"
+    "status": "alive",
+    "timestamp": "2025-07-19T10:30:00Z"
 }
 ```
 
@@ -188,11 +217,20 @@ Kubernetes liveness probe endpoint.
 
 Kubernetes readiness probe endpoint.
 
-**Response:**
+**Response (when ready):**
 ```json
 {
-    "status": "UP",
-    "ready": true
+    "ready": true,
+    "timestamp": "2025-07-19T10:30:00Z"
+}
+```
+
+**Response (when not ready):**
+```json
+{
+    "ready": false,
+    "status": "DOWN",
+    "timestamp": "2025-07-19T10:30:00Z"
 }
 ```
 
@@ -218,71 +256,88 @@ Plugins can perform database operations through the SQL plugin via EventBus requ
 
 ```go
 // Create query request
-request := &framework.SQLQueryRequest{
-    ID:            uuid.New().String(),
-    CorrelationID: uuid.New().String(),
-    Query:         "SELECT * FROM users WHERE username = $1",
-    Params:        []framework.SQLParam{{Value: "john"}},
-    Timeout:       30 * time.Second,
-    RequestBy:     "myplugin",
+request := &framework.EventData{
+    SQLQueryRequest: &framework.SQLQueryRequest{
+        ID:            uuid.New().String(),
+        CorrelationID: uuid.New().String(),
+        Query:         "SELECT * FROM users WHERE username = $1",
+        Params:        []framework.SQLParam{{Value: "john"}},
+        Timeout:       30 * time.Second,
+        RequestBy:     "myplugin",
+    },
 }
 
 // Send request
-response, err := eventBus.Request(ctx, "sql", "plugin.request", 
-    &framework.EventData{
-        KeyValue: map[string]string{
-            "operation": "query",
-        },
-        RawData: marshal(request),
-    }, nil)
+response, err := eventBus.Request(ctx, "sql", "plugin.request", request, nil)
+
+// Parse response
+if response != nil && response.SQLQueryResponse != nil {
+    for _, row := range response.SQLQueryResponse.Rows {
+        // Process row data
+    }
+}
 ```
 
 ### Execute Operations
 
 ```go
 // Create exec request
-request := &framework.SQLExecRequest{
-    ID:            uuid.New().String(),
-    CorrelationID: uuid.New().String(),
-    Query:         "INSERT INTO logs (message) VALUES ($1)",
-    Params:        []framework.SQLParam{{Value: "test log"}},
-    Timeout:       30 * time.Second,
-    RequestBy:     "myplugin",
+request := &framework.EventData{
+    SQLExecRequest: &framework.SQLExecRequest{
+        ID:            uuid.New().String(),
+        CorrelationID: uuid.New().String(),
+        Query:         "INSERT INTO logs (message) VALUES ($1)",
+        Params:        []framework.SQLParam{{Value: "test log"}},
+        Timeout:       30 * time.Second,
+        RequestBy:     "myplugin",
+    },
 }
 
 // Send request
-response, err := eventBus.Request(ctx, "sql", "plugin.request",
-    &framework.EventData{
-        KeyValue: map[string]string{
-            "operation": "exec",
-        },
-        RawData: marshal(request),
-    }, nil)
+response, err := eventBus.Request(ctx, "sql", "plugin.request", request, nil)
+
+// Check response
+if response != nil && response.SQLExecResponse != nil {
+    rowsAffected := response.SQLExecResponse.RowsAffected
+    // Handle result
+}
 ```
 
 ### Batch Operations
 
 ```go
 // Create batch request
-request := &framework.SQLBatchRequest{
-    ID:            uuid.New().String(),
-    CorrelationID: uuid.New().String(),
-    Operations: []framework.BatchOperation{
-        {
-            ID:            "op1",
-            OperationType: "query",
-            Query:         "SELECT COUNT(*) FROM users",
+request := &framework.EventData{
+    SQLBatchRequest: &framework.SQLBatchRequest{
+        ID:            uuid.New().String(),
+        CorrelationID: uuid.New().String(),
+        Operations: []framework.BatchOperation{
+            {
+                ID:            "op1",
+                OperationType: "query",
+                Query:         "SELECT COUNT(*) FROM users",
+            },
+            {
+                ID:            "op2",
+                OperationType: "exec",
+                Query:         "UPDATE stats SET last_check = $1",
+                Params:        []framework.SQLParam{{Value: time.Now()}},
+            },
         },
-        {
-            ID:            "op2",
-            OperationType: "exec",
-            Query:         "UPDATE stats SET last_check = $1",
-            Params:        []framework.SQLParam{{Value: time.Now()}},
-        },
+        Atomic:    true,  // Run in transaction
+        Timeout:   60 * time.Second,
+        RequestBy: "myplugin",
     },
-    Atomic:    true,  // Run in transaction
-    Timeout:   60 * time.Second,
-    RequestBy: "myplugin",
+}
+
+// Send request
+response, err := eventBus.Request(ctx, "sql", "plugin.request", request, nil)
+
+// Process batch response
+if response != nil && response.SQLBatchResponse != nil {
+    for _, result := range response.SQLBatchResponse.Results {
+        // Handle each operation result
+    }
 }
 ```
 
@@ -299,13 +354,18 @@ All Cytube events are broadcast with the prefix `cytube.event.`:
 - `cytube.event.queue` - Queue updated
 - `cytube.event.playlist` - Playlist updated
 - `cytube.event.pm` - Private message
+- `cytube.event.connect` - Connected to Cytube
+- `cytube.event.disconnect` - Disconnected from Cytube
 
 ### Plugin Events
 
-- `plugin.command.*` - Command execution events
 - `plugin.request` - Inter-plugin requests
 - `plugin.response` - Inter-plugin responses
-- `*.failed` - Failure events for retry
+- `*.failed` - Failure events for retry mechanism (e.g., `sql.query.failed`, `command.uptime.failed`)
+- `*.error` - Error events caught by retry plugin
+- `*.timeout` - Timeout events caught by retry plugin
+
+Note: Commands are handled through the eventfilter plugin which parses chat messages and routes them to appropriate plugins, rather than using a `plugin.command.*` pattern.
 
 ### System Events
 
