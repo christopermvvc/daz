@@ -17,8 +17,8 @@ NC='\033[0m' # No Color
 DB_NAME="${DAZ_DB_NAME:-daz}"
 DB_USER="${DAZ_DB_USER:-***REMOVED***}"
 DB_PASSWORD="${DAZ_DB_PASSWORD:?Error: DAZ_DB_PASSWORD environment variable is required}"
-CYTUBE_USERNAME="${CYTUBE_USERNAME:?Error: CYTUBE_USERNAME environment variable is required}"
-CYTUBE_PASSWORD="${CYTUBE_PASSWORD:?Error: CYTUBE_PASSWORD environment variable is required}"
+CYTUBE_USERNAME="${DAZ_CYTUBE_USERNAME:?Error: DAZ_CYTUBE_USERNAME environment variable is required}"
+CYTUBE_PASSWORD="${DAZ_CYTUBE_PASSWORD:?Error: DAZ_CYTUBE_PASSWORD environment variable is required}"
 LOG_FILE="/tmp/daz-with-retry.log"
 PID_FILE="/tmp/daz-with-retry.pid"
 
