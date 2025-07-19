@@ -167,7 +167,7 @@ Daz's event-driven architecture ensures maximum performance and reliability:
 - **🧩 Plugin System** - Drop-in components for endless customization
 - **💾 SQL Plugin** - Enterprise-grade PostgreSQL persistence
 
-> 📖 For the complete architecture deep-dive, see [daz-chatbot-architecture.md](daz-chatbot-architecture.md)
+> 📖 For the complete architecture deep-dive, see [daz-chatbot-architecture.md](docs/daz-chatbot-architecture.md)
 
 ## 📦 Built-in Plugins
 
@@ -293,7 +293,7 @@ the Free Software Foundation, either version 3 of the License, or
 
 ## 📚 Documentation
 
-- [Architecture Guide](daz-chatbot-architecture.md)
+- [Architecture Guide](docs/daz-chatbot-architecture.md)
 - [Configuration Reference](config.json.example)
 - [API Documentation](docs/api.md)
 - [Plugin Development Guide](docs/plugins.md)
