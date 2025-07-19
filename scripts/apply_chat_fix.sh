@@ -8,11 +8,11 @@ echo "Applying Chat Duplicate Fix"
 echo "======================================"
 
 # Database connection details from config
-DB_HOST="localhost"
-DB_PORT="5432"
-DB_NAME="daz"
-DB_USER="***REMOVED***"
-export PGPASSWORD="***REMOVED***"
+DB_HOST="${DAZ_DB_HOST:-localhost}"
+DB_PORT="${DAZ_DB_PORT:-5432}"
+DB_NAME="${DAZ_DB_NAME:-daz}"
+DB_USER="${DAZ_DB_USER:-***REMOVED***}"
+export PGPASSWORD="${DAZ_DB_PASSWORD:?Error: DAZ_DB_PASSWORD environment variable is required}"
 
 echo "Connecting to database: $DB_NAME@$DB_HOST:$DB_PORT"
 echo ""

@@ -14,9 +14,11 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuration
-DB_NAME="daz"
-DB_USER="***REMOVED***"
-DB_PASSWORD="***REMOVED***"
+DB_NAME="${DAZ_DB_NAME:-daz}"
+DB_USER="${DAZ_DB_USER:-***REMOVED***}"
+DB_PASSWORD="${DAZ_DB_PASSWORD:?Error: DAZ_DB_PASSWORD environment variable is required}"
+CYTUBE_USERNAME="${CYTUBE_USERNAME:?Error: CYTUBE_USERNAME environment variable is required}"
+CYTUBE_PASSWORD="${CYTUBE_PASSWORD:?Error: CYTUBE_PASSWORD environment variable is required}"
 LOG_FILE="/tmp/daz-with-retry.log"
 PID_FILE="/tmp/daz-with-retry.pid"
 
@@ -66,14 +68,14 @@ fi
 
 # Create configuration
 print_status "Creating configuration with retry enabled..."
-cat > /tmp/daz-with-retry-config.json << 'EOF'
+cat > /tmp/daz-with-retry-config.json << EOF
 {
   "core": {
     "rooms": [
       {
         "channel": "RIFFTRAX_MST3K",
-        "username": "***REMOVED***",
-        "password": "***REMOVED***",
+        "username": "$CYTUBE_USERNAME",
+        "password": "$CYTUBE_PASSWORD",
         "enabled": true,
         "reconnect_attempts": 3,
         "cooldown_minutes": 1
@@ -103,9 +105,9 @@ cat > /tmp/daz-with-retry-config.json << 'EOF'
       "database": {
         "host": "localhost",
         "port": 5432,
-        "database": "daz",
-        "user": "***REMOVED***",
-        "password": "***REMOVED***",
+        "database": "$DB_NAME",
+        "user": "$DB_USER",
+        "password": "$DB_PASSWORD",
         "max_connections": 20,
         "max_conn_lifetime": 3600,
         "connect_timeout": 30
