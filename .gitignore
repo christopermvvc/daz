@@ -79,6 +79,7 @@ config.json
 config.json.backup
 config.local.json
 config.prod.json
+rooms.json
 secrets.json
 credentials.json
 admin_users.json

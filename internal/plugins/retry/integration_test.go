@@ -532,7 +532,7 @@ func setupTestDatabase(t *testing.T) *sql.DB {
 
 	password := os.Getenv("DAZ_TEST_DB_PASSWORD")
 	if password == "" {
-		password = "***REMOVED***"
+		t.Skip("DAZ_TEST_DB_PASSWORD not set, skipping integration test")
 	}
 
 	dbname := os.Getenv("DAZ_TEST_DB_NAME")
