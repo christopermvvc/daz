@@ -153,7 +153,7 @@ FORCE_COLOR=1 ./bin/daz \
     -db-pass "$DAZ_DB_PASSWORD" \
     -db-name "${DAZ_DB_NAME:-daz}" \
     $VERBOSE_FLAG \
-    2>&1 > "$PIPE_FILE"
+    > "$PIPE_FILE" 2>&1
 
 # Wait for log writer to finish
 wait $LOG_WRITER_PID
