@@ -88,7 +88,7 @@ func (rm *RoomManager) AddRoom(room RoomConfig) error {
 	}
 
 	rm.connections[room.ID] = conn
-	logger.Info("RoomManager", "Added room '%s' (channel: %s)", room.ID, room.Channel)
+	logger.Debug("RoomManager", "Added room '%s' (channel: %s)", room.ID, room.Channel)
 
 	return nil
 }
@@ -189,7 +189,7 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 
 		// Login if credentials provided
 		if conn.Room.Username != "" && conn.Room.Password != "" {
-			logger.Info("RoomManager", "Room '%s': Logging in as %s", roomID, conn.Room.Username)
+			logger.Info("RoomManager", "Room '%s': Attempting login", roomID)
 			if err := conn.Client.Login(conn.Room.Username, conn.Room.Password); err != nil {
 				logger.Error("RoomManager", "Room '%s': Login failed: %v", roomID, err)
 			} else {

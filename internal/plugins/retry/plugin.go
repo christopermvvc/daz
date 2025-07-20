@@ -108,7 +108,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 		}
 	}
 
-	logger.Info("Retry", "Initialized with %d retry policies", len(p.config.RetryPolicies))
+	logger.Debug("Retry", "Initialized with %d retry policies", len(p.config.RetryPolicies))
 	return nil
 }
 
@@ -149,7 +149,7 @@ func (p *Plugin) Start() error {
 	p.wg.Add(1)
 	go p.queueProcessor()
 
-	logger.Info("Retry", "Started with %d workers", p.config.WorkerCount)
+	logger.Debug("Retry", "Started with %d workers", p.config.WorkerCount)
 	return nil
 }
 

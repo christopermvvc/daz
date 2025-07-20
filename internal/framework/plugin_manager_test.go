@@ -188,8 +188,9 @@ func TestPluginManagerInitializeAll(t *testing.T) {
 	pm := NewPluginManager()
 	bus := &mockEventBus{}
 
+	// Test successful initialization
 	plugin1 := &mockPluginDep{name: "plugin1"}
-	plugin2 := &mockPluginDep{name: "plugin2", initError: errors.New("init failed")}
+	plugin2 := &mockPluginDep{name: "plugin2", dependencies: []string{"plugin1"}}
 
 	if err := pm.RegisterPlugin("plugin1", plugin1); err != nil {
 		t.Fatalf("Failed to register plugin1: %v", err)
@@ -204,12 +205,37 @@ func TestPluginManagerInitializeAll(t *testing.T) {
 	}
 
 	err := pm.InitializeAll(configs, bus)
-	if err == nil {
-		t.Error("Expected error from plugin2 init failure")
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
 	}
 
 	if !plugin1.initialized {
 		t.Error("Expected plugin1 to be initialized")
+	}
+	if !plugin2.initialized {
+		t.Error("Expected plugin2 to be initialized")
+	}
+
+	// Test initialization failure
+	pm2 := NewPluginManager()
+	plugin3 := &mockPluginDep{name: "plugin3"}
+	plugin4 := &mockPluginDep{name: "plugin4", initError: errors.New("init failed")}
+
+	if err := pm2.RegisterPlugin("plugin3", plugin3); err != nil {
+		t.Fatalf("Failed to register plugin3: %v", err)
+	}
+	if err := pm2.RegisterPlugin("plugin4", plugin4); err != nil {
+		t.Fatalf("Failed to register plugin4: %v", err)
+	}
+
+	configs2 := map[string]json.RawMessage{
+		"plugin3": nil,
+		"plugin4": nil,
+	}
+
+	err = pm2.InitializeAll(configs2, bus)
+	if err == nil {
+		t.Error("Expected error from plugin4 init failure")
 	}
 }
 

@@ -18,8 +18,9 @@ const (
 )
 
 var (
-	currentLevel = INFO
-	colorEnabled = true
+	currentLevel   = INFO
+	colorEnabled   = true
+	startupVerbose = false // Controls verbosity of startup messages
 )
 
 // ANSI color codes
@@ -42,9 +43,28 @@ func SetLevel(level LogLevel) {
 func SetDebug(enabled bool) {
 	if enabled {
 		currentLevel = DEBUG
+		startupVerbose = true // Debug mode implies verbose startup
 	} else {
 		currentLevel = INFO
 	}
+}
+
+// SetStartupVerbose controls verbosity of startup messages
+func SetStartupVerbose(enabled bool) {
+	startupVerbose = enabled
+}
+
+// IsStartupVerbose returns whether startup logging is verbose
+func IsStartupVerbose() bool {
+	return startupVerbose
+}
+
+// Startup logs a startup-specific message that respects verbosity settings
+func Startup(plugin, format string, args ...interface{}) {
+	if !startupVerbose {
+		return
+	}
+	logf(INFO, plugin, format, args...)
 }
 
 // DisableColor disables color output (useful for file logging)

@@ -151,7 +151,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
-	logger.Info("EventFilter", "Initialized with command prefix: %s", p.config.CommandPrefix)
+	logger.Debug("EventFilter", "Initialized with command prefix: %s", p.config.CommandPrefix)
 	return nil
 }
 
@@ -231,7 +231,7 @@ func (p *Plugin) Start() error {
 	// Signal that the plugin is ready
 	close(p.readyChan)
 
-	logger.Info("EventFilter", "Started unified event filtering and command routing")
+	logger.Debug("EventFilter", "Started unified event filtering and command routing")
 	return nil
 }
 
@@ -378,8 +378,8 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		}
 	}
 
-	logger.Debug("EventFilter", "Received chat message: '%s' from user: %s (prefix: '%s')",
-		chatData.Message, chatData.Username, p.config.CommandPrefix)
+	logger.Debug("EventFilter", "Received chat message from user: %s",
+		chatData.Username)
 
 	// Check if message is a command
 	if strings.HasPrefix(chatData.Message, p.config.CommandPrefix) {

@@ -4,14 +4,84 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
 	"github.com/hildolfr/daz/internal/logger"
 	"github.com/hildolfr/daz/internal/metrics"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+// tableNameRegex validates table names to prevent SQL injection
+var tableNameRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// isValidTableName checks if a table name is safe to use in SQL queries
+func isValidTableName(tableName string) bool {
+	return tableNameRegex.MatchString(tableName) && len(tableName) <= 63 // PostgreSQL limit
+}
+
+// convertToJSONCompatible converts database driver types to JSON-compatible types
+func convertToJSONCompatible(val interface{}) interface{} {
+	switch v := val.(type) {
+	case []byte:
+		// Try to convert byte arrays to string
+		return string(v)
+	case int64, int32, int16, int8, int:
+		// Convert all integer types to int64 for consistency
+		return v
+	case float64, float32:
+		// Floats are already JSON-compatible
+		return v
+	case bool:
+		// Booleans are already JSON-compatible
+		return v
+	case string:
+		// Strings are already JSON-compatible
+		return v
+	case time.Time:
+		// Convert time to ISO 8601 string
+		return v.Format(time.RFC3339Nano)
+	case nil:
+		// nil is JSON-compatible as null
+		return nil
+	case pgtype.Numeric:
+		// Handle PostgreSQL NUMERIC type
+		if v.Valid {
+			// Try to convert to float64
+			f64, err := v.Float64Value()
+			if err == nil && f64.Valid {
+				return f64.Float64
+			}
+			// If float conversion fails, convert to string using Value()
+			val, err := v.Value()
+			if err == nil && val != nil {
+				return fmt.Sprintf("%v", val)
+			}
+		}
+		return nil
+	default:
+		// Check if it's a pointer to pgtype.Numeric
+		if numPtr, ok := val.(*pgtype.Numeric); ok && numPtr != nil {
+			if numPtr.Valid {
+				f64, err := numPtr.Float64Value()
+				if err == nil && f64.Valid {
+					return f64.Float64
+				}
+				// If float conversion fails, convert to string
+				val, err := numPtr.Value()
+				if err == nil && val != nil {
+					return fmt.Sprintf("%v", val)
+				}
+			}
+			return nil
+		}
+		// For other types, convert to string representation
+		return fmt.Sprintf("%v", val)
+	}
+}
 
 // handlePluginRequest handles targeted plugin requests sent via eventBus.Request
 func (p *Plugin) handlePluginRequest(event framework.Event) error {
@@ -69,6 +139,11 @@ func (p *Plugin) handleLogRequest(event framework.Event) error {
 
 	if p.pool == nil {
 		return fmt.Errorf("database not connected")
+	}
+
+	// Validate table name to prevent SQL injection
+	if !isValidTableName(logReq.Table) {
+		return fmt.Errorf("invalid table name: %s", logReq.Table)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -146,6 +221,11 @@ func (p *Plugin) handleBatchLogRequest(event framework.Event) error {
 	}()
 
 	for _, logReq := range batchReq.Logs {
+		// Validate table name to prevent SQL injection
+		if !isValidTableName(logReq.Table) {
+			return fmt.Errorf("invalid table name: %s", logReq.Table)
+		}
+
 		query := fmt.Sprintf(
 			"INSERT INTO %s (plugin_name, event_type, log_data, timestamp, created_at) VALUES ($1, $2, $3, $4, $5)",
 			logReq.Table,
@@ -387,7 +467,9 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 			if val == nil {
 				row[i] = json.RawMessage("null")
 			} else {
-				jsonVal, err := json.Marshal(val)
+				// Convert database types to JSON-compatible types
+				jsonCompatibleVal := convertToJSONCompatible(val)
+				jsonVal, err := json.Marshal(jsonCompatibleVal)
 				if err != nil {
 					return fmt.Errorf("failed to marshal value: %w", err)
 				}
@@ -699,7 +781,8 @@ func (p *Plugin) handleBatchQueryRequest(event framework.Event) error {
 					if val == nil {
 						row[i] = json.RawMessage("null")
 					} else {
-						jsonVal, err := json.Marshal(val)
+						jsonCompatibleVal := convertToJSONCompatible(val)
+						jsonVal, err := json.Marshal(jsonCompatibleVal)
 						if err != nil {
 							row[i] = json.RawMessage("null")
 						} else {
@@ -794,7 +877,8 @@ func (p *Plugin) handleBatchQueryRequest(event framework.Event) error {
 					if val == nil {
 						row[i] = json.RawMessage("null")
 					} else {
-						jsonVal, err := json.Marshal(val)
+						jsonCompatibleVal := convertToJSONCompatible(val)
+						jsonVal, err := json.Marshal(jsonCompatibleVal)
 						if err != nil {
 							row[i] = json.RawMessage("null")
 						} else {
@@ -1238,7 +1322,8 @@ func (p *Plugin) executeBatchQuery(ctx context.Context, id, query string, params
 			if val == nil {
 				row[i] = json.RawMessage("null")
 			} else {
-				jsonVal, err := json.Marshal(val)
+				jsonCompatibleVal := convertToJSONCompatible(val)
+				jsonVal, err := json.Marshal(jsonCompatibleVal)
 				if err != nil {
 					row[i] = json.RawMessage("null")
 				} else {
@@ -1310,7 +1395,8 @@ func (p *Plugin) executeBatchQueryInTx(ctx context.Context, tx pgx.Tx, id, query
 			if val == nil {
 				row[i] = json.RawMessage("null")
 			} else {
-				jsonVal, err := json.Marshal(val)
+				jsonCompatibleVal := convertToJSONCompatible(val)
+				jsonVal, err := json.Marshal(jsonCompatibleVal)
 				if err != nil {
 					row[i] = json.RawMessage("null")
 				} else {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 // MockEventBus implements framework.EventBus for testing
 type MockEventBus struct {
+	mu            sync.RWMutex
 	broadcasts    []broadcast
 	sends         []send
 	subscriptions map[string][]framework.EventHandler
@@ -41,24 +43,27 @@ func NewMockEventBus() *MockEventBus {
 }
 
 func (m *MockEventBus) Broadcast(eventType string, data *framework.EventData) error {
+	m.mu.Lock()
 	m.broadcasts = append(m.broadcasts, broadcast{eventType: eventType, data: data})
+	handlers := m.subscriptions[eventType]
+	m.mu.Unlock()
 
 	// Trigger subscribed handlers
-	if handlers, ok := m.subscriptions[eventType]; ok {
-		for _, handler := range handlers {
-			event := &framework.DataEvent{
-				EventType: eventType,
-				EventTime: time.Now(),
-				Data:      data,
-			}
-			_ = handler(event)
+	for _, handler := range handlers {
+		event := &framework.DataEvent{
+			EventType: eventType,
+			EventTime: time.Now(),
+			Data:      data,
 		}
+		_ = handler(event)
 	}
 	return nil
 }
 
 func (m *MockEventBus) Send(target string, eventType string, data *framework.EventData) error {
+	m.mu.Lock()
 	m.sends = append(m.sends, send{target: target, eventType: eventType, data: data})
+	m.mu.Unlock()
 	return nil
 }
 
@@ -76,7 +81,9 @@ func (m *MockEventBus) Request(ctx context.Context, target string, eventType str
 	// Handle SQL exec requests for schema creation
 	if eventType == "sql.exec.request" && data != nil && data.SQLExecRequest != nil {
 		// Record the SQL call
+		m.mu.Lock()
 		m.execCalls = append(m.execCalls, data.SQLExecRequest.Query)
+		m.mu.Unlock()
 
 		// Return success response
 		response := &framework.EventData{
@@ -203,7 +210,12 @@ func TestStartStop(t *testing.T) {
 
 	// Check that schema was created after Start
 	schemaCreated := false
-	for _, call := range mockBus.execCalls {
+	mockBus.mu.RLock()
+	execCallsCopy := make([]string, len(mockBus.execCalls))
+	copy(execCallsCopy, mockBus.execCalls)
+	mockBus.mu.RUnlock()
+
+	for _, call := range execCallsCopy {
 		if strings.Contains(call, "CREATE TABLE IF NOT EXISTS daz_eventfilter_rules") {
 			schemaCreated = true
 			break

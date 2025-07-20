@@ -112,6 +112,12 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 		return p.status.LastError
 	}
 
+	// Subscribe to plugin requests
+	if err := p.eventBus.Subscribe("plugin.request", p.handlePluginRequest); err != nil {
+		p.status.LastError = fmt.Errorf("failed to subscribe to plugin requests: %w", err)
+		return p.status.LastError
+	}
+
 	return nil
 }
 
@@ -161,16 +167,16 @@ func (p *Plugin) Start() error {
 	// Start connection monitoring (but don't connect yet)
 	go p.roomManager.MonitorConnections(p.ctx)
 
-	logger.Info("Core", "Plugin started successfully with %d rooms configured", len(p.config.Rooms))
+	logger.Debug("Core", "Plugin started successfully with %d rooms configured", len(p.config.Rooms))
 	return nil
 }
 
 // StartRoomConnections starts all room connections
 // This should be called after all plugins are ready
 func (p *Plugin) StartRoomConnections() {
-	logger.Info("Core", "Starting room connections...")
+	logger.Debug("Core", "Starting room connections...")
 	p.roomManager.StartAll()
-	logger.Info("Core", "Room connections initiated")
+	logger.Debug("Core", "Room connections initiated")
 }
 
 // Stop gracefully shuts down the plugin
@@ -370,6 +376,100 @@ func (p *Plugin) handlePlaylistRequest(event framework.Event) error {
 
 	logger.Info("Core", "Playlist request sent to %d room(s)", successCount)
 	return nil
+}
+
+// handlePluginRequest handles plugin requests for core plugin information
+func (p *Plugin) handlePluginRequest(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil || dataEvent.Data.PluginRequest == nil {
+		logger.Debug("Core", "Received plugin.request event with no valid request data")
+		return nil
+	}
+
+	req := dataEvent.Data.PluginRequest
+
+	// Check if this request is targeted at the core plugin
+	if req.To != "core" {
+		return nil
+	}
+
+	logger.Debug("Core", "Handling plugin request from '%s' of type '%s'", req.From, req.Type)
+
+	// Handle different request types
+	switch req.Type {
+	case "get_configured_channels":
+		return p.handleGetConfiguredChannels(req)
+	default:
+		// Send error response for unknown request types
+		response := &framework.EventData{
+			PluginResponse: &framework.PluginResponse{
+				ID:      req.ID,
+				From:    "core",
+				Success: false,
+				Error:   fmt.Sprintf("unknown request type: %s", req.Type),
+			},
+		}
+
+		// Send response back to requesting plugin
+		return p.eventBus.Broadcast(fmt.Sprintf("plugin.response.%s", req.From), response)
+	}
+}
+
+// handleGetConfiguredChannels returns the list of configured channels
+func (p *Plugin) handleGetConfiguredChannels(req *framework.PluginRequest) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	// Build channel list
+	type channelInfo struct {
+		ID        string `json:"id"`
+		Channel   string `json:"channel"`
+		Enabled   bool   `json:"enabled"`
+		Connected bool   `json:"connected"`
+	}
+
+	channels := make([]channelInfo, 0, len(p.config.Rooms))
+
+	for _, room := range p.config.Rooms {
+		info := channelInfo{
+			ID:      room.ID,
+			Channel: room.Channel,
+			Enabled: room.Enabled,
+		}
+
+		// Get connection status from room manager
+		if conn, exists := p.roomManager.GetConnection(room.ID); exists {
+			conn.mu.RLock()
+			info.Connected = conn.Connected
+			conn.mu.RUnlock()
+		}
+
+		channels = append(channels, info)
+	}
+
+	// Create response
+	responseData := map[string]interface{}{
+		"channels": channels,
+	}
+
+	rawJSON, err := json.Marshal(responseData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal response data: %w", err)
+	}
+
+	response := &framework.EventData{
+		PluginResponse: &framework.PluginResponse{
+			ID:      req.ID,
+			From:    "core",
+			Success: true,
+			Data: &framework.ResponseData{
+				RawJSON: rawJSON,
+			},
+		},
+	}
+
+	// Send response back to requesting plugin
+	return p.eventBus.Broadcast(fmt.Sprintf("plugin.response.%s", req.From), response)
 }
 
 // initEventHandlers initializes the map of event handlers

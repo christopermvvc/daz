@@ -151,7 +151,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
-	logger.Info("MediaTracker", "Initialized with stats update interval: %v", p.config.StatsUpdateInterval)
+	logger.Debug("MediaTracker", "Initialized with stats update interval: %v", p.config.StatsUpdateInterval)
 	return nil
 }
 
@@ -243,7 +243,7 @@ func (p *Plugin) Start() error {
 	// Signal that the plugin is ready
 	close(p.readyChan)
 
-	logger.Info("MediaTracker", "Started media tracking")
+	logger.Debug("MediaTracker", "Started media tracking")
 	return nil
 }
 
@@ -1050,7 +1050,8 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 		startTime := time.Now()
 
 		// Process all items in batches to avoid overwhelming the database
-		batchSize := 50
+		// Reduced batch size for better timeout handling
+		batchSize := 25
 		for i := 0; i < len(playlistArray.Items); i += batchSize {
 			end := i + batchSize
 			if end > len(playlistArray.Items) {
@@ -1059,8 +1060,8 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 
 			batch := playlistArray.Items[i:end]
 
-			// Use bulk insert for better performance
-			if err := p.bulkAddPlaylistToLibrary(batch, channel); err != nil {
+			// Use bulk insert for better performance with extended timeout for large batches
+			if err := p.bulkAddPlaylistToLibraryWithTimeout(batch, channel); err != nil {
 				logger.Error("MediaTracker", "Failed to bulk add playlist items to library: %v", err)
 				// Fall back to individual inserts on bulk failure
 				for _, item := range batch {
@@ -1209,6 +1210,78 @@ func (p *Plugin) bulkAddPlaylistToLibrary(items []framework.PlaylistItem, channe
 	`, strings.Join(valueStrings, ","))
 
 	if err := p.sqlClient.Exec(query, valueArgs...); err != nil {
+		return fmt.Errorf("bulk insert failed: %w", err)
+	}
+
+	// Successfully bulk added items to library
+	return nil
+}
+
+// bulkAddPlaylistToLibraryWithTimeout adds items with an extended timeout for large operations
+func (p *Plugin) bulkAddPlaylistToLibraryWithTimeout(items []framework.PlaylistItem, channel string) error {
+	// Use a longer timeout for bulk operations (60 seconds)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return p.bulkAddPlaylistToLibraryWithContext(ctx, items, channel)
+}
+
+// bulkAddPlaylistToLibraryWithContext adds multiple playlist items to the library with a specific context
+func (p *Plugin) bulkAddPlaylistToLibraryWithContext(ctx context.Context, items []framework.PlaylistItem, channel string) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	// Build bulk insert query
+	valueStrings := make([]string, 0, len(items))
+	valueArgs := make([]interface{}, 0, len(items)*9)
+
+	for i, item := range items {
+		valueStrings = append(valueStrings, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			i*9+1, i*9+2, i*9+3, i*9+4, i*9+5, i*9+6, i*9+7, i*9+8, i*9+9,
+		))
+
+		url := constructMediaURL(item.MediaID, item.MediaType)
+
+		// Convert metadata to JSON
+		var metaJSON interface{}
+		if item.Metadata != nil {
+			if data, err := json.Marshal(item.Metadata); err == nil {
+				metaJSON = data
+			}
+		}
+
+		valueArgs = append(valueArgs,
+			url,
+			item.MediaID,
+			item.MediaType,
+			item.Title,
+			item.Duration,
+			time.Now(),
+			item.QueuedBy,
+			channel,
+			metaJSON)
+	}
+
+	query := fmt.Sprintf(`
+		INSERT INTO daz_mediatracker_library 
+		(url, media_id, media_type, title, duration, first_seen, added_by, channel, metadata)
+		VALUES %s
+		ON CONFLICT (url) DO UPDATE SET
+			last_played = CASE 
+				WHEN EXCLUDED.channel = daz_mediatracker_library.channel 
+				THEN CURRENT_TIMESTAMP 
+				ELSE daz_mediatracker_library.last_played 
+			END,
+			play_count = CASE 
+				WHEN EXCLUDED.channel = daz_mediatracker_library.channel 
+				THEN daz_mediatracker_library.play_count + 1 
+				ELSE daz_mediatracker_library.play_count 
+			END
+	`, strings.Join(valueStrings, ","))
+
+	// Use ExecContext to respect the provided timeout
+	if _, err := p.sqlClient.ExecContext(ctx, query, valueArgs...); err != nil {
 		return fmt.Errorf("bulk insert failed: %w", err)
 	}
 

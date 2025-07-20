@@ -338,13 +338,13 @@ func TestPluginStart(t *testing.T) {
 	time.Sleep(3 * time.Second)
 
 	// Check that tables were created asynchronously
-	// Expected: 3 table creations (hourly aggregation is skipped in multi-room mode)
-	expectedExecCalls := 3
+	// Expected: 5 exec calls (3 CREATE TABLE + 2 ALTER TABLE for missing columns)
+	expectedExecCalls := 5
 	bus.mu.Lock()
 	actualExecCalls := len(bus.execCalls)
 	bus.mu.Unlock()
 	if actualExecCalls != expectedExecCalls {
-		t.Errorf("Expected %d exec calls after async table creation (3 tables only), got %d", expectedExecCalls, actualExecCalls)
+		t.Errorf("Expected %d exec calls after async table creation (3 CREATE + 2 ALTER), got %d", expectedExecCalls, actualExecCalls)
 	}
 
 	// Check that it subscribed to the right events
@@ -568,15 +568,11 @@ func TestDoHourlyAggregation(t *testing.T) {
 	// Run aggregation
 	p.doHourlyAggregation()
 
-	// In multi-room mode, aggregation is skipped
-	// Check that no queries were made
-	if len(bus.queryCalls) != 0 {
-		t.Errorf("Expected 0 query calls (skipped in multi-room mode), got %d", len(bus.queryCalls))
-	}
-
-	// Check that no insert was executed
-	if len(bus.execCalls) != 0 {
-		t.Errorf("Expected 0 exec calls (skipped in multi-room mode), got %d", len(bus.execCalls))
+	// With hardcoded channels, we should see queries for each channel's data
+	// We expect at least 3 queries per channel (messages, unique users, media plays)
+	expectedMinQueries := 3 * 3 // 3 queries per channel, 3 channels
+	if len(bus.queryCalls) < expectedMinQueries {
+		t.Errorf("Expected at least %d query calls for channel data, got %d", expectedMinQueries, len(bus.queryCalls))
 	}
 }
 

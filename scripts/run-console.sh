@@ -9,6 +9,7 @@ MAX_LOG_SIZE_KB=256
 # Function to delete logs older than MAX_LOG_AGE_DAYS
 cleanup_old_logs() {
     find logs/ -name "daz_*.log" -type f -mtime +$MAX_LOG_AGE_DAYS -delete 2>/dev/null
+    find logs/previous_runs/ -name "daz_*.log" -type f -mtime +$MAX_LOG_AGE_DAYS -delete 2>/dev/null
 }
 
 # Function to enforce total size limit
@@ -16,15 +17,15 @@ cleanup_by_size() {
     local max_size_bytes=$((MAX_TOTAL_SIZE_MB * 1024 * 1024))
     
     while true; do
-        # Calculate total size of all log files
-        local total_size=$(find logs/ -name "daz_*.log" -type f -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || echo 0)
+        # Calculate total size of all log files in both logs/ and logs/previous_runs/
+        local total_size=$(find logs/ logs/previous_runs/ -name "daz_*.log" -type f -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || echo 0)
         
         if [ "$total_size" -le "$max_size_bytes" ]; then
             break
         fi
         
-        # Find and delete the oldest log file
-        local oldest_log=$(find logs/ -name "daz_*.log" -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | head -1 | cut -d' ' -f2-)
+        # Find and delete the oldest log file (prioritize previous_runs)
+        local oldest_log=$(find logs/previous_runs/ logs/ -name "daz_*.log" -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | head -1 | cut -d' ' -f2-)
         if [ -n "$oldest_log" ]; then
             rm -f "$oldest_log"
             echo "Removed old log to maintain size limit: $oldest_log"
@@ -66,8 +67,22 @@ if [ -z "$DAZ_CYTUBE_CHANNEL" ]; then
     exit 1
 fi
 
-# Create logs directory if it doesn't exist
+# Create logs directory structure if it doesn't exist
 mkdir -p logs
+mkdir -p logs/previous_runs
+
+# Function to move all existing logs to previous_runs on fresh start
+move_logs_to_previous_runs() {
+    local log_count=$(find logs/ -maxdepth 1 -name "daz_*.log" -type f 2>/dev/null | wc -l)
+    
+    if [ "$log_count" -gt 0 ]; then
+        echo "Moving $log_count previous log(s) to logs/previous_runs/"
+        find logs/ -maxdepth 1 -name "daz_*.log" -type f -exec mv {} logs/previous_runs/ \; 2>/dev/null
+    fi
+}
+
+# Move all existing logs to previous_runs on startup
+move_logs_to_previous_runs
 
 # Perform log rotation cleanup at startup
 echo "Performing log rotation cleanup..."

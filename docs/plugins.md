@@ -394,6 +394,74 @@ func (p *Plugin) querySQLRequest(ctx context.Context, query string, params []fra
 
 ## Inter-Plugin Communication
 
+### Plugin Requests
+
+Plugins can communicate with each other using the plugin request/response pattern. Here's an example of querying configured channels from the core plugin:
+
+```go
+func (p *Plugin) getConfiguredChannels(ctx context.Context) ([]ChannelInfo, error) {
+    // Create a unique request ID
+    requestID := fmt.Sprintf("req-%d", time.Now().UnixNano())
+
+    // Create the plugin request
+    request := &framework.EventData{
+        PluginRequest: &framework.PluginRequest{
+            ID:   requestID,
+            From: p.Name(), // Your plugin name
+            To:   "core",
+            Type: "get_configured_channels",
+        },
+    }
+
+    // Send the request and wait for response
+    response, err := p.eventBus.Request(ctx, "core", "plugin.request", request, nil)
+    if err != nil {
+        return nil, fmt.Errorf("failed to send request: %w", err)
+    }
+
+    // Parse the response
+    dataEvent, ok := response.(*framework.DataEvent)
+    if !ok || dataEvent.Data == nil || dataEvent.Data.PluginResponse == nil {
+        return nil, fmt.Errorf("invalid response format")
+    }
+
+    pluginResp := dataEvent.Data.PluginResponse
+    if !pluginResp.Success {
+        return nil, fmt.Errorf("request failed: %s", pluginResp.Error)
+    }
+
+    // Extract channel data from response
+    if pluginResp.Data != nil && pluginResp.Data.RawJSON != nil {
+        var responseData struct {
+            Channels []struct {
+                ID        string `json:"id"`
+                Channel   string `json:"channel"`
+                Enabled   bool   `json:"enabled"`
+                Connected bool   `json:"connected"`
+            } `json:"channels"`
+        }
+
+        if err := json.Unmarshal(pluginResp.Data.RawJSON, &responseData); err != nil {
+            return nil, fmt.Errorf("failed to parse channel data: %w", err)
+        }
+
+        // Convert to your internal type
+        var channels []ChannelInfo
+        for _, ch := range responseData.Channels {
+            channels = append(channels, ChannelInfo{
+                ID:        ch.ID,
+                Name:      ch.Channel,
+                Enabled:   ch.Enabled,
+                Connected: ch.Connected,
+            })
+        }
+        return channels, nil
+    }
+
+    return nil, fmt.Errorf("no channel data in response")
+}
+```
+
 ### Direct Messaging
 
 ```go

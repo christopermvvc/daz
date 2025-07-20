@@ -140,7 +140,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
-	logger.Info("UserTracker", "Initialized with inactivity timeout: %v", p.config.InactivityTimeout)
+	logger.Debug("UserTracker", "Initialized with inactivity timeout: %v", p.config.InactivityTimeout)
 	return nil
 }
 
@@ -211,7 +211,7 @@ func (p *Plugin) Start() error {
 	// Signal that the plugin is ready
 	close(p.readyChan)
 
-	logger.Info("UserTracker", "Started user tracking")
+	logger.Debug("UserTracker", "Started user tracking")
 	return nil
 }
 

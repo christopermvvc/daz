@@ -63,7 +63,7 @@ func (pm *PluginManager) InitializeAll(configs map[string]json.RawMessage, event
 		plugin := pm.plugins[name]
 		config := configs[name]
 
-		logger.Info("PluginManager", "Initializing %s plugin...", name)
+		logger.Debug("PluginManager", "Initializing %s plugin...", name)
 
 		// Prepare config JSON
 		configJSON := prepareConfigJSON(config)
@@ -86,7 +86,7 @@ func (pm *PluginManager) StartAll() error {
 			return fmt.Errorf("dependencies not ready for %s: %w", name, err)
 		}
 
-		logger.Info("PluginManager", "Starting %s plugin...", name)
+		logger.Debug("PluginManager", "Starting %s plugin...", name)
 		if err := plugin.Start(); err != nil {
 			return fmt.Errorf("failed to start %s plugin: %w", name, err)
 		}
@@ -97,7 +97,7 @@ func (pm *PluginManager) StartAll() error {
 		}
 
 		pm.ready[name] = true
-		logger.Info("PluginManager", "%s plugin is ready", name)
+		logger.Debug("PluginManager", "%s plugin is ready", name)
 	}
 
 	return nil

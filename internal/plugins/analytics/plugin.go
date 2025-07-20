@@ -165,7 +165,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
-	logger.Info("Analytics", "Initialized with hourly interval: %v, daily interval: %v",
+	logger.Debug("Analytics", "Initialized with hourly interval: %v, daily interval: %v",
 		p.config.HourlyInterval, p.config.DailyInterval)
 	return nil
 }
@@ -228,7 +228,7 @@ func (p *Plugin) Start() error {
 	// Signal that the plugin is ready
 	close(p.readyChan)
 
-	logger.Info("Analytics", "Started analytics tracking")
+	logger.Debug("Analytics", "Started analytics tracking")
 	return nil
 }
 
@@ -285,6 +285,7 @@ func (p *Plugin) createTables() error {
 		media_plays INT DEFAULT 0,
 		commands_used INT DEFAULT 0,
 		metadata JSONB,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(channel, hour_start)
 	);
 	
@@ -304,6 +305,7 @@ func (p *Plugin) createTables() error {
 		peak_users INT DEFAULT 0,
 		active_hours INT DEFAULT 0,
 		metadata JSONB,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(channel, day_date)
 	);
 	
@@ -334,6 +336,25 @@ func (p *Plugin) createTables() error {
 	for _, sql := range []string{hourlyTableSQL, dailyTableSQL, userStatsTableSQL} {
 		if _, err := p.sqlClient.ExecSync(ctx, sql); err != nil {
 			return fmt.Errorf("failed to create table: %w", err)
+		}
+	}
+
+	// Add missing columns to existing tables
+	alterHourlySQL := `
+	ALTER TABLE daz_analytics_hourly 
+	ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+	`
+
+	alterDailySQL := `
+	ALTER TABLE daz_analytics_daily 
+	ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+	`
+
+	// Execute ALTER statements to add missing columns
+	for _, sql := range []string{alterHourlySQL, alterDailySQL} {
+		if _, err := p.sqlClient.ExecSync(ctx, sql); err != nil {
+			// Log but don't fail - column might already exist
+			logger.Warn("Analytics", "Failed to alter table (column may already exist): %v", err)
 		}
 	}
 
@@ -526,9 +547,23 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 func (p *Plugin) runHourlyAggregation() {
 	defer p.wg.Done()
 
-	// Run immediately on startup
-	p.doHourlyAggregation()
+	// Calculate time until next hour
+	now := time.Now()
+	nextHour := now.Truncate(time.Hour).Add(time.Hour)
+	waitTime := nextHour.Sub(now)
 
+	// Wait until the next hour before starting
+	logger.Debug("Analytics", "Waiting %v until first hourly aggregation", waitTime)
+
+	select {
+	case <-time.After(waitTime):
+		// Run first aggregation at the hour mark
+		p.doHourlyAggregation()
+	case <-p.ctx.Done():
+		return
+	}
+
+	// Then run every interval (default 1 hour)
 	ticker := time.NewTicker(p.config.HourlyInterval)
 	defer ticker.Stop()
 
@@ -542,27 +577,298 @@ func (p *Plugin) runHourlyAggregation() {
 	}
 }
 
+// getActiveChannels returns a list of channels with recent activity
+func (p *Plugin) getActiveChannels(since time.Duration) ([]string, error) {
+	query := `
+		SELECT DISTINCT channel_name 
+		FROM daz_core_events 
+		WHERE timestamp > $1 
+		AND channel_name IS NOT NULL 
+		AND channel_name != ''
+		ORDER BY channel_name`
+
+	ctx := context.Background()
+	rows, err := p.sqlClient.QuerySync(ctx, query, time.Now().Add(-since))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query active channels: %w", err)
+	}
+	defer rows.Close()
+
+	var channels []string
+	for rows.Next() {
+		var channel string
+		if err := rows.Scan(&channel); err != nil {
+			logger.Error("Analytics", "Failed to scan channel: %v", err)
+			continue
+		}
+		channels = append(channels, channel)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating channels: %w", err)
+	}
+
+	return channels, nil
+}
+
+// getConfiguredChannels returns the currently connected channels from the core plugin
+func (p *Plugin) getConfiguredChannels() ([]string, error) {
+	// Create a unique request ID
+	requestID := fmt.Sprintf("analytics-channels-%d", time.Now().UnixNano())
+
+	// Create a channel to receive the response
+	responseChan := make(chan *framework.PluginResponse, 1)
+	errorChan := make(chan error, 1)
+
+	// Create a handler that will receive the response
+	responseHandler := func(event framework.Event) error {
+		dataEvent, ok := event.(*framework.DataEvent)
+		if !ok || dataEvent.Data == nil || dataEvent.Data.PluginResponse == nil {
+			return nil
+		}
+
+		resp := dataEvent.Data.PluginResponse
+		if resp.ID == requestID {
+			select {
+			case responseChan <- resp:
+			default:
+			}
+		}
+		return nil
+	}
+
+	// Subscribe to the response event BEFORE sending the request
+	responseEvent := fmt.Sprintf("plugin.response.%s", p.name)
+	if err := p.eventBus.Subscribe(responseEvent, responseHandler); err != nil {
+		return nil, fmt.Errorf("failed to subscribe to response: %w", err)
+	}
+
+	// Send the request in a goroutine to avoid blocking
+	go func() {
+		request := &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				ID:   requestID,
+				To:   "core",
+				From: p.name,
+				Type: "get_configured_channels",
+			},
+		}
+
+		if err := p.eventBus.Broadcast("plugin.request", request); err != nil {
+			errorChan <- fmt.Errorf("failed to send request: %w", err)
+		}
+	}()
+
+	// Wait for response with a shorter timeout
+	select {
+	case resp := <-responseChan:
+		if !resp.Success {
+			return nil, fmt.Errorf("core plugin returned error: %s", resp.Error)
+		}
+
+		// Parse response
+		var responseData struct {
+			Channels []struct {
+				ID        string `json:"id"`
+				Channel   string `json:"channel"`
+				Enabled   bool   `json:"enabled"`
+				Connected bool   `json:"connected"`
+			} `json:"channels"`
+		}
+
+		if err := json.Unmarshal(resp.Data.RawJSON, &responseData); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		}
+
+		// Extract enabled AND connected channel names
+		var channels []string
+		for _, ch := range responseData.Channels {
+			if ch.Enabled && ch.Connected {
+				channels = append(channels, ch.Channel)
+			}
+		}
+
+		return channels, nil
+
+	case err := <-errorChan:
+		return nil, err
+
+	case <-time.After(1 * time.Second):
+		// If request times out, fall back to hardcoded list
+		logger.Debug("Analytics", "Timeout getting channels from core, using fallback")
+		return []string{
+			"RIFFTRAX_MST3K",
+			"fatpizza",
+			"always_always_sunny",
+		}, nil
+	}
+}
+
 // doHourlyAggregation performs the actual hourly aggregation
 func (p *Plugin) doHourlyAggregation() {
-	// Skip aggregation in multi-room mode for now
-	logger.Info("Analytics", "Skipping hourly aggregation in multi-room mode")
+	// Get all channels that have been seen in the system
+	channels, err := p.getConfiguredChannels()
+	if err != nil {
+		logger.Error("Analytics", "Failed to get channels: %v", err)
+		return
+	}
+
+	if len(channels) == 0 {
+		logger.Info("Analytics", "No active channels found for aggregation")
+		p.lastHourlyRun = time.Now()
+		return
+	}
+
+	logger.Info("Analytics", "Starting hourly aggregation for %d channels", len(channels))
+
+	// Get the hour to aggregate (previous hour)
+	now := time.Now()
+	hourStart := now.Truncate(time.Hour).Add(-time.Hour)
+	hourEnd := hourStart.Add(time.Hour)
+
+	// Aggregate data for each channel
+	successCount := 0
+	for _, channel := range channels {
+		if err := p.aggregateHourlyForChannel(channel, hourStart, hourEnd); err != nil {
+			logger.Error("Analytics", "Failed to aggregate hourly data for channel %s: %v",
+				channel, err)
+			continue
+		}
+		successCount++
+	}
+
+	logger.Info("Analytics", "Hourly aggregation completed: %d/%d successful",
+		successCount, len(channels))
 	p.lastHourlyRun = time.Now()
+}
+
+// aggregateHourlyForChannel aggregates hourly statistics for a specific channel
+func (p *Plugin) aggregateHourlyForChannel(channel string, hourStart, hourEnd time.Time) error {
+	ctx := context.Background()
+
+	// Count messages for this hour
+	messageCountQuery := `
+		SELECT COUNT(*) 
+		FROM daz_core_events 
+		WHERE channel_name = $1 
+		AND timestamp >= $2 
+		AND timestamp < $3
+		AND event_type = 'chat.message'`
+
+	var messageCount int64
+	rows, err := p.sqlClient.QuerySync(ctx, messageCountQuery, channel, hourStart, hourEnd)
+	if err != nil {
+		return fmt.Errorf("failed to query message count: %w", err)
+	}
+	defer rows.Close()
+
+	if rows.Next() {
+		if err := rows.Scan(&messageCount); err != nil {
+			return fmt.Errorf("failed to scan message count: %w", err)
+		}
+	}
+
+	// Count unique users for this hour
+	uniqueUsersQuery := `
+		SELECT COUNT(DISTINCT username) 
+		FROM daz_core_events 
+		WHERE channel_name = $1 
+		AND timestamp >= $2 
+		AND timestamp < $3
+		AND event_type = 'chat.message'
+		AND username IS NOT NULL`
+
+	var uniqueUsers int
+	rows2, err := p.sqlClient.QuerySync(ctx, uniqueUsersQuery, channel, hourStart, hourEnd)
+	if err != nil {
+		return fmt.Errorf("failed to query unique users: %w", err)
+	}
+	defer rows2.Close()
+
+	if rows2.Next() {
+		if err := rows2.Scan(&uniqueUsers); err != nil {
+			return fmt.Errorf("failed to scan unique users: %w", err)
+		}
+	}
+
+	// Count media plays for this hour
+	mediaPlaysQuery := `
+		SELECT COUNT(*) 
+		FROM daz_mediatracker_plays 
+		WHERE channel = $1 
+		AND started_at >= $2 
+		AND started_at < $3`
+
+	var mediaPlays int
+	rows3, err := p.sqlClient.QuerySync(ctx, mediaPlaysQuery, channel, hourStart, hourEnd)
+	if err != nil {
+		// Media tracker might not be enabled
+		logger.Debug("Analytics", "Failed to query media plays, assuming 0: %v", err)
+		mediaPlays = 0
+	} else {
+		defer rows3.Close()
+
+		if rows3.Next() {
+			if err := rows3.Scan(&mediaPlays); err != nil {
+				logger.Debug("Analytics", "Failed to scan media plays, assuming 0: %v", err)
+				mediaPlays = 0
+			}
+		}
+	}
+
+	// Insert or update hourly aggregation
+	insertQuery := `
+		INSERT INTO daz_analytics_hourly 
+		(channel, hour_start, message_count, unique_users, media_plays, commands_used, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (channel, hour_start) 
+		DO UPDATE SET 
+			message_count = EXCLUDED.message_count,
+			unique_users = EXCLUDED.unique_users,
+			media_plays = EXCLUDED.media_plays,
+			commands_used = EXCLUDED.commands_used,
+			metadata = EXCLUDED.metadata,
+			updated_at = CURRENT_TIMESTAMP`
+
+	metadata := map[string]interface{}{
+		"aggregated_at": time.Now().UTC(),
+	}
+	metadataJSON, _ := json.Marshal(metadata)
+
+	_, err = p.sqlClient.ExecSync(ctx, insertQuery,
+		channel, hourStart, messageCount, uniqueUsers, mediaPlays, 0, metadataJSON)
+	if err != nil {
+		return fmt.Errorf("failed to insert hourly aggregation: %w", err)
+	}
+
+	logger.Debug("Analytics", "Hourly aggregation completed for channel %s at %s: %d messages, %d users, %d media plays",
+		channel, hourStart.Format("2006-01-02 15:04"),
+		messageCount, uniqueUsers, mediaPlays)
+
+	return nil
 }
 
 // runDailyAggregation performs daily stats aggregation
 func (p *Plugin) runDailyAggregation() {
 	defer p.wg.Done()
 
-	// Wait before first run
+	// Calculate time until next midnight
+	now := time.Now()
+	nextMidnight := now.Truncate(24 * time.Hour).Add(24 * time.Hour)
+	waitTime := nextMidnight.Sub(now)
+
+	// Wait until midnight before starting
+	logger.Debug("Analytics", "Waiting %v until first daily aggregation", waitTime)
+
 	select {
-	case <-time.After(5 * time.Minute):
+	case <-time.After(waitTime):
+		// Run first aggregation at midnight
+		p.doDailyAggregation()
 	case <-p.ctx.Done():
 		return
 	}
 
-	// Run immediately
-	p.doDailyAggregation()
-
+	// Then run every interval (default 24 hours)
 	ticker := time.NewTicker(p.config.DailyInterval)
 	defer ticker.Stop()
 
@@ -578,7 +884,127 @@ func (p *Plugin) runDailyAggregation() {
 
 // doDailyAggregation performs the actual daily aggregation
 func (p *Plugin) doDailyAggregation() {
-	// Skip aggregation in multi-room mode for now
-	logger.Info("Analytics", "Skipping daily aggregation in multi-room mode")
+	// Get all channels that have been seen in the system
+	channels, err := p.getConfiguredChannels()
+	if err != nil {
+		logger.Error("Analytics", "Failed to get channels for daily aggregation: %v", err)
+		return
+	}
+
+	if len(channels) == 0 {
+		logger.Info("Analytics", "No active channels found for daily aggregation")
+		p.lastDailyRun = time.Now()
+		return
+	}
+
+	logger.Info("Analytics", "Starting daily aggregation for %d channels", len(channels))
+
+	// Get the day to aggregate (yesterday)
+	now := time.Now()
+	dayStart := now.Truncate(24 * time.Hour).Add(-24 * time.Hour)
+	dayEnd := dayStart.Add(24 * time.Hour)
+
+	// Aggregate data for each channel
+	successCount := 0
+	for _, channel := range channels {
+		if err := p.aggregateDailyForChannel(channel, dayStart, dayEnd); err != nil {
+			logger.Error("Analytics", "Failed to aggregate daily data for channel %s: %v",
+				channel, err)
+			continue
+		}
+		successCount++
+	}
+
+	logger.Info("Analytics", "Daily aggregation completed: %d/%d successful",
+		successCount, len(channels))
 	p.lastDailyRun = time.Now()
+}
+
+// aggregateDailyForChannel aggregates daily statistics for a specific channel
+func (p *Plugin) aggregateDailyForChannel(channel string, dayStart, dayEnd time.Time) error {
+	ctx := context.Background()
+
+	// Aggregate from hourly data
+	dailyStatsQuery := `
+		SELECT 
+			COALESCE(SUM(message_count), 0) as total_messages,
+			COALESCE(SUM(media_plays), 0) as total_media_plays,
+			COUNT(DISTINCT hour_start) as active_hours,
+			COALESCE(MAX(unique_users), 0) as peak_users
+		FROM daz_analytics_hourly
+		WHERE channel = $1
+		AND hour_start >= $2
+		AND hour_start < $3`
+
+	var totalMessages, totalMediaPlays int64
+	var activeHours, peakUsers int
+
+	rows, err := p.sqlClient.QuerySync(ctx, dailyStatsQuery, channel, dayStart, dayEnd)
+	if err != nil {
+		return fmt.Errorf("failed to query daily stats: %w", err)
+	}
+	defer rows.Close()
+
+	if rows.Next() {
+		if err := rows.Scan(&totalMessages, &totalMediaPlays, &activeHours, &peakUsers); err != nil {
+			return fmt.Errorf("failed to scan daily stats: %w", err)
+		}
+	}
+
+	// Get unique users for the entire day
+	uniqueUsersQuery := `
+		SELECT COUNT(DISTINCT username)
+		FROM daz_core_events
+		WHERE channel_name = $1
+		AND timestamp >= $2
+		AND timestamp < $3
+		AND event_type = 'chat.message'
+		AND username IS NOT NULL`
+
+	var uniqueUsers int
+	rows2, err := p.sqlClient.QuerySync(ctx, uniqueUsersQuery, channel, dayStart, dayEnd)
+	if err != nil {
+		return fmt.Errorf("failed to query unique users: %w", err)
+	}
+	defer rows2.Close()
+
+	if rows2.Next() {
+		if err := rows2.Scan(&uniqueUsers); err != nil {
+			return fmt.Errorf("failed to scan unique users: %w", err)
+		}
+	}
+
+	// Insert or update daily aggregation
+	insertQuery := `
+		INSERT INTO daz_analytics_daily
+		(channel, day_date, total_messages, unique_users, total_media_plays, 
+		 peak_users, active_hours, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (channel, day_date)
+		DO UPDATE SET
+			total_messages = EXCLUDED.total_messages,
+			unique_users = EXCLUDED.unique_users,
+			total_media_plays = EXCLUDED.total_media_plays,
+			peak_users = EXCLUDED.peak_users,
+			active_hours = EXCLUDED.active_hours,
+			metadata = EXCLUDED.metadata,
+			updated_at = CURRENT_TIMESTAMP`
+
+	metadata := map[string]interface{}{
+		"aggregated_at": time.Now().UTC(),
+	}
+	metadataJSON, _ := json.Marshal(metadata)
+
+	_, err = p.sqlClient.ExecSync(ctx, insertQuery,
+		channel, dayStart.Format("2006-01-02"), totalMessages, uniqueUsers,
+		totalMediaPlays, peakUsers, activeHours, metadataJSON)
+	if err != nil {
+		return fmt.Errorf("failed to insert daily aggregation: %w", err)
+	}
+
+	logger.Debug("Analytics", "Daily aggregation completed for channel %s on %s: %d messages, %d users, %d media plays",
+		channel, dayStart.Format("2006-01-02"),
+		totalMessages, uniqueUsers, totalMediaPlays)
+
+	return nil
 }

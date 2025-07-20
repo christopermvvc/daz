@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/logger"
 )
 
 type Plugin struct {
@@ -54,7 +54,7 @@ func (p *Plugin) Start() error {
 	// Register our command with the command router
 	p.registerCommand()
 
-	log.Printf("[INFO] Uptime plugin started: %s", p.name)
+	logger.Debug(p.name, "Started")
 	return nil
 }
 
@@ -70,7 +70,7 @@ func (p *Plugin) Stop() error {
 	p.cancel()
 	p.wg.Wait()
 
-	log.Printf("[INFO] Uptime plugin stopped: %s", p.name)
+	logger.Debug(p.name, "Stopped")
 	return nil
 }
 
@@ -116,7 +116,7 @@ func (p *Plugin) registerCommand() {
 	}
 
 	if err := p.eventBus.Broadcast("command.register", regEvent); err != nil {
-		log.Printf("[ERROR] Failed to register uptime command: %v", err)
+		logger.Error(p.name, "Failed to register uptime command: %v", err)
 		// Emit failure event for retry
 		p.emitFailureEvent("command.uptime.failed", "registration", "command_registration", err)
 	}
@@ -236,7 +236,7 @@ func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
 
 	// Broadcast to plugin.response event for routing
 	if err := p.eventBus.Broadcast("plugin.response", response); err != nil {
-		log.Printf("[ERROR] Failed to send uptime plugin response: %v", err)
+		logger.Error(p.name, "Failed to send uptime plugin response: %v", err)
 		// Emit failure event for retry
 		p.emitFailureEvent("command.uptime.failed", req.ID, "response_delivery", err)
 	}
@@ -257,7 +257,7 @@ func (p *Plugin) emitFailureEvent(eventType, correlationID, operationType string
 	// Emit failure event asynchronously
 	go func() {
 		if err := p.eventBus.Broadcast(eventType, failureData); err != nil {
-			log.Printf("[Uptime] Failed to emit failure event: %v", err)
+			logger.Debug(p.name, "Failed to emit failure event: %v", err)
 		}
 	}()
 }

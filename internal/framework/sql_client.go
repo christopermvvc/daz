@@ -98,7 +98,36 @@ func (r *QueryRows) Scan(dest ...interface{}) error {
 	}
 
 	for i, val := range row {
+		// Try to handle numeric values that might be stored as strings
 		if err := json.Unmarshal(val, dest[i]); err != nil {
+			// If unmarshaling fails, check if we're trying to unmarshal a string into a numeric type
+			var strVal string
+			if json.Unmarshal(val, &strVal) == nil {
+				// Successfully unmarshaled as string, now check destination type
+				switch dest[i].(type) {
+				case *int64, *int32, *int16, *int8, *int:
+					// Try to parse string as integer
+					var intVal int64
+					if _, parseErr := fmt.Sscanf(strVal, "%d", &intVal); parseErr == nil {
+						// Successfully parsed, now unmarshal the integer
+						intBytes, _ := json.Marshal(intVal)
+						if unmarshalErr := json.Unmarshal(intBytes, dest[i]); unmarshalErr == nil {
+							continue // Success, move to next column
+						}
+					}
+				case *float64, *float32:
+					// Try to parse string as float
+					var floatVal float64
+					if _, parseErr := fmt.Sscanf(strVal, "%f", &floatVal); parseErr == nil {
+						// Successfully parsed, now unmarshal the float
+						floatBytes, _ := json.Marshal(floatVal)
+						if unmarshalErr := json.Unmarshal(floatBytes, dest[i]); unmarshalErr == nil {
+							continue // Success, move to next column
+						}
+					}
+				}
+			}
+			// If all conversion attempts fail, return the original error
 			return fmt.Errorf("failed to unmarshal column %d: %w", i, err)
 		}
 	}

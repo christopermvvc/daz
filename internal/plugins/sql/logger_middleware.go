@@ -414,6 +414,12 @@ func (lm *LoggerMiddleware) writeBatch(table string, entries []LogEntry) error {
 
 // buildInsertQuery creates an INSERT query from fields
 func (lm *LoggerMiddleware) buildInsertQuery(table string, fields LogFieldMap) (string, []framework.SQLParam) {
+	// Validate table name to prevent SQL injection
+	if !isValidTableName(table) {
+		log.Printf("[SQL Logger] Invalid table name: %s", table)
+		return "", nil
+	}
+
 	var columns []string
 	var values []string
 	var params []framework.SQLParam
@@ -437,6 +443,12 @@ func (lm *LoggerMiddleware) buildInsertQuery(table string, fields LogFieldMap) (
 // buildBatchInsertQuery creates a batch INSERT query
 func (lm *LoggerMiddleware) buildBatchInsertQuery(table string, entries []LogEntry) (string, []framework.SQLParam) {
 	if len(entries) == 0 {
+		return "", nil
+	}
+
+	// Validate table name to prevent SQL injection
+	if !isValidTableName(table) {
+		log.Printf("[SQL Logger] Invalid table name: %s", table)
 		return "", nil
 	}
 

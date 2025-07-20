@@ -233,3 +233,172 @@ func TestPlugin_Stop(t *testing.T) {
 		t.Errorf("Stop() error = %v", err)
 	}
 }
+
+func TestPlugin_HandlePluginRequest_GetConfiguredChannels(t *testing.T) {
+	// Create plugin with test configuration
+	config := &Config{
+		Rooms: []RoomConfig{
+			{
+				ID:      "room1",
+				Channel: "channel1",
+				Enabled: true,
+			},
+			{
+				ID:      "room2",
+				Channel: "channel2",
+				Enabled: false,
+			},
+		},
+	}
+
+	plugin := NewPlugin(config)
+	mockBus := &mockEventBus{}
+
+	// Initialize the plugin
+	err := plugin.Initialize(mockBus)
+	if err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+
+	// Create a plugin request for configured channels
+	request := &framework.DataEvent{
+		EventType: "plugin.request",
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				ID:   "test-req-123",
+				From: "test-plugin",
+				To:   "core",
+				Type: "get_configured_channels",
+			},
+		},
+	}
+
+	// Handle the request
+	err = plugin.handlePluginRequest(request)
+	if err != nil {
+		t.Fatalf("handlePluginRequest() error = %v", err)
+	}
+
+	// Verify the response was sent
+	mockBus.mu.Lock()
+	defer mockBus.mu.Unlock()
+
+	if len(mockBus.broadcasts) != 1 {
+		t.Fatalf("Expected 1 broadcast, got %d", len(mockBus.broadcasts))
+	}
+
+	broadcast := mockBus.broadcasts[0]
+	if broadcast.eventType != "plugin.response.test-plugin" {
+		t.Errorf("Expected event type 'plugin.response.test-plugin', got '%s'", broadcast.eventType)
+	}
+
+	// Verify response data
+	if broadcast.data == nil || broadcast.data.PluginResponse == nil {
+		t.Fatal("Expected plugin response data")
+	}
+
+	resp := broadcast.data.PluginResponse
+	if !resp.Success {
+		t.Errorf("Expected success=true, got false with error: %s", resp.Error)
+	}
+
+	if resp.From != "core" {
+		t.Errorf("Expected response from 'core', got '%s'", resp.From)
+	}
+
+	if resp.ID != "test-req-123" {
+		t.Errorf("Expected response ID 'test-req-123', got '%s'", resp.ID)
+	}
+
+	// Verify the response contains channel data
+	if resp.Data == nil || resp.Data.RawJSON == nil {
+		t.Fatal("Expected response data with RawJSON")
+	}
+}
+
+func TestPlugin_HandlePluginRequest_UnknownType(t *testing.T) {
+	plugin := NewPlugin(nil)
+	mockBus := &mockEventBus{}
+
+	// Initialize the plugin
+	err := plugin.Initialize(mockBus)
+	if err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+
+	// Create a plugin request with unknown type
+	request := &framework.DataEvent{
+		EventType: "plugin.request",
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				ID:   "test-req-456",
+				From: "test-plugin",
+				To:   "core",
+				Type: "unknown_request_type",
+			},
+		},
+	}
+
+	// Handle the request
+	err = plugin.handlePluginRequest(request)
+	if err != nil {
+		t.Fatalf("handlePluginRequest() error = %v", err)
+	}
+
+	// Verify error response was sent
+	mockBus.mu.Lock()
+	defer mockBus.mu.Unlock()
+
+	if len(mockBus.broadcasts) != 1 {
+		t.Fatalf("Expected 1 broadcast, got %d", len(mockBus.broadcasts))
+	}
+
+	broadcast := mockBus.broadcasts[0]
+	resp := broadcast.data.PluginResponse
+
+	if resp.Success {
+		t.Error("Expected success=false for unknown request type")
+	}
+
+	if resp.Error == "" {
+		t.Error("Expected error message for unknown request type")
+	}
+}
+
+func TestPlugin_HandlePluginRequest_WrongTarget(t *testing.T) {
+	plugin := NewPlugin(nil)
+	mockBus := &mockEventBus{}
+
+	// Initialize the plugin
+	err := plugin.Initialize(mockBus)
+	if err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+
+	// Create a plugin request targeted at different plugin
+	request := &framework.DataEvent{
+		EventType: "plugin.request",
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				ID:   "test-req-789",
+				From: "test-plugin",
+				To:   "other-plugin", // Not targeted at core
+				Type: "get_configured_channels",
+			},
+		},
+	}
+
+	// Handle the request
+	err = plugin.handlePluginRequest(request)
+	if err != nil {
+		t.Fatalf("handlePluginRequest() error = %v", err)
+	}
+
+	// Verify no response was sent (request was ignored)
+	mockBus.mu.Lock()
+	defer mockBus.mu.Unlock()
+
+	if len(mockBus.broadcasts) != 0 {
+		t.Errorf("Expected no broadcasts for wrong target, got %d", len(mockBus.broadcasts))
+	}
+}

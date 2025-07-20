@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 // MockEventBus implements framework.EventBus for testing
 type MockEventBus struct {
+	mu         sync.RWMutex
 	broadcasts []mockEvent
 	sends      []mockEvent
 	queries    []mockQuery
@@ -97,7 +99,9 @@ func (m *MockEventBus) Request(ctx context.Context, target string, eventType str
 		for i, p := range data.SQLExecRequest.Params {
 			interfaceParams[i] = p.Value
 		}
+		m.mu.Lock()
 		m.execs = append(m.execs, mockExec{query: data.SQLExecRequest.Query, params: interfaceParams})
+		m.mu.Unlock()
 		return &framework.EventData{
 			SQLExecResponse: &framework.SQLExecResponse{
 				Success:      true,
@@ -113,7 +117,9 @@ func (m *MockEventBus) Request(ctx context.Context, target string, eventType str
 		for i, p := range data.SQLQueryRequest.Params {
 			interfaceParams[i] = p.Value
 		}
+		m.mu.Lock()
 		m.queries = append(m.queries, mockQuery{query: data.SQLQueryRequest.Query, params: interfaceParams})
+		m.mu.Unlock()
 		return &framework.EventData{
 			SQLQueryResponse: &framework.SQLQueryResponse{
 				Success: true,
@@ -242,8 +248,12 @@ func TestPluginStart(t *testing.T) {
 	time.Sleep(5 * time.Second)
 
 	// Check that tables were created after Start
-	if len(mockBus.execs) != 2 {
-		t.Errorf("Expected 2 table creation queries after Start, got %d", len(mockBus.execs))
+	mockBus.mu.RLock()
+	execCount := len(mockBus.execs)
+	mockBus.mu.RUnlock()
+
+	if execCount != 2 {
+		t.Errorf("Expected 2 table creation queries after Start, got %d", execCount)
 	}
 
 	// Check subscriptions

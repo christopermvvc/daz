@@ -44,7 +44,7 @@ func NewWebSocketClient(channel string, roomID string, eventChan chan<- framewor
 		return nil, fmt.Errorf("failed to discover server: %w", err)
 	}
 
-	logger.Info("WebSocketClient", "Discovered server URL for channel %s: %s", channel, serverURL)
+	logger.Debug("WebSocketClient", "Discovered server URL for channel %s: %s", channel, serverURL)
 
 	ctx, cancel := context.WithCancel(context.Background())
 

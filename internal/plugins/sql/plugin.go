@@ -126,7 +126,7 @@ func (p *Plugin) Init(configData json.RawMessage, bus framework.EventBus) error 
 
 	p.loggerRules = p.config.LoggerRules
 
-	logger.Info("SQL", "Initialized with %d logger rules", len(p.loggerRules))
+	logger.Debug("SQL", "Initialized with %d logger rules", len(p.loggerRules))
 	return nil
 }
 
@@ -139,7 +139,7 @@ func (p *Plugin) Start() error {
 
 	// Connect to database in a goroutine to avoid blocking
 	go func() {
-		logger.Info("SQL", "Starting database connection...")
+		logger.Debug("SQL", "Starting database connection...")
 		startTime := time.Now()
 
 		if err := p.connectDatabase(); err != nil {
@@ -148,7 +148,7 @@ func (p *Plugin) Start() error {
 			return
 		}
 
-		logger.Info("SQL", "Database connected successfully after %v", time.Since(startTime))
+		logger.Debug("SQL", "Database connected successfully after %v", time.Since(startTime))
 
 		// Subscribe to event handlers after database is connected
 		logger.Debug("SQL", "Subscribing to event handlers...")
@@ -199,10 +199,10 @@ func (p *Plugin) Start() error {
 
 		// Signal that the plugin is ready after database is connected
 		close(p.readyChan)
-		logger.Info("SQL", "Started successfully and ready to accept requests after %v total startup time", time.Since(startTime))
+		logger.Debug("SQL", "Started successfully and ready to accept requests after %v total startup time", time.Since(startTime))
 	}()
 
-	logger.Info("SQL", "Started (connecting to database in background)")
+	logger.Debug("SQL", "Started (connecting to database in background)")
 	return nil
 }
 
@@ -270,7 +270,7 @@ func (p *Plugin) connectDatabase() error {
 		p.config.Database.Database,
 	)
 
-	logger.Info("SQL", "Connecting to database at %s:%d/%s",
+	logger.Debug("SQL", "Connecting to database at %s:%d/%s",
 		p.config.Database.Host, p.config.Database.Port, p.config.Database.Database)
 
 	poolConfig, err := pgxpool.ParseConfig(connStr)
@@ -321,7 +321,7 @@ func (p *Plugin) connectDatabase() error {
 
 	p.db = db
 
-	logger.Info("SQL", "Initializing database schema...")
+	logger.Debug("SQL", "Initializing database schema...")
 	schemaStart := time.Now()
 	if err := p.initializeSchema(ctx); err != nil {
 		pool.Close()
@@ -330,9 +330,9 @@ func (p *Plugin) connectDatabase() error {
 		}
 		return fmt.Errorf("failed to initialize schema: %w", err)
 	}
-	logger.Info("SQL", "Schema initialization completed in %v", time.Since(schemaStart))
+	logger.Debug("SQL", "Schema initialization completed in %v", time.Since(schemaStart))
 
-	logger.Info("SQL", "Connected to database successfully")
+	logger.Debug("SQL", "Connected to database successfully")
 	return nil
 }
 
@@ -425,7 +425,7 @@ func (p *Plugin) initializeSchema(ctx context.Context) error {
 		}
 	}
 
-	logger.Info("SQL", "Database schema initialized")
+	logger.Debug("SQL", "Database schema initialized")
 	return nil
 }
 
@@ -474,6 +474,11 @@ func (p *Plugin) logEventData(rule LoggerRule, event *framework.DataEvent) error
 
 	if p.pool == nil {
 		return fmt.Errorf("database not connected")
+	}
+
+	// Validate table name to prevent SQL injection
+	if !isValidTableName(rule.Table) {
+		return fmt.Errorf("invalid table name: %s", rule.Table)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

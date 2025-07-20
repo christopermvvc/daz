@@ -236,7 +236,7 @@ func (eb *EventBus) SubscribeWithTags(pattern string, handler framework.EventHan
 		// Add to pattern subscribers
 		sub.Name = fmt.Sprintf("pattern_handler_%d", len(eb.patternSubscribers))
 		eb.patternSubscribers = append(eb.patternSubscribers, sub)
-		logger.Info("EventBus", "Subscribed to pattern %s with tags %v", pattern, tags)
+		logger.Debug("EventBus", "Subscribed to pattern %s with tags %v", pattern, tags)
 	} else {
 		// Add to exact match subscribers
 		sub.Name = fmt.Sprintf("handler_%d", len(eb.subscribers[pattern]))
@@ -248,7 +248,7 @@ func (eb *EventBus) SubscribeWithTags(pattern string, handler framework.EventHan
 		// Start router for this event type if not already running
 		eb.startRouter(pattern, queue)
 
-		logger.Info("EventBus", "Subscribed to %s with tags %v", pattern, tags)
+		logger.Debug("EventBus", "Subscribed to %s with tags %v", pattern, tags)
 	}
 
 	return nil
@@ -256,7 +256,7 @@ func (eb *EventBus) SubscribeWithTags(pattern string, handler framework.EventHan
 
 // Start begins event routing
 func (eb *EventBus) Start() error {
-	logger.Info("EventBus", "Starting event routing")
+	logger.Debug("EventBus", "Starting event routing")
 
 	// Pre-start routers for critical event types
 	criticalTypes := []string{
@@ -273,7 +273,7 @@ func (eb *EventBus) Start() error {
 		eb.startRouter(eventType, queue)
 	}
 
-	logger.Info("EventBus", "Critical routers pre-started")
+	logger.Debug("EventBus", "Critical routers pre-started")
 	return nil
 }
 
@@ -364,7 +364,7 @@ func (eb *EventBus) startRouter(eventType string, queue *messageQueue) {
 
 // routeEvents routes events to subscribers
 func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
-	logger.Info("EventBus", "Router started for %s", eventType)
+	logger.Debug("EventBus", "Router started for %s", eventType)
 
 	for {
 		// Check if we should stop
