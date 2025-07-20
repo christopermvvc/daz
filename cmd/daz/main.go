@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,7 +20,6 @@ import (
 	"github.com/hildolfr/daz/internal/metrics"
 	"github.com/hildolfr/daz/internal/plugins/analytics"
 	"github.com/hildolfr/daz/internal/plugins/commands/about"
-	"github.com/hildolfr/daz/internal/plugins/commands/debug"
 	"github.com/hildolfr/daz/internal/plugins/commands/help"
 	"github.com/hildolfr/daz/internal/plugins/commands/uptime"
 	"github.com/hildolfr/daz/internal/plugins/eventfilter"
@@ -49,6 +49,7 @@ func main() {
 	// Configure logging
 	if *verbose {
 		logger.SetDebug(true)
+		logger.SetStartupVerbose(true)
 	}
 
 	// Load configuration
@@ -71,26 +72,40 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("Daz - Modular Go Chat Bot for Cytube")
+	// Track startup time
+	startTime := time.Now()
 
-	// Display room information
+	// Display startup header
+	fmt.Printf("\n🤖 Daz - Modular Chat Bot v1.0.0\n")
+
+	// Collect room information for concise display
 	enabledRooms := 0
+	var roomNames []string
 	for _, room := range cfg.Core.Rooms {
 		if room.Enabled {
 			enabledRooms++
-			// Use channel name if ID is empty (it will be auto-generated later)
-			identifier := room.ID
-			if identifier == "" {
-				identifier = room.Channel
-			}
-			fmt.Printf("Room '%s': Joining channel %s", identifier, room.Channel)
-			if room.Username != "" {
-				fmt.Printf(" as %s", room.Username)
-			}
-			fmt.Println()
+			roomNames = append(roomNames, room.Channel)
 		}
 	}
-	fmt.Printf("Managing %d room(s) with WebSocket transport and PostgreSQL persistence\n", enabledRooms)
+
+	// Show room information in verbose mode
+	if logger.IsStartupVerbose() {
+		for _, room := range cfg.Core.Rooms {
+			if room.Enabled {
+				// Use channel name if ID is empty (it will be auto-generated later)
+				identifier := room.ID
+				if identifier == "" {
+					identifier = room.Channel
+				}
+				fmt.Printf("Room '%s': Joining channel %s", identifier, room.Channel)
+				if room.Username != "" {
+					fmt.Printf(" as %s", room.Username)
+				}
+				fmt.Println()
+			}
+		}
+		fmt.Printf("Managing %d room(s) with WebSocket transport and PostgreSQL persistence\n", enabledRooms)
+	}
 
 	// Create core plugin configuration from loaded config
 	coreConfig := &core.Config{
@@ -108,15 +123,14 @@ func main() {
 		}
 	}
 
-	if err := run(coreConfig, cfg, *healthPort); err != nil {
+	if err := run(coreConfig, cfg, *healthPort, startTime, roomNames); err != nil {
 		logger.Error("Main", "Failed to start: %v", err)
 		os.Exit(1)
 	}
 }
 
-func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
+func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime time.Time, roomNames []string) error {
 	// Track bot uptime
-	startTime := time.Now()
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
@@ -160,7 +174,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 	// Create and initialize the core plugin
 	corePlugin := core.NewPlugin(coreConfig)
 
-	logger.Info("Main", "Initializing core plugin...")
+	logger.Debug("Main", "Initializing core plugin...")
 	if err := corePlugin.Initialize(bus); err != nil {
 		return fmt.Errorf("failed to initialize core plugin: %w", err)
 	}
@@ -180,7 +194,6 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 		{"mediatracker", mediatracker.New()},
 		{"analytics", analytics.New()},
 		{"about", about.New()},
-		{"debug", debug.New()},
 		{"help", help.New()},
 		{"uptime", uptime.New()},
 	}
@@ -211,7 +224,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 	}
 
 	// Start core plugin first
-	logger.Info("Main", "Starting core plugin...")
+	logger.Debug("Main", "Starting core plugin...")
 	if err := corePlugin.Start(); err != nil {
 		return fmt.Errorf("failed to start core plugin: %w", err)
 	}
@@ -228,7 +241,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 	defer pluginManager.StopAll()
 
 	// Now that all plugins are ready, start room connections
-	logger.Info("Main", "All plugins are ready, starting room connections...")
+	logger.Debug("Main", "All plugins are ready, starting room connections...")
 	corePlugin.StartRoomConnections()
 
 	// Create health check service
@@ -271,7 +284,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 
 	// Start health server in background
 	go func() {
-		logger.Info("Main", "Starting health check server on port %d", healthPort)
+		logger.Debug("Main", "Starting health check server on port %d", healthPort)
 		if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("Main", "Health check server error: %v", err)
 		}
@@ -287,8 +300,30 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int) error {
 		}
 	}()
 
+	// Show startup summary in non-verbose mode
+	if !logger.IsStartupVerbose() {
+		roomList := ""
+		if len(roomNames) > 3 {
+			roomList = fmt.Sprintf("%s, %s, %s... (%d total)", roomNames[0], roomNames[1], roomNames[2], len(roomNames))
+		} else if len(roomNames) > 0 {
+			roomList = fmt.Sprintf("%s (%d total)", strings.Join(roomNames, ", "), len(roomNames))
+		}
+
+		fmt.Println() // Add spacing before summary
+		fmt.Println("──────────────────────────────────────")
+		fmt.Printf("📍 Active rooms: %s\n", roomList)
+		fmt.Printf("🔌 Plugins: %d loaded, all ready\n", len(plugins)+1) // +1 for core plugin
+		fmt.Println("💾 Database: Connected successfully")
+		fmt.Printf("🏥 Health check: http://localhost:%d/health\n", healthPort)
+		fmt.Printf("⏱️  Started in %v\n", time.Since(startTime))
+		fmt.Println("──────────────────────────────────────")
+		fmt.Println()
+	}
+
 	logger.Info("Main", "Bot is running! Press Ctrl+C to stop.")
-	logger.Info("Main", "Health check endpoints available at http://localhost:%d/health", healthPort)
+	if logger.IsStartupVerbose() {
+		logger.Info("Main", "Health check endpoints available at http://localhost:%d/health", healthPort)
+	}
 
 	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)

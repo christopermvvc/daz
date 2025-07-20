@@ -185,7 +185,6 @@ Daz's event-driven architecture ensures maximum performance and reliability:
 - **!help** - Display available commands
 - **!about** - Show bot information
 - **!uptime** - Report bot uptime
-- **!debug** - Debug information (admin only)
 
 ## 🛠️ Development
 
