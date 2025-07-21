@@ -163,8 +163,9 @@ func TestPlugin_Start(t *testing.T) {
 	err = p.Start()
 	assert.Error(t, err)
 
-	// Clean up
-	p.Stop()
+	// Clean up - ensure proper shutdown
+	err = p.Stop()
+	assert.NoError(t, err)
 }
 
 func TestPlugin_Stop(t *testing.T) {
