@@ -409,50 +409,120 @@ func (p *Plugin) deliverMessages(channel, username string) {
 		return
 	}
 
-	// Limit delivery to prevent spam
-	deliveryCount := len(messages)
-	if deliveryCount > deliveryLimit {
-		deliveryCount = deliveryLimit
+	// Group messages by sender for better formatting
+	messagesBySender := make(map[string][]tellMessage)
+	senderOrder := []string{} // Maintain order of first message from each sender
+
+	for _, msg := range messages {
+		if _, exists := messagesBySender[msg.FromUser]; !exists {
+			senderOrder = append(senderOrder, msg.FromUser)
+		}
+		messagesBySender[msg.FromUser] = append(messagesBySender[msg.FromUser], msg)
 	}
 
-	for i := 0; i < deliveryCount; i++ {
-		msg := messages[i]
-		text := fmt.Sprintf("Hi %s, %s sent: %s", username, msg.FromUser, msg.Message)
+	// Deliver messages in batches of up to 5
+	totalDelivered := 0
+	messagesInBatch := 0
+	isFirstMessage := true
+	var lastSender string
+	var lastIsPM bool
 
-		if msg.IsPM {
-			p.sendPM(channel, username, text)
-		} else {
-			p.sendChannelMessage(channel, text)
-		}
+	for _, sender := range senderOrder {
+		senderMessages := messagesBySender[sender]
 
-		// Mark as delivered
-		if err := p.markDelivered(msg.ID); err != nil {
-			logger.Error(p.name, "Failed to mark message %d as delivered: %v", msg.ID, err)
-		}
+		for msgIndex, msg := range senderMessages {
+			// Check if we've hit the batch limit
+			if messagesInBatch >= deliveryLimit {
+				// Send notification about remaining messages
+				remaining := len(messages) - totalDelivered
+				nextBatch := remaining
+				if nextBatch > deliveryLimit {
+					nextBatch = deliveryLimit
+				}
+				text := fmt.Sprintf("And I'll give you the next %d in 3 minutes.", nextBatch)
 
-		// Delay between messages to prevent spam
-		if i < deliveryCount-1 {
-			select {
-			case <-time.After(15 * time.Second):
-				// Continue after delay
-			case <-p.ctx.Done():
+				if lastIsPM {
+					p.sendPM(channel, username, text)
+				} else {
+					p.sendChannelMessage(channel, text)
+				}
+
+				// Schedule next batch delivery
+				p.scheduleNextBatch(channel, username, 3*time.Minute)
 				return
+			}
+
+			// Format the message based on position and sender
+			var text string
+			if isFirstMessage {
+				// First message ever
+				text = fmt.Sprintf("Hi %s, %s says: %s", username, sender, msg.Message)
+				isFirstMessage = false
+			} else if sender != lastSender {
+				// Different sender than previous
+				if totalDelivered == 1 {
+					text = fmt.Sprintf("And %s says: %s", sender, msg.Message)
+				} else {
+					text = fmt.Sprintf("Also, %s says: %s", sender, msg.Message)
+				}
+			} else {
+				// Same sender as previous
+				if msgIndex == 1 {
+					text = fmt.Sprintf("and they said: %s", msg.Message)
+				} else {
+					text = fmt.Sprintf("and also said: %s", msg.Message)
+				}
+			}
+
+			// Send the message
+			if msg.IsPM {
+				p.sendPM(channel, username, text)
+			} else {
+				p.sendChannelMessage(channel, text)
+			}
+
+			// Mark as delivered
+			if err := p.markDelivered(msg.ID); err != nil {
+				logger.Error(p.name, "Failed to mark message %d as delivered: %v", msg.ID, err)
+			}
+
+			lastSender = sender
+			lastIsPM = msg.IsPM
+			totalDelivered++
+			messagesInBatch++
+
+			// Small delay between messages to avoid flooding
+			if totalDelivered < len(messages) && messagesInBatch < deliveryLimit {
+				select {
+				case <-time.After(2 * time.Second):
+					// Continue after small delay
+				case <-p.ctx.Done():
+					return
+				}
 			}
 		}
 	}
+}
 
-	// If there are more messages, notify the user
-	if len(messages) > deliveryLimit {
-		remaining := len(messages) - deliveryLimit
-		text := fmt.Sprintf("You have %d more message(s) waiting. They will be delivered shortly.", remaining)
-		p.sendChannelMessage(channel, text)
+func (p *Plugin) scheduleNextBatch(channel, username string, delay time.Duration) {
+	timerKey := fmt.Sprintf("%s:%s:batch", channel, strings.ToLower(username))
 
-		// Schedule another delivery after a delay to continue with remaining messages
-		// This gives time for the rate limit to reset
-		time.AfterFunc(30*time.Second, func() {
-			p.deliverMessages(channel, username)
-		})
+	p.mu.Lock()
+	// Cancel existing timer if present
+	if timer, exists := p.deliveryTimers[timerKey]; exists {
+		timer.Stop()
 	}
+
+	// Create new timer for the next batch
+	p.deliveryTimers[timerKey] = time.AfterFunc(delay, func() {
+		logger.Debug(p.name, "Batch timer fired - delivering next batch for user %s in channel %s", username, channel)
+		p.deliverMessages(channel, username)
+
+		p.mu.Lock()
+		delete(p.deliveryTimers, timerKey)
+		p.mu.Unlock()
+	})
+	p.mu.Unlock()
 }
 
 func (p *Plugin) getPendingMessages(channel, username string) ([]tellMessage, error) {
