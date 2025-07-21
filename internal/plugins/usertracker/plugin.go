@@ -259,7 +259,7 @@ func (p *Plugin) Status() framework.PluginStatus {
 func (p *Plugin) createTables() error {
 	// User sessions table
 	sessionsTableSQL := `
-	CREATE TABLE IF NOT EXISTS ***REMOVED***tracker_sessions (
+	CREATE TABLE IF NOT EXISTS daz_user_tracker_sessions (
 		id SERIAL PRIMARY KEY,
 		channel VARCHAR(255) NOT NULL,
 		username VARCHAR(255) NOT NULL,
@@ -272,16 +272,16 @@ func (p *Plugin) createTables() error {
 	);
 	
 	CREATE INDEX IF NOT EXISTS idx_usertracker_active_sessions 
-		ON ***REMOVED***tracker_sessions(channel, username) 
+		ON daz_usertracker_sessions(channel, username) 
 		WHERE is_active = TRUE;
 	
 	CREATE INDEX IF NOT EXISTS idx_usertracker_last_activity 
-		ON ***REMOVED***tracker_sessions(channel, username, last_activity);
+		ON daz_usertracker_sessions(channel, username, last_activity);
 	`
 
 	// User history table for long-term tracking
 	historyTableSQL := `
-	CREATE TABLE IF NOT EXISTS ***REMOVED***tracker_history (
+	CREATE TABLE IF NOT EXISTS daz_user_tracker_history (
 		id BIGSERIAL PRIMARY KEY,
 		channel VARCHAR(255) NOT NULL,
 		username VARCHAR(255) NOT NULL,
@@ -290,7 +290,7 @@ func (p *Plugin) createTables() error {
 		metadata JSONB
 	);
 
-	CREATE INDEX IF NOT EXISTS idx_usertracker_history_user ON ***REMOVED***tracker_history(channel, username, timestamp);
+	CREATE INDEX IF NOT EXISTS idx_usertracker_history_user ON daz_usertracker_history(channel, username, timestamp);
 	`
 
 	// Execute table creation
@@ -336,7 +336,7 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 
 	// Record in database
 	sessionSQL := `
-		INSERT INTO ***REMOVED***tracker_sessions 
+		INSERT INTO daz_user_tracker_sessions 
 			(channel, username, rank, joined_at, last_activity, is_active)
 		VALUES ($1, $2, $3, $4, $5, TRUE)
 	`
@@ -352,7 +352,7 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 
 	// Record in history
 	historySQL := `
-		INSERT INTO ***REMOVED***tracker_history 
+		INSERT INTO daz_user_tracker_history 
 			(channel, username, event_type, timestamp, metadata)
 		VALUES ($1, $2, 'join', $3, $4)
 	`
@@ -397,7 +397,7 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 
 	// Update session in database
 	sessionSQL := `
-		UPDATE ***REMOVED***tracker_sessions 
+		UPDATE daz_user_tracker_sessions 
 		SET left_at = $1, is_active = FALSE, last_activity = $1
 		WHERE channel = $2 AND username = $3 AND is_active = TRUE
 	`
@@ -411,7 +411,7 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 
 	// Record in history
 	historySQL := `
-		INSERT INTO ***REMOVED***tracker_history 
+		INSERT INTO daz_user_tracker_history 
 			(channel, username, event_type, timestamp)
 		VALUES ($1, $2, 'leave', $3)
 	`
@@ -447,7 +447,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 
 	// Update last activity in database
 	updateSQL := `
-		UPDATE ***REMOVED***tracker_sessions 
+		UPDATE daz_user_tracker_sessions 
 		SET last_activity = $1
 		WHERE channel = $2 AND username = $3 AND is_active = TRUE
 	`
@@ -490,7 +490,7 @@ func (p *Plugin) handleSeenRequest(event framework.Event) error {
 	// Query database for user info
 	query := `
 		SELECT username, joined_at, left_at, last_activity, is_active
-		FROM ***REMOVED***tracker_sessions
+		FROM daz_user_tracker_sessions
 		WHERE channel = $1 AND LOWER(username) = LOWER($2)
 		ORDER BY last_activity DESC
 		LIMIT 1
@@ -569,7 +569,7 @@ func (p *Plugin) doCleanup() {
 
 	// Update database
 	updateSQL := `
-		UPDATE ***REMOVED***tracker_sessions 
+		UPDATE daz_user_tracker_sessions 
 		SET is_active = FALSE
 		WHERE is_active = TRUE AND last_activity < $1
 	`

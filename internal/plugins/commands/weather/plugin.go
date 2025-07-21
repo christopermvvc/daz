@@ -1,0 +1,373 @@
+package weather
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/hildolfr/daz/internal/framework"
+)
+
+type Plugin struct {
+	name           string
+	running        bool
+	eventBus       framework.EventBus
+	lastRequestMap map[string]time.Time
+	rateLimitSecs  int
+	mu             sync.RWMutex
+	config         Config
+}
+
+type Config struct {
+	RateLimitSeconds int `json:"rate_limit_seconds"`
+}
+
+func New() framework.Plugin {
+	return &Plugin{
+		name:           "weather",
+		running:        false,
+		lastRequestMap: make(map[string]time.Time),
+		rateLimitSecs:  20,
+	}
+}
+
+func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
+	p.eventBus = bus
+
+	if len(config) > 0 {
+		if err := json.Unmarshal(config, &p.config); err != nil {
+			return fmt.Errorf("failed to unmarshal config: %w", err)
+		}
+		if p.config.RateLimitSeconds > 0 {
+			p.rateLimitSecs = p.config.RateLimitSeconds
+		}
+	}
+
+	return nil
+}
+
+func (p *Plugin) Start() error {
+	p.mu.Lock()
+	p.running = true
+	p.mu.Unlock()
+
+	registerEvent := &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			To:   "eventfilter",
+			From: p.name,
+			Type: "register",
+			Data: &framework.RequestData{
+				KeyValue: map[string]string{
+					"commands": "weather,w",
+					"min_rank": "0",
+				},
+			},
+		},
+	}
+	p.eventBus.Broadcast("command.register", registerEvent)
+
+	p.eventBus.Subscribe("command.weather.execute", p.handleWeatherCommand)
+	p.eventBus.Subscribe("command.w.execute", p.handleWeatherCommand)
+
+	return nil
+}
+
+func (p *Plugin) Stop() error {
+	p.mu.Lock()
+	p.running = false
+	p.mu.Unlock()
+
+	return nil
+}
+
+func (p *Plugin) HandleEvent(event framework.Event) error {
+	return nil
+}
+
+func (p *Plugin) Status() framework.PluginStatus {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	status := "stopped"
+	if p.running {
+		status = "running"
+	}
+
+	return framework.PluginStatus{
+		Name:  p.name,
+		State: status,
+	}
+}
+
+func (p *Plugin) Name() string {
+	return p.name
+}
+
+func (p *Plugin) handleWeatherCommand(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok {
+		return nil
+	}
+
+	if dataEvent.Data == nil || dataEvent.Data.PluginRequest == nil {
+		return nil
+	}
+
+	req := dataEvent.Data.PluginRequest
+
+	// Extract username and channel from Command.Params
+	username := ""
+	channel := ""
+	if req.Data != nil && req.Data.Command != nil && req.Data.Command.Params != nil {
+		username = req.Data.Command.Params["username"]
+		channel = req.Data.Command.Params["channel"]
+	}
+
+	// Get args from Command.Args
+	var args []string
+	if req.Data != nil && req.Data.Command != nil {
+		args = req.Data.Command.Args
+	}
+
+	if !p.checkRateLimit(username) {
+		message := fmt.Sprintf("Please wait %d seconds between weather requests.", p.rateLimitSecs)
+		p.sendResponse(username, channel, "weather", message, false)
+		return nil
+	}
+
+	if len(args) == 0 {
+		p.sendResponse(username, channel, "weather", "Please specify a location. Usage: !weather <location>", false)
+		return nil
+	}
+
+	location := strings.Join(args, " ")
+	weather, err := p.getWeather(location)
+	if err != nil {
+		p.sendResponse(username, channel, "weather", fmt.Sprintf("Error getting weather: %v", err), false)
+		return nil
+	}
+
+	p.sendResponse(username, channel, "weather", weather, true)
+	return nil
+}
+
+func (p *Plugin) checkRateLimit(username string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	lastRequest, exists := p.lastRequestMap[username]
+	if !exists || time.Since(lastRequest) >= time.Duration(p.rateLimitSecs)*time.Second {
+		p.lastRequestMap[username] = time.Now()
+		return true
+	}
+	return false
+}
+
+func (p *Plugin) getWeather(location string) (string, error) {
+	encodedLocation := url.QueryEscape(location)
+
+	// Using custom format for more detailed weather info
+	// %l = location, %C = weather condition, %t = temperature, %f = feels like
+	// %h = humidity, %w = wind, %p = precipitation, %P = pressure
+	weatherURL := fmt.Sprintf("https://wttr.in/%s?format=j1", encodedLocation)
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	req, err := http.NewRequest("GET", weatherURL, nil)
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("User-Agent", "daz-bot/1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("weather service returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	// Parse JSON response
+	var data map[string]interface{}
+	if err := json.Unmarshal(body, &data); err != nil {
+		// Try the simple format as fallback
+		return p.getSimpleWeather(location)
+	}
+
+	// Extract and format the weather data
+	formatted := p.formatWeatherResponse(data)
+	if formatted == "" {
+		return "", fmt.Errorf("unable to format weather data")
+	}
+
+	return formatted, nil
+}
+
+func (p *Plugin) getSimpleWeather(location string) (string, error) {
+	encodedLocation := url.QueryEscape(location)
+	url := fmt.Sprintf("https://wttr.in/%s?format=%%l:+%%c+%%t+(feels+like+%%f)%%nTomorrow:+%%c+%%t", encodedLocation)
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("User-Agent", "daz-bot/1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	weather := strings.TrimSpace(string(body))
+	if weather == "" {
+		return "", fmt.Errorf("no weather data received")
+	}
+
+	if strings.Contains(weather, "Unknown location") {
+		return "", fmt.Errorf("unknown location: %s", location)
+	}
+
+	return weather, nil
+}
+
+func (p *Plugin) formatWeatherResponse(data map[string]interface{}) string {
+	// Extract current conditions
+	current, ok := data["current_condition"].([]interface{})
+	if !ok || len(current) == 0 {
+		return ""
+	}
+
+	currentCond := current[0].(map[string]interface{})
+
+	// Extract location
+	nearestArea, _ := data["nearest_area"].([]interface{})
+	location := "Unknown Location"
+	if len(nearestArea) > 0 {
+		area := nearestArea[0].(map[string]interface{})
+		if areaName, ok := area["areaName"].([]interface{}); ok && len(areaName) > 0 {
+			if name, ok := areaName[0].(map[string]interface{})["value"].(string); ok {
+				location = name
+			}
+		}
+		if country, ok := area["country"].([]interface{}); ok && len(country) > 0 {
+			if countryName, ok := country[0].(map[string]interface{})["value"].(string); ok {
+				location += ", " + countryName
+			}
+		}
+	}
+
+	// Extract weather description
+	weatherDesc := ""
+	if desc, ok := currentCond["weatherDesc"].([]interface{}); ok && len(desc) > 0 {
+		if val, ok := desc[0].(map[string]interface{})["value"].(string); ok {
+			weatherDesc = val
+		}
+	}
+
+	// Extract temperatures
+	tempC := currentCond["temp_C"].(string)
+	tempF := currentCond["temp_F"].(string)
+
+	// Get weather emoji
+	emoji := p.getWeatherEmoji(weatherDesc)
+
+	// Format current weather - concise version
+	response := fmt.Sprintf("📍 %s\n", location)
+	response += fmt.Sprintf("%s Now: %s • %s°C/%s°F\n", emoji, weatherDesc, tempC, tempF)
+
+	// Add forecast for tomorrow
+	if weather, ok := data["weather"].([]interface{}); ok && len(weather) > 1 {
+		tomorrow := weather[1].(map[string]interface{})
+		maxTempC := tomorrow["maxtempC"].(string)
+		maxTempF := tomorrow["maxtempF"].(string)
+		minTempC := tomorrow["mintempC"].(string)
+		minTempF := tomorrow["mintempF"].(string)
+
+		tomorrowDesc := ""
+		if hourly, ok := tomorrow["hourly"].([]interface{}); ok && len(hourly) > 0 {
+			midday := hourly[len(hourly)/2].(map[string]interface{})
+			if desc, ok := midday["weatherDesc"].([]interface{}); ok && len(desc) > 0 {
+				if val, ok := desc[0].(map[string]interface{})["value"].(string); ok {
+					tomorrowDesc = val
+				}
+			}
+		}
+
+		tomorrowEmoji := p.getWeatherEmoji(tomorrowDesc)
+
+		response += fmt.Sprintf("%s Tomorrow: %s • %s-%s°C/%s-%s°F",
+			tomorrowEmoji, tomorrowDesc, minTempC, maxTempC, minTempF, maxTempF)
+	}
+
+	return response
+}
+
+func (p *Plugin) getWeatherEmoji(description string) string {
+	desc := strings.ToLower(description)
+	switch {
+	case strings.Contains(desc, "clear") || strings.Contains(desc, "sunny"):
+		return "☀️"
+	case strings.Contains(desc, "partly cloudy"):
+		return "⛅"
+	case strings.Contains(desc, "cloudy") || strings.Contains(desc, "overcast"):
+		return "☁️"
+	case strings.Contains(desc, "rain") || strings.Contains(desc, "drizzle"):
+		return "🌧️"
+	case strings.Contains(desc, "thunder") || strings.Contains(desc, "storm"):
+		return "⛈️"
+	case strings.Contains(desc, "snow"):
+		return "❄️"
+	case strings.Contains(desc, "fog") || strings.Contains(desc, "mist"):
+		return "🌫️"
+	case strings.Contains(desc, "wind"):
+		return "💨"
+	default:
+		return "🌤️"
+	}
+}
+
+func (p *Plugin) sendResponse(username, channel, command, message string, success bool) {
+	responseData := &framework.EventData{
+		PluginResponse: &framework.PluginResponse{
+			From:    p.name,
+			Success: success,
+			Data: &framework.ResponseData{
+				CommandResult: &framework.CommandResultData{
+					Success: success,
+					Output:  message,
+				},
+				KeyValue: map[string]string{
+					"username": username,
+					"channel":  channel,
+				},
+			},
+		},
+	}
+	p.eventBus.Broadcast("plugin.response", responseData)
+}

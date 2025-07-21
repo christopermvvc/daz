@@ -394,10 +394,15 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 			total_messages = daz_analytics_user_stats.total_messages + 1,
 			last_seen = NOW()
 	`
-	ctx := context.Background()
+	// Use a timeout context for the SQL operation to prevent hanging
+	// Analytics updates are low priority, so we can use a shorter timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	_, err := p.sqlClient.ExecSync(ctx, userStatsSQL, channel, chat.Username)
 	if err != nil {
-		logger.Error("Analytics", "Error updating user stats: %v", err)
+		// Log as warning instead of error since analytics is non-critical
+		logger.Warn("Analytics", "Failed to update user stats (may retry later): %v", err)
 	}
 
 	return nil

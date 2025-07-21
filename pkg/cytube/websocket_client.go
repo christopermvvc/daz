@@ -311,6 +311,11 @@ func (c *WebSocketClient) handleSocketIOMessage(message []byte) {
 
 // handleEvent processes cytube events
 func (c *WebSocketClient) handleEvent(eventType string, data json.RawMessage) {
+	// Log specific events we're interested in
+	if eventType == "userJoin" || eventType == "userLeave" || eventType == "addUser" {
+		logger.Debug("WebSocketClient", "Received %s event: %s", eventType, string(data))
+	}
+
 	// Create Event structure for parser
 	event := Event{
 		Type: eventType,
@@ -327,6 +332,9 @@ func (c *WebSocketClient) handleEvent(eventType string, data json.RawMessage) {
 	// Send to event channel
 	select {
 	case c.eventChan <- parsedEvent:
+		if eventType == "userJoin" || eventType == "userLeave" {
+			logger.Debug("WebSocketClient", "Sent %s event to event channel", eventType)
+		}
 	case <-c.ctx.Done():
 		return
 	default:

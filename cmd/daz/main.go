@@ -21,7 +21,10 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/analytics"
 	"github.com/hildolfr/daz/internal/plugins/commands/about"
 	"github.com/hildolfr/daz/internal/plugins/commands/help"
+	"github.com/hildolfr/daz/internal/plugins/commands/random"
+	"github.com/hildolfr/daz/internal/plugins/commands/tell"
 	"github.com/hildolfr/daz/internal/plugins/commands/uptime"
+	"github.com/hildolfr/daz/internal/plugins/commands/weather"
 	"github.com/hildolfr/daz/internal/plugins/eventfilter"
 	"github.com/hildolfr/daz/internal/plugins/mediatracker"
 	"github.com/hildolfr/daz/internal/plugins/retry"
@@ -196,6 +199,9 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"about", about.New()},
 		{"help", help.New()},
 		{"uptime", uptime.New()},
+		{"weather", weather.New()},
+		{"random", random.New()},
+		{"tell", tell.New()},
 	}
 
 	// Register all plugins with the manager
@@ -217,6 +223,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["about"] = cfg.GetPluginConfig("about")
 	pluginConfigs["help"] = cfg.GetPluginConfig("help")
 	pluginConfigs["uptime"] = cfg.GetPluginConfig("uptime")
+	pluginConfigs["tell"] = cfg.GetPluginConfig("tell")
 
 	// Initialize all plugins (respects dependencies)
 	if err := pluginManager.InitializeAll(pluginConfigs, bus); err != nil {

@@ -370,7 +370,7 @@ func (p *Plugin) initializeSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_chat_username ON daz_chat_log (username)`,
 		`CREATE INDEX IF NOT EXISTS idx_chat_timestamp ON daz_chat_log (timestamp)`,
 
-		`CREATE TABLE IF NOT EXISTS ***REMOVED***_activity (
+		`CREATE TABLE IF NOT EXISTS daz_user_activity (
 			id BIGSERIAL PRIMARY KEY,
 			event_type VARCHAR(50) NOT NULL,
 			username VARCHAR(100) NOT NULL,
@@ -380,9 +380,9 @@ func (p *Plugin) initializeSchema(ctx context.Context) error {
 			raw_data JSONB,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_user_activity_event ON ***REMOVED***_activity (event_type)`,
-		`CREATE INDEX IF NOT EXISTS idx_user_activity_channel ON ***REMOVED***_activity (channel)`,
-		`CREATE INDEX IF NOT EXISTS idx_user_activity_username ON ***REMOVED***_activity (username)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_activity_event ON daz_user_activity (event_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_activity_channel ON daz_user_activity (channel)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_activity_username ON daz_user_activity (username)`,
 
 		`CREATE TABLE IF NOT EXISTS daz_plugin_logs (
 			id BIGSERIAL PRIMARY KEY,
