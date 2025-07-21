@@ -258,7 +258,7 @@ func TestPluginStart(t *testing.T) {
 
 	// Check subscriptions
 	expectedSubs := []string{
-		eventbus.EventCytubeUserJoin,
+		"cytube.event.addUser",
 		eventbus.EventCytubeUserLeave,
 		eventbus.EventCytubeChatMsg,
 		"plugin.usertracker.seen",
@@ -300,10 +300,10 @@ func TestHandleUserJoin(t *testing.T) {
 		},
 	}
 
-	event := framework.NewDataEvent(eventbus.EventCytubeUserJoin, joinData)
+	event := framework.NewDataEvent("cytube.event.addUser", joinData)
 
 	// Get the handler and call it
-	handlers := mockBus.subs[eventbus.EventCytubeUserJoin]
+	handlers := mockBus.subs["cytube.event.addUser"]
 	if len(handlers) == 0 {
 		t.Fatal("No handler registered for user join")
 	}
@@ -425,4 +425,232 @@ func TestFormatDuration(t *testing.T) {
 			t.Errorf("formatDuration(%v) = %s, expected %s", test.duration, result, test.expected)
 		}
 	}
+}
+
+// TestUserListHandling tests the complete userlist event flow
+func TestUserListHandling(t *testing.T) {
+	// Create mock event bus
+	bus := &MockEventBus{
+		subs: make(map[string][]framework.EventHandler),
+	}
+
+	// Create plugin
+	plugin := &Plugin{
+		name:      "usertracker",
+		eventBus:  bus,
+		sqlClient: framework.NewSQLClient(bus, "usertracker"),
+		config: &Config{
+			InactivityTimeout: 30 * time.Minute,
+		},
+		users:              make(map[string]*UserState),
+		readyChan:          make(chan struct{}),
+		processingUserlist: make(map[string]bool),
+		status: framework.PluginStatus{
+			Name:  "usertracker",
+			State: "initialized",
+		},
+	}
+
+	// Set up context
+	plugin.ctx, plugin.cancel = context.WithCancel(context.Background())
+	defer plugin.cancel()
+
+	// Test userlist.start handling
+	t.Run("UserListStart", func(t *testing.T) {
+		// Add some existing users
+		plugin.mu.Lock()
+		plugin.users["olduser1"] = &UserState{
+			Username: "olduser1",
+			IsActive: true,
+		}
+		plugin.users["olduser2"] = &UserState{
+			Username: "olduser2",
+			IsActive: true,
+		}
+		plugin.mu.Unlock()
+
+		// Create userlist.start event
+		startEvent := &framework.DataEvent{
+			Data: &framework.EventData{
+				RawMessage: &framework.RawMessageData{
+					Message: "3",
+					Channel: "test-channel",
+				},
+			},
+		}
+
+		// Handle start event
+		err := plugin.handleUserListStart(startEvent)
+		if err != nil {
+			t.Errorf("handleUserListStart failed: %v", err)
+		}
+
+		// Verify state
+		plugin.userlistMutex.RLock()
+		if !plugin.processingUserlist["test-channel"] {
+			t.Error("Expected processingUserlist[test-channel] to be true")
+		}
+		plugin.userlistMutex.RUnlock()
+
+		plugin.mu.RLock()
+		if len(plugin.users) != 0 {
+			t.Errorf("Expected users to be cleared, but found %d users", len(plugin.users))
+		}
+		plugin.mu.RUnlock()
+
+		// Verify SQL exec was called to deactivate users
+		if len(bus.execs) == 0 {
+			t.Error("Expected SQL exec to be called")
+		}
+	})
+
+	// Test adding users during userlist processing
+	t.Run("UserListAddUsers", func(t *testing.T) {
+		// Add users from userlist
+		users := []struct {
+			name string
+			rank int
+		}{
+			{"alice", 2},
+			{"bob", 1},
+			{"charlie", 0},
+		}
+
+		for _, user := range users {
+			addUserEvent := &framework.AddUserEvent{
+				CytubeEvent: framework.CytubeEvent{
+					EventType:   "addUser",
+					EventTime:   time.Now(),
+					ChannelName: "test-channel",
+					Metadata: map[string]string{
+						"from_userlist": "true",
+					},
+				},
+				Username: user.name,
+				UserRank: user.rank,
+			}
+
+			err := plugin.handleUserJoin(addUserEvent)
+			if err != nil {
+				t.Errorf("handleUserJoin failed for %s: %v", user.name, err)
+			}
+		}
+
+		// Verify users were added
+		plugin.mu.RLock()
+		if len(plugin.users) != 3 {
+			t.Errorf("Expected 3 users, got %d", len(plugin.users))
+		}
+		for _, user := range users {
+			if _, exists := plugin.users[user.name]; !exists {
+				t.Errorf("Expected user %s to exist", user.name)
+			}
+		}
+		plugin.mu.RUnlock()
+	})
+
+	// Test userlist.end handling
+	t.Run("UserListEnd", func(t *testing.T) {
+		// Create userlist.end event
+		endEvent := &framework.DataEvent{
+			Data: &framework.EventData{
+				RawMessage: &framework.RawMessageData{
+					Message: "3",
+					Channel: "test-channel",
+				},
+			},
+		}
+
+		// Handle end event
+		err := plugin.handleUserListEnd(endEvent)
+		if err != nil {
+			t.Errorf("handleUserListEnd failed: %v", err)
+		}
+
+		// Verify state is cleared
+		plugin.userlistMutex.RLock()
+		if plugin.processingUserlist["test-channel"] {
+			t.Error("Expected processingUserlist[test-channel] to be false/deleted")
+		}
+		plugin.userlistMutex.RUnlock()
+	})
+}
+
+// TestUserListMetadata tests that addUser events from userlist have proper metadata
+func TestUserListMetadata(t *testing.T) {
+	bus := &MockEventBus{
+		subs: make(map[string][]framework.EventHandler),
+	}
+
+	plugin := &Plugin{
+		name:      "usertracker",
+		eventBus:  bus,
+		sqlClient: framework.NewSQLClient(bus, "usertracker"),
+		config: &Config{
+			InactivityTimeout: 30 * time.Minute,
+		},
+		users:     make(map[string]*UserState),
+		readyChan: make(chan struct{}),
+		status: framework.PluginStatus{
+			Name:  "usertracker",
+			State: "initialized",
+		},
+	}
+
+	plugin.ctx, plugin.cancel = context.WithCancel(context.Background())
+	defer plugin.cancel()
+
+	// Test regular user join (not from userlist)
+	t.Run("RegularUserJoin", func(t *testing.T) {
+		joinEvent := &framework.AddUserEvent{
+			CytubeEvent: framework.CytubeEvent{
+				EventType:   "addUser",
+				EventTime:   time.Now(),
+				ChannelName: "test-channel",
+				Metadata:    map[string]string{}, // No from_userlist metadata
+			},
+			Username: "regularuser",
+			UserRank: 1,
+		}
+
+		err := plugin.handleUserJoin(joinEvent)
+		if err != nil {
+			t.Errorf("handleUserJoin failed: %v", err)
+		}
+
+		// Verify user was added
+		plugin.mu.RLock()
+		if _, exists := plugin.users["regularuser"]; !exists {
+			t.Error("Expected regularuser to exist")
+		}
+		plugin.mu.RUnlock()
+	})
+
+	// Test user join from userlist
+	t.Run("UserListUserJoin", func(t *testing.T) {
+		joinEvent := &framework.AddUserEvent{
+			CytubeEvent: framework.CytubeEvent{
+				EventType:   "addUser",
+				EventTime:   time.Now(),
+				ChannelName: "test-channel",
+				Metadata: map[string]string{
+					"from_userlist": "true",
+				},
+			},
+			Username: "userlistuser",
+			UserRank: 2,
+		}
+
+		err := plugin.handleUserJoin(joinEvent)
+		if err != nil {
+			t.Errorf("handleUserJoin failed: %v", err)
+		}
+
+		// Verify user was added
+		plugin.mu.RLock()
+		if _, exists := plugin.users["userlistuser"]; !exists {
+			t.Error("Expected userlistuser to exist")
+		}
+		plugin.mu.RUnlock()
+	})
 }

@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	pluginName      = "tell"
-	messageLifetime = 10 * 365 * 24 * time.Hour // 10 years
-	deliveryLimit   = 15
+	pluginName            = "tell"
+	messageLifetime       = 10 * 365 * 24 * time.Hour // 10 years
+	deliveryLimit         = 15
+	periodicCheckInterval = 5 * time.Minute // Check for online recipients every 5 minutes
 )
 
 type Plugin struct {
@@ -29,6 +30,7 @@ type Plugin struct {
 	mu             sync.RWMutex
 	onlineUsers    map[string]map[string]bool // channel -> username -> online
 	deliveryTimers map[string]*time.Timer     // channel:username -> timer
+	wg             sync.WaitGroup
 }
 
 type tellMessage struct {
@@ -111,6 +113,9 @@ func (p *Plugin) Start() error {
 	// Start cleanup goroutine
 	go p.cleanupExpiredMessages()
 
+	// Start periodic delivery check goroutine
+	p.startPeriodicDeliveryCheck()
+
 	logger.Info(p.name, "Tell plugin started")
 	return nil
 }
@@ -131,6 +136,9 @@ func (p *Plugin) Stop() error {
 		timer.Stop()
 	}
 	p.deliveryTimers = make(map[string]*time.Timer)
+
+	// Wait for goroutines to finish
+	p.wg.Wait()
 
 	logger.Info(p.name, "Tell plugin stopped")
 	return nil
@@ -321,10 +329,15 @@ func (p *Plugin) processTellCommand(channel, fromUser, args string, isPM bool) {
 	toUser := parts[0]
 	message := parts[1]
 
-	// Check if user is online (case-insensitive)
-	p.mu.RLock()
-	isOnline := p.onlineUsers[channel] != nil && p.onlineUsers[channel][strings.ToLower(toUser)]
-	p.mu.RUnlock()
+	// Check if user is online in database first
+	isOnline, err := p.isUserOnlineInDB(channel, toUser)
+	if err != nil {
+		logger.Error(p.name, "Failed to check user online status in DB: %v", err)
+		// Fall back to in-memory check
+		p.mu.RLock()
+		isOnline = p.onlineUsers[channel] != nil && p.onlineUsers[channel][strings.ToLower(toUser)]
+		p.mu.RUnlock()
+	}
 
 	if isOnline {
 		p.sendResponse(channel, fromUser, fmt.Sprintf("%s is currently online. Please message them directly.", toUser), isPM)
@@ -492,6 +505,64 @@ func (p *Plugin) getPendingMessages(channel, username string) ([]tellMessage, er
 	return messages, nil
 }
 
+// isUserOnlineInDB checks if a user is online in the usertracker database
+func (p *Plugin) isUserOnlineInDB(channel, username string) (bool, error) {
+	query := `
+		SELECT COUNT(*) FROM daz_user_tracker_sessions 
+		WHERE channel = $1 AND LOWER(username) = LOWER($2) AND is_active = true
+	`
+
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := p.sqlClient.QueryContext(ctx, query, channel, username)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return false, fmt.Errorf("no rows returned")
+	}
+
+	var count int
+	if err := rows.Scan(&count); err != nil {
+		return false, err
+	}
+
+	return count > 0, nil
+}
+
+// getActualUsername retrieves the actual case-sensitive username from the database
+func (p *Plugin) getActualUsername(channel, lowercaseUsername string) (string, error) {
+	query := `
+		SELECT username FROM daz_user_tracker_sessions 
+		WHERE channel = $1 AND LOWER(username) = LOWER($2) AND is_active = true
+		LIMIT 1
+	`
+
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := p.sqlClient.QueryContext(ctx, query, channel, lowercaseUsername)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		// No rows found, user is not online
+		return "", nil
+	}
+
+	var actualUsername string
+	if err := rows.Scan(&actualUsername); err != nil {
+		return "", err
+	}
+
+	return actualUsername, nil
+}
+
 func (p *Plugin) markDelivered(messageID int) error {
 	query := `
 		UPDATE daz_tell_messages
@@ -539,6 +610,9 @@ func (p *Plugin) sendPM(channel, toUser, message string) {
 }
 
 func (p *Plugin) cleanupExpiredMessages() {
+	p.wg.Add(1)
+	defer p.wg.Done()
+
 	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
 
@@ -569,5 +643,125 @@ func (p *Plugin) deleteExpiredMessages() {
 
 	if rowsAffected > 0 {
 		logger.Info(p.name, "Deleted %d expired messages", rowsAffected)
+	}
+}
+
+func (p *Plugin) startPeriodicDeliveryCheck() {
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+
+		// Initial delay to let the bot fully connect and populate user lists
+		initialDelay := time.NewTimer(30 * time.Second)
+		defer initialDelay.Stop()
+
+		select {
+		case <-initialDelay.C:
+			// Continue to periodic checks
+		case <-p.ctx.Done():
+			return
+		}
+
+		ticker := time.NewTicker(periodicCheckInterval)
+		defer ticker.Stop()
+
+		// Do an initial check
+		p.checkPendingDeliveries()
+
+		for {
+			select {
+			case <-ticker.C:
+				p.checkPendingDeliveries()
+			case <-p.ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func (p *Plugin) checkPendingDeliveries() {
+	logger.Debug(p.name, "Running periodic check for pending deliveries")
+
+	// Get all channels we're tracking
+	p.mu.RLock()
+	channels := make([]string, 0, len(p.onlineUsers))
+	for channel := range p.onlineUsers {
+		channels = append(channels, channel)
+	}
+	p.mu.RUnlock()
+
+	// For each channel, check pending messages
+	for _, channel := range channels {
+		p.checkChannelPendingDeliveries(channel)
+	}
+}
+
+func (p *Plugin) checkChannelPendingDeliveries(channel string) {
+	// Query for all users with pending messages in this channel
+	query := `
+		SELECT DISTINCT LOWER(to_user) as username
+		FROM daz_tell_messages
+		WHERE channel = $1 AND delivered = FALSE
+	`
+
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := p.sqlClient.QueryContext(ctx, query, channel)
+	if err != nil {
+		logger.Error(p.name, "Failed to query pending messages: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var usersToCheck []string
+	for rows.Next() {
+		var username string
+		if err := rows.Scan(&username); err != nil {
+			logger.Error(p.name, "Failed to scan username: %v", err)
+			continue
+		}
+		usersToCheck = append(usersToCheck, username)
+	}
+
+	if err := rows.Err(); err != nil {
+		logger.Error(p.name, "Error iterating rows: %v", err)
+		return
+	}
+
+	// Check each user and schedule delivery if online
+	for _, username := range usersToCheck {
+		// Check database first
+		isOnline, err := p.isUserOnlineInDB(channel, username)
+		if err != nil {
+			logger.Error(p.name, "Failed to check user online status in DB: %v", err)
+			// Fall back to in-memory check
+			p.mu.RLock()
+			channelUsers := p.onlineUsers[channel]
+			isOnline = channelUsers != nil && channelUsers[username]
+			p.mu.RUnlock()
+		}
+
+		if isOnline {
+			logger.Debug(p.name, "User %s is online in channel %s, scheduling delivery", username, channel)
+			// Query the database for the actual username case
+			actualUsername, err := p.getActualUsername(channel, username)
+			if err != nil {
+				logger.Error(p.name, "Failed to get actual username: %v", err)
+				// Fall back to in-memory lookup
+				p.mu.RLock()
+				for user, online := range p.onlineUsers[channel] {
+					if strings.ToLower(user) == username && online {
+						actualUsername = user
+						break
+					}
+				}
+				p.mu.RUnlock()
+			}
+
+			if actualUsername != "" {
+				p.scheduleMessageDelivery(channel, actualUsername)
+			}
+		}
 	}
 }

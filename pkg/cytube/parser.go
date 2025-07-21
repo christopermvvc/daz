@@ -89,6 +89,8 @@ func (p *Parser) ParseEvent(event Event) (framework.Event, error) {
 		return p.parseMoveVideoEvent(baseEvent, event.Data)
 	case "queueFail":
 		return p.parseQueueFailEvent(baseEvent, event.Data)
+	case "userlist":
+		return p.parseUserListEvent(baseEvent, event.Data)
 	default:
 		// Use generic event handler for unknown types
 		return p.parseGenericEvent(baseEvent, event.Type, event.Data)
@@ -1011,4 +1013,15 @@ func (p *Parser) convertToMediaMetadata(raw map[string]interface{}) *framework.M
 	}
 
 	return metadata
+}
+
+// parseUserListEvent parses the userlist event containing all users in the channel
+func (p *Parser) parseUserListEvent(base framework.CytubeEvent, data json.RawMessage) (framework.Event, error) {
+	// Return a generic event - the room manager will process this specially
+	return &framework.GenericEvent{
+		CytubeEvent: base,
+		UnknownType: "userlist",
+		RawJSON:     data,
+		ParsedData:  make(map[string]framework.FieldValue),
+	}, nil
 }

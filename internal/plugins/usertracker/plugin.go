@@ -33,6 +33,10 @@ type Plugin struct {
 
 	// Plugin status tracking
 	status framework.PluginStatus
+
+	// Userlist processing state
+	processingUserlist map[string]bool
+	userlistMutex      sync.RWMutex
 }
 
 // Config holds usertracker plugin configuration
@@ -59,8 +63,9 @@ func New() framework.Plugin {
 		config: &Config{
 			InactivityTimeout: 30 * time.Minute,
 		},
-		users:     make(map[string]*UserState),
-		readyChan: make(chan struct{}),
+		users:              make(map[string]*UserState),
+		readyChan:          make(chan struct{}),
+		processingUserlist: make(map[string]bool),
 		status: framework.PluginStatus{
 			Name:  "usertracker",
 			State: "initialized",
@@ -93,10 +98,11 @@ func NewPlugin(config *Config) *Plugin {
 	}
 
 	return &Plugin{
-		name:      "usertracker",
-		config:    config,
-		users:     make(map[string]*UserState),
-		readyChan: make(chan struct{}),
+		name:               "usertracker",
+		config:             config,
+		users:              make(map[string]*UserState),
+		readyChan:          make(chan struct{}),
+		processingUserlist: make(map[string]bool),
 		status: framework.PluginStatus{
 			Name:  "usertracker",
 			State: "initialized",
@@ -177,10 +183,28 @@ func (p *Plugin) Start() error {
 		}
 	}()
 
-	// Subscribe to user events
-	if err := p.eventBus.Subscribe(eventbus.EventCytubeUserJoin, p.handleUserJoin); err != nil {
+	// Subscribe to userlist events for bulk user updates
+	if err := p.eventBus.Subscribe("cytube.event.userlist.start", p.handleUserListStart); err != nil {
 		p.status.LastError = err
-		return fmt.Errorf("failed to subscribe to user join events: %w", err)
+		return fmt.Errorf("failed to subscribe to userlist.start events: %w", err)
+	}
+
+	if err := p.eventBus.Subscribe("cytube.event.userlist.end", p.handleUserListEnd); err != nil {
+		p.status.LastError = err
+		return fmt.Errorf("failed to subscribe to userlist.end events: %w", err)
+	}
+
+	// Subscribe to user events
+	// Note: CyTube sends "addUser" events for initial users and new joins
+	if err := p.eventBus.Subscribe("cytube.event.addUser", p.handleUserJoin); err != nil {
+		p.status.LastError = err
+		return fmt.Errorf("failed to subscribe to addUser events: %w", err)
+	}
+
+	// Also subscribe to userJoin for users joining after we're connected
+	if err := p.eventBus.Subscribe("cytube.event.userJoin", p.handleUserJoin); err != nil {
+		p.status.LastError = err
+		return fmt.Errorf("failed to subscribe to userJoin events: %w", err)
 	}
 
 	if err := p.eventBus.Subscribe(eventbus.EventCytubeUserLeave, p.handleUserLeave); err != nil {
@@ -307,47 +331,102 @@ func (p *Plugin) createTables() error {
 	return nil
 }
 
-// handleUserJoin processes user join events
+// handleUserJoin processes user join events (both addUser and userJoin)
 func (p *Plugin) handleUserJoin(event framework.Event) error {
-	dataEvent, ok := event.(*framework.DataEvent)
-	if !ok || dataEvent.Data == nil || dataEvent.Data.UserJoin == nil {
+	var username string
+	var userRank int
+	var channel string
+
+	// Handle direct AddUserEvent (from cytube.event.addUser)
+	if addUserEvent, ok := event.(*framework.AddUserEvent); ok {
+		username = addUserEvent.Username
+		userRank = addUserEvent.UserRank
+		channel = addUserEvent.ChannelName
+	} else if dataEvent, ok := event.(*framework.DataEvent); ok && dataEvent.Data != nil {
+		// Handle wrapped events
+		if dataEvent.Data.UserJoin != nil {
+			username = dataEvent.Data.UserJoin.Username
+			userRank = dataEvent.Data.UserJoin.UserRank
+			channel = dataEvent.Data.UserJoin.Channel
+		} else if dataEvent.Data.RawEvent != nil {
+			// Try to extract from RawEvent
+			if addUserEvent, ok := dataEvent.Data.RawEvent.(*framework.AddUserEvent); ok {
+				username = addUserEvent.Username
+				userRank = addUserEvent.UserRank
+				channel = addUserEvent.ChannelName
+			} else {
+				return nil
+			}
+		} else {
+			return nil
+		}
+	} else {
 		return nil
 	}
 
-	userJoin := dataEvent.Data.UserJoin
-	// Get channel from event (must be present)
-	channel := userJoin.Channel
-	if channel == "" {
-		logger.Warn("UserTracker", "Skipping user join event without channel information")
+	if username == "" || channel == "" {
+		logger.Warn("UserTracker", "Skipping user join event without username or channel")
 		return nil
 	}
+
+	// Check if we're processing a userlist for this channel
+	p.userlistMutex.RLock()
+	processingUserlist := p.processingUserlist[channel]
+	p.userlistMutex.RUnlock()
+
 	now := time.Now()
 
 	// Update in-memory state
 	p.mu.Lock()
-	p.users[userJoin.Username] = &UserState{
-		Username:     userJoin.Username,
-		Rank:         userJoin.UserRank,
+	p.users[username] = &UserState{
+		Username:     username,
+		Rank:         userRank,
 		JoinedAt:     now,
 		LastActivity: now,
 		IsActive:     true,
 	}
 	p.mu.Unlock()
 
-	// Record in database
-	sessionSQL := `
-		INSERT INTO daz_user_tracker_sessions 
-			(channel, username, rank, joined_at, last_activity, is_active)
-		VALUES ($1, $2, $3, $4, $5, TRUE)
-	`
-	err := p.sqlClient.Exec(sessionSQL,
-		channel,
-		userJoin.Username,
-		userJoin.UserRank,
-		now,
-		now)
-	if err != nil {
-		logger.Error("UserTracker", "Error recording user join: %v", err)
+	// If we're processing a userlist, update the existing session instead of creating a new one
+	if processingUserlist {
+		// Update existing session or insert if not exists
+		sessionSQL := `
+			INSERT INTO daz_user_tracker_sessions 
+				(channel, username, rank, joined_at, last_activity, is_active)
+			VALUES ($1, $2, $3, $4, $5, TRUE)
+			ON CONFLICT (channel, username, joined_at) 
+			DO UPDATE SET 
+				rank = EXCLUDED.rank,
+				last_activity = EXCLUDED.last_activity,
+				is_active = TRUE,
+				left_at = NULL
+			WHERE daz_user_tracker_sessions.is_active = FALSE
+		`
+		err := p.sqlClient.Exec(sessionSQL,
+			channel,
+			username,
+			userRank,
+			now,
+			now)
+		if err != nil {
+			logger.Error("UserTracker", "Error updating user during userlist: %v", err)
+		}
+	} else {
+		// Regular user join - create new session
+		sessionSQL := `
+			INSERT INTO daz_user_tracker_sessions 
+				(channel, username, rank, joined_at, last_activity, is_active)
+			VALUES ($1, $2, $3, $4, $5, TRUE)
+		`
+		err := p.sqlClient.Exec(sessionSQL,
+			channel,
+			username,
+			userRank,
+			now,
+			now)
+		if err != nil {
+			logger.Error("UserTracker", "Error recording user join: %v", err)
+		}
 	}
 
 	// Record in history
@@ -356,17 +435,92 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 			(channel, username, event_type, timestamp, metadata)
 		VALUES ($1, $2, 'join', $3, $4)
 	`
-	metadata := fmt.Sprintf(`{"rank": %d}`, userJoin.UserRank)
-	err = p.sqlClient.Exec(historySQL,
+	metadata := fmt.Sprintf(`{"rank": %d, "from_userlist": %t}`, userRank, processingUserlist)
+	err := p.sqlClient.Exec(historySQL,
 		channel,
-		userJoin.Username,
+		username,
 		now,
 		metadata)
 	if err != nil {
 		logger.Error("UserTracker", "Error recording join history: %v", err)
 	}
 
-	logger.Info("UserTracker", "User joined: %s (rank %d)", userJoin.Username, userJoin.UserRank)
+	logger.Info("UserTracker", "User joined: %s (rank %d)", username, userRank)
+	p.status.EventsHandled++
+	return nil
+}
+
+// handleUserListStart processes the start of a userlist event
+func (p *Plugin) handleUserListStart(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil || dataEvent.Data.RawMessage == nil {
+		return nil
+	}
+
+	channel := dataEvent.Data.RawMessage.Channel
+	userCount := dataEvent.Data.RawMessage.Message
+
+	p.userlistMutex.Lock()
+	p.processingUserlist[channel] = true
+	p.userlistMutex.Unlock()
+
+	logger.Info("UserTracker", "Starting userlist processing for channel %s with %s users", channel, userCount)
+
+	// Mark all existing users for this channel as inactive
+	// They will be reactivated if they appear in the userlist
+	deactivateSQL := `
+		UPDATE daz_user_tracker_sessions 
+		SET is_active = FALSE, left_at = $1
+		WHERE channel = $2 AND is_active = TRUE
+	`
+	err := p.sqlClient.Exec(deactivateSQL, time.Now(), channel)
+	if err != nil {
+		logger.Error("UserTracker", "Error deactivating users before userlist: %v", err)
+	}
+
+	// Clear in-memory cache
+	p.mu.Lock()
+	p.users = make(map[string]*UserState)
+	p.mu.Unlock()
+
+	p.status.EventsHandled++
+	return nil
+}
+
+// handleUserListEnd processes the end of a userlist event
+func (p *Plugin) handleUserListEnd(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil || dataEvent.Data.RawMessage == nil {
+		return nil
+	}
+
+	channel := dataEvent.Data.RawMessage.Channel
+	userCount := dataEvent.Data.RawMessage.Message
+
+	p.userlistMutex.Lock()
+	delete(p.processingUserlist, channel)
+	p.userlistMutex.Unlock()
+
+	logger.Info("UserTracker", "Completed userlist processing for channel %s with %s users", channel, userCount)
+
+	// Record userlist sync event in history
+	historySQL := `
+		INSERT INTO daz_user_tracker_history 
+			(channel, username, event_type, timestamp, metadata)
+		VALUES ($1, '_system', 'userlist_sync', $2, $3)
+	`
+	// Create proper JSON metadata
+	metadataMap := map[string]interface{}{
+		"user_count_message": userCount,
+		"timestamp":          time.Now().Format(time.RFC3339),
+	}
+	metadataJSON, _ := json.Marshal(metadataMap)
+
+	err := p.sqlClient.Exec(historySQL, channel, time.Now(), string(metadataJSON))
+	if err != nil {
+		logger.Error("UserTracker", "Error recording userlist sync history: %v", err)
+	}
+
 	p.status.EventsHandled++
 	return nil
 }

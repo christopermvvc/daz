@@ -214,6 +214,17 @@ func (c *WebSocketClient) handleMessage(message []byte) {
 		return
 	}
 
+	// DEBUG: Log raw message to help identify user list format
+	if len(msg) > 1 && msg[0] == '4' { // Engine.IO message type
+		logger.Debug("WebSocketClient", "=== RAW ENGINE.IO MESSAGE ===")
+		logger.Debug("WebSocketClient", "Type: %c, Length: %d", msg[0], len(msg))
+		if len(msg) > 100 {
+			logger.Debug("WebSocketClient", "Content (first 100 chars): %s...", msg[:100])
+		} else {
+			logger.Debug("WebSocketClient", "Content: %s", msg)
+		}
+	}
+
 	switch msg[0] {
 	case '0': // Connect
 		// Parse session ID from handshake
@@ -297,6 +308,10 @@ func (c *WebSocketClient) handleSocketIOMessage(message []byte) {
 			logger.Error("WebSocketClient", "Failed to parse Socket.IO message: %v", err)
 			return
 		}
+
+		// DEBUG: Log ALL events received to identify user list
+		logger.Debug("WebSocketClient", "=== RECEIVED EVENT: %s ===", eventType)
+		logger.Debug("WebSocketClient", "Raw data: %s", string(data))
 
 		// Handle the event
 		c.handleEvent(eventType, data)

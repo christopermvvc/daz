@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/hildolfr/daz/internal/logger"
 	"math/rand"
@@ -280,6 +281,14 @@ func (rm *RoomManager) processRoomEvents(roomID string) {
 				conn.mu.Lock()
 				conn.LastMediaUpdate = time.Now()
 				conn.mu.Unlock()
+			}
+
+			// Special handling for userlist event - convert to individual addUser events
+			if event.Type() == "userlist" {
+				if genericEvent, ok := event.(*framework.GenericEvent); ok {
+					rm.processUserListEvent(genericEvent, roomID)
+					continue // Don't broadcast the userlist event itself
+				}
 			}
 
 			// Broadcast to event bus with proper event type prefix
@@ -675,5 +684,109 @@ func (rm *RoomManager) checkConnections() {
 			logger.Info("RoomManager", "Room '%s': Triggering reconnection via handleReconnection", roomID)
 			go rm.handleReconnection(roomID)
 		}
+	}
+}
+
+// processUserListEvent converts a userlist event into individual addUser events
+func (rm *RoomManager) processUserListEvent(event *framework.GenericEvent, roomID string) {
+	// Parse the user list from the raw JSON
+	var users []struct {
+		Name    string `json:"name"`
+		Rank    int    `json:"rank"`
+		Profile struct {
+			Image string `json:"image"`
+			Text  string `json:"text"`
+		} `json:"profile"`
+		Meta struct {
+			AFK   bool `json:"afk"`
+			Muted bool `json:"muted"`
+		} `json:"meta"`
+	}
+
+	if err := json.Unmarshal(event.RawJSON, &users); err != nil {
+		logger.Error("RoomManager", "Room '%s': Failed to unmarshal userlist: %v", roomID, err)
+		return
+	}
+
+	// Get the channel name from the connection
+	channelName := ""
+	rm.mu.RLock()
+	if conn, exists := rm.connections[roomID]; exists {
+		channelName = conn.Room.Channel
+	}
+	rm.mu.RUnlock()
+
+	logger.Info("RoomManager", "Room '%s': Starting userlist processing for channel '%s' with %d users",
+		roomID, channelName, len(users))
+
+	// Broadcast userlist.start event to signal the beginning of bulk user updates
+	startEventData := &framework.EventData{
+		RawEventType: "userlist.start",
+		RawMessage: &framework.RawMessageData{
+			Message: fmt.Sprintf("Starting userlist processing for %d users", len(users)),
+			Channel: channelName,
+		},
+	}
+	startMetadata := rm.createEventMetadata("userlist.start", roomID)
+	startMetadata.WithTags("system", "userlist", "bulk", "start")
+	startMetadata.WithLogging("info")
+
+	if err := rm.eventBus.BroadcastWithMetadata("cytube.event.userlist.start", startEventData, startMetadata); err != nil {
+		logger.Error("RoomManager", "Room '%s': Failed to broadcast userlist.start: %v", roomID, err)
+	}
+
+	// Create and broadcast an addUser event for each user
+	for _, user := range users {
+		addUserEvent := &framework.AddUserEvent{
+			CytubeEvent: event.CytubeEvent,
+			Username:    user.Name,
+			UserRank:    user.Rank,
+			Registered:  true, // Assume true for users in the list
+			Email:       "",   // Not provided in userlist
+			AddedBy:     "",   // Not provided in userlist
+		}
+
+		// Add metadata to indicate this is from a userlist and include channel name
+		if addUserEvent.Metadata == nil {
+			addUserEvent.Metadata = make(map[string]string)
+		}
+		addUserEvent.Metadata["from_userlist"] = "true"
+		addUserEvent.Metadata["room_id"] = roomID
+		addUserEvent.Metadata["channel_name"] = channelName
+
+		// Create event data
+		eventData := &framework.EventData{
+			RawEventType: "addUser",
+			RawEvent:     addUserEvent,
+		}
+
+		// Create metadata with bulk indicator
+		metadata := rm.createEventMetadata("addUser", roomID)
+		metadata.WithTags("system", "user", "registration", "bulk", "from_userlist")
+
+		// Broadcast as an addUser event
+		eventType := "cytube.event.addUser"
+		if err := rm.eventBus.BroadcastWithMetadata(eventType, eventData, metadata); err != nil {
+			logger.Error("RoomManager", "Room '%s': Failed to broadcast addUser for %s: %v", roomID, user.Name, err)
+		}
+	}
+
+	logger.Info("RoomManager", "Room '%s': Completed userlist processing for channel '%s', processed %d users",
+		roomID, channelName, len(users))
+
+	// Broadcast userlist.end event to signal the end of bulk user updates
+	endEventData := &framework.EventData{
+		RawEventType: "userlist.end",
+		RawMessage: &framework.RawMessageData{
+			Message: fmt.Sprintf("Completed userlist processing for %d users", len(users)),
+			Channel: channelName,
+		},
+	}
+	endMetadata := rm.createEventMetadata("userlist.end", roomID)
+	endMetadata.WithTags("system", "userlist", "bulk", "end")
+	endMetadata.WithLogging("info")
+
+	if err := rm.eventBus.BroadcastWithMetadata("cytube.event.userlist.end", endEventData, endMetadata); err != nil {
+		logger.Error("RoomManager", "Room '%s': Failed to broadcast userlist.end: %v", roomID, err)
 	}
 }
