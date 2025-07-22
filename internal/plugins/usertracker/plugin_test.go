@@ -316,9 +316,9 @@ func TestHandleUserJoin(t *testing.T) {
 		t.Fatalf("Handler failed: %v", err)
 	}
 
-	// Should have 2 SQL execs (session + history)
-	if len(mockBus.execs) != 2 {
-		t.Errorf("Expected 2 SQL execs, got %d", len(mockBus.execs))
+	// Should have 3 SQL execs (deactivate old sessions + new session + history)
+	if len(mockBus.execs) != 3 {
+		t.Errorf("Expected 3 SQL execs, got %d", len(mockBus.execs))
 	}
 
 	// Check in-memory state

@@ -316,6 +316,19 @@ func (rm *RoomManager) processRoomEvents(roomID string) {
 					MessageTime: pmEvent.MessageTime,
 					Channel:     pmEvent.ChannelName,
 				}
+			} else if userJoinEvent, ok := event.(*framework.UserJoinEvent); ok && event.Type() == "userJoin" {
+				// For user join events, populate the UserJoin field
+				eventData.UserJoin = &framework.UserJoinData{
+					Username: userJoinEvent.Username,
+					UserRank: userJoinEvent.UserRank,
+					Channel:  userJoinEvent.ChannelName,
+				}
+			} else if userLeaveEvent, ok := event.(*framework.UserLeaveEvent); ok && event.Type() == "userLeave" {
+				// For user leave events, populate the UserLeave field
+				eventData.UserLeave = &framework.UserLeaveData{
+					Username: userLeaveEvent.Username,
+					Channel:  userLeaveEvent.ChannelName,
+				}
 			} else {
 				// For non-chat events, pass the raw event
 				eventData.RawEvent = event

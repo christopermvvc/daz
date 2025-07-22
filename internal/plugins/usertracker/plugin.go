@@ -412,13 +412,30 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 			logger.Error("UserTracker", "Error updating user during userlist: %v", err)
 		}
 	} else {
-		// Regular user join - create new session
+		// Regular user join - first mark all existing active sessions as inactive
+		// to prevent multiple active sessions for the same user
+		deactivateSQL := `
+			UPDATE daz_user_tracker_sessions 
+			SET is_active = FALSE, left_at = $1
+			WHERE channel = $2 AND username = $3 AND is_active = TRUE
+		`
+		err := p.sqlClient.Exec(deactivateSQL, now, channel, username)
+		if err != nil {
+			logger.Error("UserTracker", "Error deactivating old sessions: %v", err)
+		}
+
+		// Now create new session with conflict handling for duplicate events
 		sessionSQL := `
 			INSERT INTO daz_user_tracker_sessions 
 				(channel, username, rank, joined_at, last_activity, is_active)
 			VALUES ($1, $2, $3, $4, $5, TRUE)
+			ON CONFLICT (channel, username, joined_at) 
+			DO UPDATE SET 
+				rank = EXCLUDED.rank,
+				last_activity = EXCLUDED.last_activity,
+				is_active = TRUE
 		`
-		err := p.sqlClient.Exec(sessionSQL,
+		err = p.sqlClient.Exec(sessionSQL,
 			channel,
 			username,
 			userRank,

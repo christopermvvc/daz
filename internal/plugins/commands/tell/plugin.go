@@ -111,6 +111,7 @@ func (p *Plugin) Start() error {
 	p.registerCommand()
 
 	// Start cleanup goroutine
+	p.wg.Add(1)
 	go p.cleanupExpiredMessages()
 
 	// Start periodic delivery check goroutine
@@ -310,7 +311,7 @@ func (p *Plugin) handleCommandEvent(event framework.Event) error {
 	cmd := req.Data.Command
 	channel := cmd.Params["channel"]
 	fromUser := cmd.Params["username"]
-	isPM := cmd.Params["pm"] == "true"
+	isPM := cmd.Params["is_pm"] == "true"
 
 	// Join the args slice into a single string
 	args := strings.Join(cmd.Args, " ")
@@ -425,7 +426,6 @@ func (p *Plugin) deliverMessages(channel, username string) {
 	messagesInBatch := 0
 	isFirstMessage := true
 	var lastSender string
-	var lastIsPM bool
 
 	for _, sender := range senderOrder {
 		senderMessages := messagesBySender[sender]
@@ -440,12 +440,8 @@ func (p *Plugin) deliverMessages(channel, username string) {
 					nextBatch = deliveryLimit
 				}
 				text := fmt.Sprintf("And I'll give you the next %d in 3 minutes.", nextBatch)
-
-				if lastIsPM {
-					p.sendPM(channel, username, text)
-				} else {
-					p.sendChannelMessage(channel, text)
-				}
+				// Always send as PM for privacy
+				p.sendPM(channel, username, text)
 
 				// Schedule next batch delivery
 				p.scheduleNextBatch(channel, username, 3*time.Minute)
@@ -474,12 +470,8 @@ func (p *Plugin) deliverMessages(channel, username string) {
 				}
 			}
 
-			// Send the message
-			if msg.IsPM {
-				p.sendPM(channel, username, text)
-			} else {
-				p.sendChannelMessage(channel, text)
-			}
+			// Always send tell messages as PMs for privacy
+			p.sendPM(channel, username, text)
 
 			// Mark as delivered
 			if err := p.markDelivered(msg.ID); err != nil {
@@ -487,7 +479,6 @@ func (p *Plugin) deliverMessages(channel, username string) {
 			}
 
 			lastSender = sender
-			lastIsPM = msg.IsPM
 			totalDelivered++
 			messagesInBatch++
 
@@ -680,7 +671,6 @@ func (p *Plugin) sendPM(channel, toUser, message string) {
 }
 
 func (p *Plugin) cleanupExpiredMessages() {
-	p.wg.Add(1)
 	defer p.wg.Done()
 
 	ticker := time.NewTicker(24 * time.Hour)
