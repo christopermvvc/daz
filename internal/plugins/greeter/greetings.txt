@@ -1,0 +1,57 @@
+# Greetings configuration file
+# Format: category: greeting template
+# Available placeholders: <user>
+# Categories: morning, afternoon, evening, night, first, general, first-morning, first-afternoon, first-evening, first-night
+
+# General greetings (used as fallback)
+general: Hello <user>!
+general: Hey there, <user>!
+general: Welcome, <user>!
+general: Hi <user>!
+general: Greetings, <user>!
+general: Hey <user>!
+
+# Time-based greetings
+morning: Good morning, <user>!
+morning: Morning <user>! Hope you're having a great start to your day!
+morning: Rise and shine, <user>!
+morning: Top of the morning to you, <user>!
+
+afternoon: Good afternoon, <user>!
+afternoon: Hey <user>, hope your afternoon is going well!
+afternoon: Afternoon, <user>!
+afternoon: Hope you're having a pleasant afternoon, <user>!
+
+evening: Good evening, <user>!
+evening: Evening <user>! Hope you had a good day!
+evening: Hey <user>, nice to see you this evening!
+evening: Welcome to the evening crew, <user>!
+
+night: Good night, <user>!
+night: Hey <user>, burning the midnight oil?
+night: Late night greetings, <user>!
+night: Welcome to the night shift, <user>!
+
+# First-time user greetings
+first: Welcome <user>! Great to have you here!
+first: Hello <user>, welcome to the channel!
+first: Hey <user>! Nice to meet you!
+first: Welcome aboard, <user>! We're glad you're here!
+first: Hi <user>, welcome to our community!
+
+# First-time user time-based greetings
+first-morning: Good morning <user>, and welcome to the channel!
+first-morning: Morning <user>! Welcome aboard!
+first-morning: Rise and shine <user>! Welcome to our community!
+
+first-afternoon: Good afternoon <user>, welcome to our community!
+first-afternoon: Hey <user>, welcome! Hope you're having a great afternoon!
+first-afternoon: Afternoon <user>! Great to have you join us!
+
+first-evening: Good evening <user>, and welcome!
+first-evening: Evening <user>! Welcome to the channel!
+first-evening: Welcome <user>! Glad you could join us this evening!
+
+first-night: Welcome <user>! Great to have you joining us tonight!
+first-night: Hey <user>, welcome to the late night crew!
+first-night: Night owl <user>! Welcome to the channel!

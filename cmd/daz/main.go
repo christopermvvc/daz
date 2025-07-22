@@ -26,6 +26,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/uptime"
 	"github.com/hildolfr/daz/internal/plugins/commands/weather"
 	"github.com/hildolfr/daz/internal/plugins/eventfilter"
+	"github.com/hildolfr/daz/internal/plugins/greeter"
 	"github.com/hildolfr/daz/internal/plugins/mediatracker"
 	"github.com/hildolfr/daz/internal/plugins/retry"
 	"github.com/hildolfr/daz/internal/plugins/sql"
@@ -196,6 +197,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"usertracker", usertracker.New()},
 		{"mediatracker", mediatracker.New()},
 		{"analytics", analytics.New()},
+		{"greeter", greeter.New()},
 		{"about", about.New()},
 		{"help", help.New()},
 		{"uptime", uptime.New()},
