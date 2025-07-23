@@ -92,7 +92,11 @@ func (p *Plugin) isUserOptedOut(ctx context.Context, channel, username string) (
 	if err != nil {
 		return false, fmt.Errorf("failed to query opt-out status: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error("Greeter", "Failed to close rows: %v", err)
+		}
+	}()
 
 	// If no row exists, user hasn't opted out
 	if !rows.Next() {
@@ -149,7 +153,11 @@ func (p *Plugin) getLastGreeting(ctx context.Context, channel, username string) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to query last greeting: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error("Greeter", "Failed to close rows: %v", err)
+		}
+	}()
 
 	if !rows.Next() {
 		return nil, nil // No previous greeting
@@ -174,7 +182,6 @@ func (p *Plugin) wasUserRecentlyActive(ctx context.Context, channel, username st
 			WHERE channel = $1 
 				AND LOWER(username) = LOWER($2)
 				AND last_activity >= $3
-				AND is_active = TRUE
 		)
 	`
 
@@ -182,7 +189,11 @@ func (p *Plugin) wasUserRecentlyActive(ctx context.Context, channel, username st
 	if err != nil {
 		return false, fmt.Errorf("failed to query user activity: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error("Greeter", "Failed to close rows: %v", err)
+		}
+	}()
 
 	if !rows.Next() {
 		return false, nil
@@ -194,6 +205,42 @@ func (p *Plugin) wasUserRecentlyActive(ctx context.Context, channel, username st
 	}
 
 	return exists, nil
+}
+
+// wasUserRecentlyGreeted checks if a user was greeted in ANY channel within the specified time
+func (p *Plugin) wasUserRecentlyGreeted(ctx context.Context, username string, withinMinutes int) (bool, error) {
+	cutoffTime := time.Now().Add(-time.Duration(withinMinutes) * time.Minute)
+
+	query := `
+		SELECT EXISTS(
+			SELECT 1 
+			FROM daz_greeter_history
+			WHERE LOWER(username) = LOWER($1)
+				AND created_at >= $2
+		)
+	`
+
+	rows, err := p.sqlClient.QueryContext(ctx, query, username, cutoffTime)
+	if err != nil {
+		return false, fmt.Errorf("failed to query recent greetings: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error("Greeter", "Failed to close rows: %v", err)
+		}
+	}()
+
+	// If no row exists, user hasn't been greeted recently
+	if !rows.Next() {
+		return false, nil
+	}
+
+	var wasGreeted bool
+	if err := rows.Scan(&wasGreeted); err != nil {
+		return false, fmt.Errorf("failed to scan recent greeting status: %w", err)
+	}
+
+	return wasGreeted, nil
 }
 
 // updateGreeterState updates the channel's greeter state
@@ -224,7 +271,7 @@ func (p *Plugin) getUserFirstSeenTime(ctx context.Context, channel, username str
 	// Query user_tracker_history for the first join event
 	query := `
 		SELECT MIN(timestamp)
-		FROM daz_user_tracker_history
+		FROM daz_usertracker_history
 		WHERE channel = $1 
 			AND LOWER(username) = LOWER($2)
 			AND event_type = 'join'
@@ -234,7 +281,11 @@ func (p *Plugin) getUserFirstSeenTime(ctx context.Context, channel, username str
 	if err != nil {
 		return nil, fmt.Errorf("failed to query first seen time: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error("Greeter", "Failed to close rows: %v", err)
+		}
+	}()
 
 	if !rows.Next() {
 		return nil, nil // User never seen before
@@ -280,47 +331,4 @@ func (p *Plugin) setUserOptOut(ctx context.Context, channel, username string, op
 	}
 
 	return nil
-}
-
-// getChannelGreeterStats retrieves greeting statistics for a channel
-func (p *Plugin) getChannelGreeterStats(ctx context.Context, channel string) (*ChannelStats, error) {
-	query := `
-		SELECT last_greeting_at, last_greeting_user, total_greetings_sent
-		FROM daz_greeter_state
-		WHERE channel = $1
-	`
-
-	rows, err := p.sqlClient.QueryContext(ctx, query, channel)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query channel stats: %w", err)
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		return nil, nil // No stats for this channel yet
-	}
-
-	var stats ChannelStats
-	var lastGreetingAt sql.NullTime
-	var lastGreetingUser sql.NullString
-
-	if err := rows.Scan(&lastGreetingAt, &lastGreetingUser, &stats.TotalGreetingsSent); err != nil {
-		return nil, fmt.Errorf("failed to scan channel stats: %w", err)
-	}
-
-	if lastGreetingAt.Valid {
-		stats.LastGreetingAt = &lastGreetingAt.Time
-	}
-	if lastGreetingUser.Valid {
-		stats.LastGreetingUser = lastGreetingUser.String
-	}
-
-	return &stats, nil
-}
-
-// ChannelStats represents greeting statistics for a channel
-type ChannelStats struct {
-	LastGreetingAt     *time.Time
-	LastGreetingUser   string
-	TotalGreetingsSent int
 }
