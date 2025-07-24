@@ -215,7 +215,7 @@ func (p *Plugin) registerCommand() {
 			},
 		},
 	}
-	p.eventBus.Broadcast("command.register", regEvent)
+	_ = p.eventBus.Broadcast("command.register", regEvent)
 }
 
 func (p *Plugin) handleUserJoin(event framework.Event) error {
@@ -531,7 +531,11 @@ func (p *Plugin) getPendingMessages(channel, username string) ([]tellMessage, er
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error(p.name, "Failed to close rows: %v", err)
+		}
+	}()
 
 	var messages []tellMessage
 	for rows.Next() {
@@ -580,7 +584,11 @@ func (p *Plugin) isUserOnlineInDB(channel, username string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error(p.name, "Failed to close rows: %v", err)
+		}
+	}()
 
 	if !rows.Next() {
 		return false, fmt.Errorf("no rows returned")
@@ -609,7 +617,11 @@ func (p *Plugin) getActualUsername(channel, lowercaseUsername string) (string, e
 	if err != nil {
 		return "", err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error(p.name, "Failed to close rows: %v", err)
+		}
+	}()
 
 	if !rows.Next() {
 		// No rows found, user is not online
@@ -667,7 +679,7 @@ func (p *Plugin) sendPM(channel, toUser, message string) {
 			Channel: channel,
 		},
 	}
-	p.eventBus.Broadcast("cytube.send.pm", pmData)
+	_ = p.eventBus.Broadcast("cytube.send.pm", pmData)
 }
 
 func (p *Plugin) cleanupExpiredMessages() {
@@ -772,7 +784,11 @@ func (p *Plugin) checkChannelPendingDeliveries(channel string) {
 		logger.Error(p.name, "Failed to query pending messages: %v", err)
 		return
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error(p.name, "Failed to close rows: %v", err)
+		}
+	}()
 
 	var usersToCheck []string
 	for rows.Next() {

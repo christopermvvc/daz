@@ -131,6 +131,7 @@ func TestPluginStartStop(t *testing.T) {
 	mockBus.On("Subscribe", "cytube.event.addUser", mock.Anything).Return(nil)
 	mockBus.On("Subscribe", "cytube.event.userJoin", mock.Anything).Return(nil)
 	mockBus.On("Subscribe", "cytube.event.userLeave", mock.Anything).Return(nil)
+	mockBus.On("Subscribe", "cytube.event.userlist.start", mock.Anything).Return(nil)
 	mockBus.On("Broadcast", "command.register", mock.Anything).Return(nil)
 	mockBus.On("Subscribe", "command.greeter.execute", mock.Anything).Return(nil)
 

@@ -100,7 +100,7 @@ func TestInit(t *testing.T) {
 func TestStart(t *testing.T) {
 	plugin := New()
 	mockBus := new(MockEventBus)
-	plugin.Init(nil, mockBus)
+	_ = plugin.Init(nil, mockBus)
 
 	mockBus.On("Broadcast", "command.register", mock.Anything).Return(nil)
 	mockBus.On("Subscribe", "command.weather.execute", mock.Anything).Return(nil)
@@ -114,13 +114,13 @@ func TestStart(t *testing.T) {
 func TestStop(t *testing.T) {
 	plugin := New()
 	mockBus := new(MockEventBus)
-	plugin.Init(nil, mockBus)
+	_ = plugin.Init(nil, mockBus)
 
 	mockBus.On("Broadcast", "command.register", mock.Anything).Return(nil)
 	mockBus.On("Subscribe", "command.weather.execute", mock.Anything).Return(nil)
 	mockBus.On("Subscribe", "command.w.execute", mock.Anything).Return(nil)
 
-	plugin.Start()
+	_ = plugin.Start()
 	err := plugin.Stop()
 	assert.NoError(t, err)
 }
@@ -128,7 +128,7 @@ func TestStop(t *testing.T) {
 func TestStatus(t *testing.T) {
 	plugin := New()
 	mockBus := new(MockEventBus)
-	plugin.Init(nil, mockBus)
+	_ = plugin.Init(nil, mockBus)
 
 	status := plugin.Status()
 	assert.Equal(t, "weather", status.Name)
@@ -138,7 +138,7 @@ func TestStatus(t *testing.T) {
 	mockBus.On("Subscribe", "command.weather.execute", mock.Anything).Return(nil)
 	mockBus.On("Subscribe", "command.w.execute", mock.Anything).Return(nil)
 
-	plugin.Start()
+	_ = plugin.Start()
 	status = plugin.Status()
 	assert.Equal(t, "running", status.State)
 }
@@ -146,7 +146,7 @@ func TestStatus(t *testing.T) {
 func TestRateLimit(t *testing.T) {
 	plugin := New().(*Plugin)
 	mockBus := new(MockEventBus)
-	plugin.Init(nil, mockBus)
+	_ = plugin.Init(nil, mockBus)
 	plugin.rateLimitSecs = 1
 
 	username := "testuser"
@@ -165,7 +165,7 @@ func TestRateLimit(t *testing.T) {
 func TestHandleEvent(t *testing.T) {
 	plugin := New()
 	mockBus := new(MockEventBus)
-	plugin.Init(nil, mockBus)
+	_ = plugin.Init(nil, mockBus)
 
 	event := &framework.DataEvent{}
 	err := plugin.HandleEvent(event)

@@ -66,7 +66,7 @@ func TestRetryScheduling(t *testing.T) {
 	if err := plugin.Start(); err != nil {
 		t.Fatalf("Failed to start plugin: %v", err)
 	}
-	defer plugin.Stop()
+	defer func() { _ = plugin.Stop() }()
 
 	// Track retry attempts
 	var attempts int32

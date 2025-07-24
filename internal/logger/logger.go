@@ -116,7 +116,7 @@ func logf(level LogLevel, plugin, format string, args ...interface{}) {
 
 	if level == ERROR {
 		log.Println(formatted)
-		os.Stderr.Sync()
+		_ = os.Stderr.Sync()
 	} else {
 		log.Println(formatted)
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -43,8 +44,11 @@ func NewGreetingManager() (*GreetingManager, error) {
 
 // loadGreetings loads greetings from the greetings.txt file
 func (gm *GreetingManager) loadGreetings() error {
+	// Get the path relative to the current working directory
+	greetingsPath := filepath.Join("internal", "plugins", "greeter", "greetings.txt")
+
 	// Try to load from greetings.txt in the plugin directory
-	file, err := os.Open("internal/plugins/greeter/greetings.txt")
+	file, err := os.Open(greetingsPath)
 	if err != nil {
 		// If file doesn't exist, create with default greetings
 		if os.IsNotExist(err) {
@@ -52,7 +56,12 @@ func (gm *GreetingManager) loadGreetings() error {
 		}
 		return fmt.Errorf("failed to open greetings file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			// Best effort - file was already read
+			_ = closeErr
+		}
+	}()
 
 	return gm.parseGreetingsFile(file)
 }
@@ -150,22 +159,31 @@ first-night: Welcome <user>! Great to have you joining us tonight!
 first-night: Hey <user>, welcome to the late night crew!
 `
 
+	// Get the directory path
+	greetingsDir := filepath.Join("internal", "plugins", "greeter")
+	greetingsPath := filepath.Join(greetingsDir, "greetings.txt")
+
 	// Ensure directory exists
-	if err := os.MkdirAll("internal/plugins/greeter", 0755); err != nil {
+	if err := os.MkdirAll(greetingsDir, 0755); err != nil {
 		return fmt.Errorf("failed to create greeter directory: %w", err)
 	}
 
 	// Write default greetings file
-	if err := os.WriteFile("internal/plugins/greeter/greetings.txt", []byte(defaultGreetings), 0644); err != nil {
+	if err := os.WriteFile(greetingsPath, []byte(defaultGreetings), 0644); err != nil {
 		return fmt.Errorf("failed to write default greetings file: %w", err)
 	}
 
 	// Parse the default greetings
-	file, err := os.Open("internal/plugins/greeter/greetings.txt")
+	file, err := os.Open(greetingsPath)
 	if err != nil {
 		return fmt.Errorf("failed to open newly created greetings file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			// Best effort - file was already read
+			_ = closeErr
+		}
+	}()
 
 	return gm.parseGreetingsFile(file)
 }
@@ -211,7 +229,8 @@ func (gm *GreetingManager) GetGreeting(username string, isFirstTime bool) string
 	for _, category := range categories {
 		if greetings, exists := gm.greetings[category]; exists && len(greetings) > 0 {
 			// Select a random greeting from the category
-			greeting := greetings[rand.Intn(len(greetings))]
+			index := rand.Intn(len(greetings))
+			greeting := greetings[index]
 			// Replace placeholder with username
 			return strings.ReplaceAll(greeting, "<user>", username)
 		}

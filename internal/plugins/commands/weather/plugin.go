@@ -69,10 +69,14 @@ func (p *Plugin) Start() error {
 			},
 		},
 	}
-	p.eventBus.Broadcast("command.register", registerEvent)
+	_ = p.eventBus.Broadcast("command.register", registerEvent)
 
-	p.eventBus.Subscribe("command.weather.execute", p.handleWeatherCommand)
-	p.eventBus.Subscribe("command.w.execute", p.handleWeatherCommand)
+	if err := p.eventBus.Subscribe("command.weather.execute", p.handleWeatherCommand); err != nil {
+		return fmt.Errorf("failed to subscribe to weather command: %w", err)
+	}
+	if err := p.eventBus.Subscribe("command.w.execute", p.handleWeatherCommand); err != nil {
+		return fmt.Errorf("failed to subscribe to w command: %w", err)
+	}
 
 	return nil
 }
@@ -191,7 +195,9 @@ func (p *Plugin) getWeather(location string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("weather service returned status %d", resp.StatusCode)
@@ -237,7 +243,9 @@ func (p *Plugin) getSimpleWeather(location string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -369,5 +377,5 @@ func (p *Plugin) sendResponse(username, channel, command, message string, succes
 			},
 		},
 	}
-	p.eventBus.Broadcast("plugin.response", responseData)
+	_ = p.eventBus.Broadcast("plugin.response", responseData)
 }

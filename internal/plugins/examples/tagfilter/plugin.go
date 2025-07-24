@@ -161,6 +161,9 @@ func (p *Plugin) statusReporter() {
 }
 
 // Example of how to use priority in your own events
+// NOTE: This is an intentional example function demonstrating the event system API
+//
+//nolint:unused // This is an example function for API documentation
 func (p *Plugin) sendHighPriorityAlert(message string) {
 	metadata := framework.NewEventMetadata(p.name, "alert.high").
 		WithPriority(3).

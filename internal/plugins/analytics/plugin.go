@@ -582,40 +582,6 @@ func (p *Plugin) runHourlyAggregation() {
 	}
 }
 
-// getActiveChannels returns a list of channels with recent activity
-func (p *Plugin) getActiveChannels(since time.Duration) ([]string, error) {
-	query := `
-		SELECT DISTINCT channel_name 
-		FROM daz_core_events 
-		WHERE timestamp > $1 
-		AND channel_name IS NOT NULL 
-		AND channel_name != ''
-		ORDER BY channel_name`
-
-	ctx := context.Background()
-	rows, err := p.sqlClient.QuerySync(ctx, query, time.Now().Add(-since))
-	if err != nil {
-		return nil, fmt.Errorf("failed to query active channels: %w", err)
-	}
-	defer rows.Close()
-
-	var channels []string
-	for rows.Next() {
-		var channel string
-		if err := rows.Scan(&channel); err != nil {
-			logger.Error("Analytics", "Failed to scan channel: %v", err)
-			continue
-		}
-		channels = append(channels, channel)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating channels: %w", err)
-	}
-
-	return channels, nil
-}
-
 // getConfiguredChannels returns the currently connected channels from the core plugin
 func (p *Plugin) getConfiguredChannels() ([]string, error) {
 	// Create a unique request ID
@@ -765,7 +731,11 @@ func (p *Plugin) aggregateHourlyForChannel(channel string, hourStart, hourEnd ti
 	if err != nil {
 		return fmt.Errorf("failed to query message count: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error("Analytics", "Failed to close rows: %v", err)
+		}
+	}()
 
 	if rows.Next() {
 		if err := rows.Scan(&messageCount); err != nil {
@@ -788,7 +758,11 @@ func (p *Plugin) aggregateHourlyForChannel(channel string, hourStart, hourEnd ti
 	if err != nil {
 		return fmt.Errorf("failed to query unique users: %w", err)
 	}
-	defer rows2.Close()
+	defer func() {
+		if err := rows2.Close(); err != nil {
+			logger.Error("Analytics", "Failed to close rows: %v", err)
+		}
+	}()
 
 	if rows2.Next() {
 		if err := rows2.Scan(&uniqueUsers); err != nil {
@@ -811,7 +785,11 @@ func (p *Plugin) aggregateHourlyForChannel(channel string, hourStart, hourEnd ti
 		logger.Debug("Analytics", "Failed to query media plays, assuming 0: %v", err)
 		mediaPlays = 0
 	} else {
-		defer rows3.Close()
+		defer func() {
+			if err := rows3.Close(); err != nil {
+				logger.Debug("Analytics", "Failed to close rows: %v", err)
+			}
+		}()
 
 		if rows3.Next() {
 			if err := rows3.Scan(&mediaPlays); err != nil {
@@ -948,7 +926,11 @@ func (p *Plugin) aggregateDailyForChannel(channel string, dayStart, dayEnd time.
 	if err != nil {
 		return fmt.Errorf("failed to query daily stats: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error("Analytics", "Failed to close rows: %v", err)
+		}
+	}()
 
 	if rows.Next() {
 		if err := rows.Scan(&totalMessages, &totalMediaPlays, &activeHours, &peakUsers); err != nil {
@@ -971,7 +953,11 @@ func (p *Plugin) aggregateDailyForChannel(channel string, dayStart, dayEnd time.
 	if err != nil {
 		return fmt.Errorf("failed to query unique users: %w", err)
 	}
-	defer rows2.Close()
+	defer func() {
+		if err := rows2.Close(); err != nil {
+			logger.Error("Analytics", "Failed to close rows: %v", err)
+		}
+	}()
 
 	if rows2.Next() {
 		if err := rows2.Scan(&uniqueUsers); err != nil {

@@ -269,7 +269,9 @@ func (d *DatabaseChecker) HealthCheck(ctx context.Context) ComponentHealth {
 
 	// Check if we got a result
 	if rows != nil {
-		defer rows.Close()
+		defer func() {
+			_ = rows.Close()
+		}()
 		if !rows.Next() {
 			health.Status = StatusDown
 			health.Error = "query returned no results"

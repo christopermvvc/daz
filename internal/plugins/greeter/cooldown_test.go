@@ -23,7 +23,7 @@ func TestCooldownManager_IsOnCooldown(t *testing.T) {
 		{
 			name: "cooldown active",
 			setup: func(cm *CooldownManager) {
-				cm.SetCooldown("#test", "user1")
+				cm.SetCooldown("#test", "user1", 30*time.Minute)
 			},
 			channel:  "#test",
 			user:     "user1",
@@ -32,7 +32,7 @@ func TestCooldownManager_IsOnCooldown(t *testing.T) {
 		{
 			name: "different channel not on cooldown",
 			setup: func(cm *CooldownManager) {
-				cm.SetCooldown("#test", "user1")
+				cm.SetCooldown("#test", "user1", 30*time.Minute)
 			},
 			channel:  "#other",
 			user:     "user1",
@@ -41,7 +41,7 @@ func TestCooldownManager_IsOnCooldown(t *testing.T) {
 		{
 			name: "different user not on cooldown",
 			setup: func(cm *CooldownManager) {
-				cm.SetCooldown("#test", "user1")
+				cm.SetCooldown("#test", "user1", 30*time.Minute)
 			},
 			channel:  "#test",
 			user:     "user2",
@@ -89,8 +89,8 @@ func TestCooldownManager_SetCooldown(t *testing.T) {
 		t.Error("Expected no cooldown initially")
 	}
 
-	// Set cooldown
-	cm.SetCooldown(channel, user)
+	// Set random cooldown
+	cm.SetRandomCooldown(channel, user)
 
 	// Verify cooldown is active
 	if !cm.IsOnCooldown(channel, user) {
@@ -105,7 +105,7 @@ func TestCooldownManager_SetCooldown(t *testing.T) {
 
 	minDuration := 45 * time.Minute
 	maxDuration := 3 * time.Hour
-	actualDuration := expires.Sub(time.Now())
+	actualDuration := time.Until(expires)
 
 	if actualDuration < minDuration || actualDuration > maxDuration {
 		t.Errorf("Cooldown duration %v is outside expected range [%v, %v]",
@@ -163,7 +163,7 @@ func TestCooldownManager_ConcurrentAccess(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(id int) {
 			for j := 0; j < 100; j++ {
-				cm.SetCooldown("#test", string(rune('a'+id)))
+				cm.SetCooldown("#test", string(rune('a'+id)), 30*time.Minute)
 			}
 			done <- struct{}{}
 		}(i)

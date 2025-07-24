@@ -392,7 +392,7 @@ func (m *MockEventBus) routeToSubscribers(eventType string, data *EventData, met
 				if meta != nil && meta.CorrelationID != "" && data != nil && data.PluginRequest != nil {
 					data.PluginRequest.ID = meta.CorrelationID
 				}
-				h(event)
+				_ = h(event)
 			}(handler, metadata)
 		}
 	}
@@ -407,7 +407,10 @@ func (m *MockEventBus) routeToSubscribers(eventType string, data *EventData, met
 					if meta != nil && meta.CorrelationID != "" && data != nil && data.PluginRequest != nil {
 						data.PluginRequest.ID = meta.CorrelationID
 					}
-					h(event)
+					if err := h(event); err != nil {
+						// Log error but don't panic in async handler
+						fmt.Printf("Error in event handler: %v\n", err)
+					}
 				}(handler, metadata)
 			}
 		}
@@ -422,7 +425,7 @@ func (m *MockEventBus) routeToTarget(target string, eventType string, data *Even
 
 	if exists {
 		event := NewDataEvent(eventType, data)
-		plugin.HandleEvent(event)
+		_ = plugin.HandleEvent(event)
 	}
 
 	// Also route to subscribers of the event type
@@ -988,7 +991,7 @@ func TestMockEventBusCleanupOnTimeout(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 			defer cancel()
 
-			mockBus.Request(ctx, "nonexistent-plugin", "plugin.request", queryData, metadata)
+			_, _ = mockBus.Request(ctx, "nonexistent-plugin", "plugin.request", queryData, metadata)
 		}(correlationID)
 	}
 
@@ -1085,7 +1088,7 @@ func BenchmarkMockEventBusRequest(b *testing.B) {
 
 	// Create test plugin
 	plugin := NewTestPlugin("benchmark-plugin")
-	mockBus.RegisterPlugin("benchmark-plugin", plugin)
+	_ = mockBus.RegisterPlugin("benchmark-plugin", plugin)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -1104,7 +1107,7 @@ func BenchmarkMockEventBusRequest(b *testing.B) {
 				WithTimeout(1 * time.Second)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			mockBus.Request(ctx, "benchmark-plugin", "plugin.request", queryData, metadata)
+			_, _ = mockBus.Request(ctx, "benchmark-plugin", "plugin.request", queryData, metadata)
 			cancel()
 		}
 	})
@@ -1123,7 +1126,7 @@ func BenchmarkMockEventBusBroadcast(b *testing.B) {
 			}
 
 			metadata := NewEventMetadata("test", "benchmark.event")
-			mockBus.BroadcastWithMetadata("benchmark.event", testData, metadata)
+			_ = mockBus.BroadcastWithMetadata("benchmark.event", testData, metadata)
 		}
 	})
 }

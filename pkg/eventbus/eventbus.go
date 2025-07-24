@@ -590,13 +590,7 @@ func (eb *EventBus) Request(ctx context.Context, target string, eventType string
 	cleanup := func() {
 		// log.Printf("[EventBus.Request] Cleanup called for correlationID=%s", correlationID)
 		eb.syncMu.Lock()
-		// Check if the request is still pending before deleting
-		if _, exists := eb.pendingRequests[correlationID]; exists {
-			delete(eb.pendingRequests, correlationID)
-			// log.Printf("[EventBus.Request] Removed pending request: correlationID=%s", correlationID)
-		} else {
-			// log.Printf("[EventBus.Request] Pending request already removed: correlationID=%s", correlationID)
-		}
+		delete(eb.pendingRequests, correlationID)
 		eb.syncMu.Unlock()
 
 		// Close channel safely (check if not already closed)
@@ -670,16 +664,6 @@ func (eb *EventBus) DeliverResponse(correlationID string, response *framework.Ev
 			// Channel full or closed, log error
 			logger.Error("EventBus", "Failed to deliver response (channel full/closed): correlationID=%s", correlationID)
 		}
-	} else {
-		// log.Printf("[EventBus.DeliverResponse] WARNING: No pending request found for correlationID=%s", correlationID)
-		// Log all pending correlation IDs for debugging
-		// eb.syncMu.RLock()
-		// var pendingIDs []string
-		// for id := range eb.pendingRequests {
-		// 	pendingIDs = append(pendingIDs, id)
-		// }
-		// eb.syncMu.RUnlock()
-		// log.Printf("[EventBus.DeliverResponse] Current pending requests: %v", pendingIDs)
 	}
 }
 

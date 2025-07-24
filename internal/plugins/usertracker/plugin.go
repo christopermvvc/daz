@@ -414,10 +414,16 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	} else {
 		// Regular user join - first mark all existing active sessions as inactive
 		// to prevent multiple active sessions for the same user
+		// Use SKIP LOCKED to avoid deadlocks
 		deactivateSQL := `
 			UPDATE daz_user_tracker_sessions 
 			SET is_active = FALSE, left_at = $1
-			WHERE channel = $2 AND username = $3 AND is_active = TRUE
+			WHERE id IN (
+				SELECT id 
+				FROM daz_user_tracker_sessions 
+				WHERE channel = $2 AND username = $3 AND is_active = TRUE
+				FOR UPDATE SKIP LOCKED
+			)
 		`
 		err := p.sqlClient.Exec(deactivateSQL, now, channel, username)
 		if err != nil {
@@ -485,10 +491,16 @@ func (p *Plugin) handleUserListStart(event framework.Event) error {
 
 	// Mark all existing users for this channel as inactive
 	// They will be reactivated if they appear in the userlist
+	// Use SKIP LOCKED to avoid deadlocks with concurrent operations
 	deactivateSQL := `
 		UPDATE daz_user_tracker_sessions 
 		SET is_active = FALSE, left_at = $1
-		WHERE channel = $2 AND is_active = TRUE
+		WHERE id IN (
+			SELECT id 
+			FROM daz_user_tracker_sessions 
+			WHERE channel = $2 AND is_active = TRUE
+			FOR UPDATE SKIP LOCKED
+		)
 	`
 	err := p.sqlClient.Exec(deactivateSQL, time.Now(), channel)
 	if err != nil {
@@ -738,11 +750,16 @@ func (p *Plugin) cleanupInactiveSessions() {
 func (p *Plugin) doCleanup() {
 	cutoffTime := time.Now().Add(-p.config.InactivityTimeout)
 
-	// Update database
+	// Update database using SKIP LOCKED to avoid deadlocks
 	updateSQL := `
 		UPDATE daz_user_tracker_sessions 
 		SET is_active = FALSE
-		WHERE is_active = TRUE AND last_activity < $1
+		WHERE id IN (
+			SELECT id 
+			FROM daz_user_tracker_sessions 
+			WHERE is_active = TRUE AND last_activity < $1
+			FOR UPDATE SKIP LOCKED
+		)
 	`
 	err := p.sqlClient.Exec(updateSQL,
 		cutoffTime)

@@ -43,19 +43,24 @@ func (cm *CooldownManager) IsOnCooldown(channel, user string) bool {
 	return time.Now().Before(expires)
 }
 
-// SetCooldown sets a random cooldown between 45 minutes and 3 hours for a user in a channel
-func (cm *CooldownManager) SetCooldown(channel, user string) {
+// SetCooldown sets a cooldown for a user in a channel
+func (cm *CooldownManager) SetCooldown(channel, user string, duration time.Duration) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
+	key := makeKey(channel, user)
+	cm.cooldowns[key] = time.Now().Add(duration)
+}
+
+// SetRandomCooldown sets a random cooldown between 45 minutes and 3 hours for a user in a channel
+func (cm *CooldownManager) SetRandomCooldown(channel, user string) {
 	// Generate random cooldown duration between 45 minutes (2700 seconds) and 3 hours (10800 seconds)
 	minSeconds := 45 * 60     // 45 minutes
 	maxSeconds := 3 * 60 * 60 // 3 hours
 	randomSeconds := rand.Intn(maxSeconds-minSeconds+1) + minSeconds
 
 	duration := time.Duration(randomSeconds) * time.Second
-	key := makeKey(channel, user)
-	cm.cooldowns[key] = time.Now().Add(duration)
+	cm.SetCooldown(channel, user, duration)
 }
 
 // cleanup periodically removes expired cooldowns from memory

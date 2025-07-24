@@ -171,17 +171,21 @@ func (p *Plugin) getLastGreeting(ctx context.Context, channel, username string) 
 	return &record, nil
 }
 
-// wasUserRecentlyActive checks if a user was active in the last N minutes
+// wasUserRecentlyActive checks if a user left the channel in the last N minutes
+// This prevents greeting users who just disconnected and reconnected
 func (p *Plugin) wasUserRecentlyActive(ctx context.Context, channel, username string, withinMinutes int) (bool, error) {
 	cutoffTime := time.Now().Add(-time.Duration(withinMinutes) * time.Minute)
 
+	// Check if there was a user leave event in the recent past
+	// This indicates the user was previously in the channel and left recently
 	query := `
 		SELECT EXISTS(
 			SELECT 1 
-			FROM daz_user_tracker_sessions
+			FROM daz_user_tracker_history
 			WHERE channel = $1 
 				AND LOWER(username) = LOWER($2)
-				AND last_activity >= $3
+				AND event_type = 'leave'
+				AND timestamp >= $3
 		)
 	`
 
@@ -241,6 +245,40 @@ func (p *Plugin) wasUserRecentlyGreeted(ctx context.Context, username string, wi
 	}
 
 	return wasGreeted, nil
+}
+
+// isUserInChannel checks if a user is currently active in the channel
+func (p *Plugin) isUserInChannel(ctx context.Context, channel, username string) (bool, error) {
+	query := `
+		SELECT EXISTS(
+			SELECT 1 
+			FROM daz_user_tracker_sessions
+			WHERE channel = $1 
+				AND LOWER(username) = LOWER($2)
+				AND is_active = TRUE
+		)
+	`
+
+	rows, err := p.sqlClient.QueryContext(ctx, query, channel, username)
+	if err != nil {
+		return false, fmt.Errorf("failed to query user presence: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error("Greeter", "Failed to close rows: %v", err)
+		}
+	}()
+
+	if !rows.Next() {
+		return false, nil
+	}
+
+	var isPresent bool
+	if err := rows.Scan(&isPresent); err != nil {
+		return false, fmt.Errorf("failed to scan user presence: %w", err)
+	}
+
+	return isPresent, nil
 }
 
 // updateGreeterState updates the channel's greeter state

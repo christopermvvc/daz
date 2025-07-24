@@ -140,7 +140,7 @@ func TestPlugin_Start(t *testing.T) {
 	mockBus := NewMockEventBus()
 
 	// Set up the plugin
-	p.Init(nil, mockBus)
+	_ = p.Init(nil, mockBus)
 
 	// Mock expectations for SQL operations
 	mockBus.On("Request", mock.Anything, "sql", "sql.exec.request", mock.Anything, mock.Anything).Return(&framework.EventData{
@@ -172,7 +172,7 @@ func TestPlugin_Stop(t *testing.T) {
 	p := tell.New()
 	mockBus := NewMockEventBus()
 
-	p.Init(nil, mockBus)
+	_ = p.Init(nil, mockBus)
 
 	// Should not error when not running
 	err := p.Stop()
@@ -199,12 +199,12 @@ func TestPlugin_Status(t *testing.T) {
 func TestPlugin_CreateTable(t *testing.T) {
 	db, sqlMock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	p := tell.New()
 	mockBus := NewMockEventBus()
 
-	p.Init(nil, mockBus)
+	_ = p.Init(nil, mockBus)
 
 	// Expect table creation query via event bus
 	mockBus.On("Request", mock.Anything, "sql", "plugin.request", mock.Anything, mock.Anything).Return(&framework.EventData{

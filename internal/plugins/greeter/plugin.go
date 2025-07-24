@@ -66,6 +66,10 @@ type Plugin struct {
 
 	// Startup time tracking
 	startupTime time.Time
+
+	// Channel join time tracking (for reconnection grace period)
+	channelJoinTimes map[string]time.Time
+	channelMu        sync.RWMutex
 }
 
 // greetingRequest represents a pending greeting
@@ -86,11 +90,12 @@ type lastGreetingInfo struct {
 // New creates a new greeter plugin instance
 func New() framework.Plugin {
 	return &Plugin{
-		name:            pluginName,
-		greetingQueue:   make(chan *greetingRequest, greetingQueueSize),
-		readyChan:       make(chan struct{}),
-		lastGreeting:    make(map[string]*lastGreetingInfo),
-		skipProbability: 0.4 + rand.Float64()*0.2, // 40-60% skip rate
+		name:             pluginName,
+		greetingQueue:    make(chan *greetingRequest, greetingQueueSize),
+		readyChan:        make(chan struct{}),
+		lastGreeting:     make(map[string]*lastGreetingInfo),
+		skipProbability:  0.4 + rand.Float64()*0.2, // 40-60% skip rate
+		channelJoinTimes: make(map[string]time.Time),
 		config: &Config{
 			CooldownMinutes:   30,
 			Enabled:           true,
@@ -201,13 +206,13 @@ func (p *Plugin) Start() error {
 	// Subscribe to events
 	// Note: CyTube sends "addUser" events for both initial userlist AND when users join
 	// We'll subscribe to both addUser and userJoin to catch all cases
-	logger.Info(p.name, "Subscribing to cytube.event.addUser with enabled=%v", p.config.Enabled)
+	logger.Debug(p.name, "Subscribing to cytube.event.addUser with enabled=%v", p.config.Enabled)
 	if err := p.eventBus.Subscribe("cytube.event.addUser", p.handleUserJoin); err != nil {
 		logger.Error(p.name, "Failed to subscribe to addUser: %v", err)
 		return err
 	}
 
-	logger.Info(p.name, "Subscribing to cytube.event.userJoin with enabled=%v", p.config.Enabled)
+	logger.Debug(p.name, "Subscribing to cytube.event.userJoin with enabled=%v", p.config.Enabled)
 	if err := p.eventBus.Subscribe("cytube.event.userJoin", p.handleUserJoin); err != nil {
 		logger.Error(p.name, "Failed to subscribe to userJoin: %v", err)
 		return err
@@ -216,6 +221,13 @@ func (p *Plugin) Start() error {
 	logger.Debug(p.name, "Subscribing to cytube.event.userLeave")
 	if err := p.eventBus.Subscribe("cytube.event.userLeave", p.handleUserLeave); err != nil {
 		logger.Error(p.name, "Failed to subscribe to userLeave: %v", err)
+		return err
+	}
+
+	// Subscribe to userlist.start to track channel joins/reconnections
+	logger.Debug(p.name, "Subscribing to cytube.event.userlist.start")
+	if err := p.eventBus.Subscribe("cytube.event.userlist.start", p.handleUserListStart); err != nil {
+		logger.Error(p.name, "Failed to subscribe to userlist.start: %v", err)
 		return err
 	}
 
@@ -314,21 +326,21 @@ func (p *Plugin) Name() string {
 
 // handleUserJoin processes user join events
 func (p *Plugin) handleUserJoin(event framework.Event) error {
-	logger.Info(p.name, "=== GREETER: handleUserJoin called ===")
-	logger.Info(p.name, "Greeter enabled: %v, skip probability: %.2f%%", p.config.Enabled, p.skipProbability*100)
+	logger.Debug(p.name, "=== GREETER: handleUserJoin called ===")
+	logger.Debug(p.name, "Greeter enabled: %v, skip probability: %.2f%%", p.config.Enabled, p.skipProbability*100)
 
 	if !p.config.Enabled {
-		logger.Info(p.name, "SKIP REASON: Greeter is disabled in config")
+		logger.Debug(p.name, "SKIP REASON: Greeter is disabled in config")
 		return nil
 	}
 
 	// Skip greetings for the first 20 seconds after startup
 	if time.Since(p.startupTime) < 20*time.Second {
-		logger.Info(p.name, "SKIP REASON: Bot startup grace period (%.1f seconds since startup)", time.Since(p.startupTime).Seconds())
+		logger.Debug(p.name, "SKIP REASON: Bot startup grace period (%.1f seconds since startup)", time.Since(p.startupTime).Seconds())
 		return nil
 	}
 
-	logger.Info(p.name, "Event type received: %T", event)
+	logger.Debug(p.name, "Event type received: %T", event)
 
 	var username, channel string
 	var rank int
@@ -338,37 +350,37 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 		username = userJoinEvent.Username
 		channel = userJoinEvent.ChannelName
 		rank = userJoinEvent.UserRank
-		logger.Info(p.name, "Extracted from UserJoinEvent: username=%s, channel=%s, rank=%d", username, channel, rank)
+		logger.Debug(p.name, "Extracted from UserJoinEvent: username=%s, channel=%s, rank=%d", username, channel, rank)
 	} else if addUserEvent, ok := event.(*framework.AddUserEvent); ok {
 		// Handle direct AddUserEvent (initial userlist population)
 		username = addUserEvent.Username
 		channel = addUserEvent.ChannelName
 		rank = addUserEvent.UserRank
-		logger.Info(p.name, "Extracted from AddUserEvent: username=%s, channel=%s, rank=%d", username, channel, rank)
+		logger.Debug(p.name, "Extracted from AddUserEvent: username=%s, channel=%s, rank=%d", username, channel, rank)
 	} else if dataEvent, ok := event.(*framework.DataEvent); ok && dataEvent.Data != nil {
 		// Handle wrapped in DataEvent
-		logger.Info(p.name, "DataEvent received - Type: %s, Has UserJoin: %v, Has RawEvent: %v",
+		logger.Debug(p.name, "DataEvent received - Type: %s, Has UserJoin: %v, Has RawEvent: %v",
 			dataEvent.EventType, dataEvent.Data.UserJoin != nil, dataEvent.Data.RawEvent != nil)
 
 		if dataEvent.Data.UserJoin != nil {
 			channel = dataEvent.Data.UserJoin.Channel
 			username = dataEvent.Data.UserJoin.Username
 			rank = dataEvent.Data.UserJoin.UserRank
-			logger.Info(p.name, "Extracted from DataEvent.UserJoin: username=%s, channel=%s, rank=%d", username, channel, rank)
+			logger.Debug(p.name, "Extracted from DataEvent.UserJoin: username=%s, channel=%s, rank=%d", username, channel, rank)
 		} else if dataEvent.Data.RawEvent != nil {
 			// Try to extract from RawEvent
-			logger.Info(p.name, "RawEvent type: %T", dataEvent.Data.RawEvent)
+			logger.Debug(p.name, "RawEvent type: %T", dataEvent.Data.RawEvent)
 
 			if userJoinEvent, ok := dataEvent.Data.RawEvent.(*framework.UserJoinEvent); ok {
 				username = userJoinEvent.Username
 				channel = userJoinEvent.ChannelName
 				rank = userJoinEvent.UserRank
-				logger.Info(p.name, "Extracted from DataEvent.RawEvent (UserJoinEvent): username=%s, channel=%s, rank=%d", username, channel, rank)
+				logger.Debug(p.name, "Extracted from DataEvent.RawEvent (UserJoinEvent): username=%s, channel=%s, rank=%d", username, channel, rank)
 			} else if addUserEvent, ok := dataEvent.Data.RawEvent.(*framework.AddUserEvent); ok {
 				username = addUserEvent.Username
 				channel = addUserEvent.ChannelName
 				rank = addUserEvent.UserRank
-				logger.Info(p.name, "Extracted from DataEvent.RawEvent (AddUserEvent): username=%s, channel=%s, rank=%d", username, channel, rank)
+				logger.Debug(p.name, "Extracted from DataEvent.RawEvent (AddUserEvent): username=%s, channel=%s, rank=%d", username, channel, rank)
 			}
 		}
 	} else {
@@ -377,7 +389,13 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	}
 
 	if username == "" || channel == "" {
-		logger.Info(p.name, "SKIP REASON: Empty username or channel - username=%q, channel=%q", username, channel)
+		logger.Debug(p.name, "SKIP REASON: Empty username or channel - username=%q, channel=%q", username, channel)
+		return nil
+	}
+
+	// Skip greetings for 20 seconds after joining/reconnecting to a channel
+	// Use a function to ensure proper lock handling
+	if p.isInChannelGracePeriod(channel) {
 		return nil
 	}
 
@@ -388,40 +406,39 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	}
 
 	if strings.EqualFold(username, botName) {
-		logger.Info(p.name, "SKIP REASON: Self-greeting detected - username=%s, botName=%s", username, botName)
+		logger.Debug(p.name, "SKIP REASON: Self-greeting detected - username=%s, botName=%s", username, botName)
 		return nil
 	}
 
 	// Check if user opted out
-	ctx := context.Background()
-	optedOut, err := p.isUserOptedOut(ctx, channel, username)
+	optedOut, err := p.isUserOptedOut(p.ctx, channel, username)
 	if err != nil {
 		logger.Warn(p.name, "Failed to check opt-out status: %v", err)
 	}
 	if optedOut {
-		logger.Info(p.name, "SKIP REASON: User %s has opted out of greetings", username)
+		logger.Debug(p.name, "SKIP REASON: User %s has opted out of greetings", username)
 		return nil
 	}
-	logger.Info(p.name, "Opt-out check passed for %s", username)
+	logger.Debug(p.name, "Opt-out check passed for %s", username)
 
 	// Check if user was recently active in this channel
-	recentlyActive, err := p.wasUserRecentlyActive(ctx, channel, username, 60) // 60 minutes
+	recentlyActive, err := p.wasUserRecentlyActive(p.ctx, channel, username, 60) // 60 minutes
 	if err != nil {
 		logger.Warn(p.name, "Failed to check recent activity: %v", err)
 	}
 	if recentlyActive {
-		logger.Info(p.name, "SKIP REASON: User %s was recently active (within 60 min) in channel %s", username, channel)
+		logger.Debug(p.name, "SKIP REASON: User %s was recently active (within 60 min) in channel %s", username, channel)
 		return nil
 	}
-	logger.Info(p.name, "Recent activity check passed for %s (not active in last 60 min)", username)
+	logger.Debug(p.name, "Recent activity check passed for %s (not active in last 60 min)", username)
 
 	// Check if user was recently greeted in ANY channel (global cooldown)
-	recentlyGreeted, err := p.wasUserRecentlyGreeted(ctx, username, 30) // 30 minutes
+	recentlyGreeted, err := p.wasUserRecentlyGreeted(p.ctx, username, 30) // 30 minutes
 	if err != nil {
 		logger.Warn(p.name, "Failed to check recent greetings: %v", err)
 	}
 	if recentlyGreeted {
-		logger.Info(p.name, "SKIP REASON: User %s was greeted in another channel within 30 min", username)
+		logger.Debug(p.name, "SKIP REASON: User %s was greeted in another channel within 30 min", username)
 		return nil
 	}
 
@@ -430,29 +447,29 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	defer p.mu.Unlock()
 
 	if !p.shouldGreet(channel, username) {
-		logger.Info(p.name, "SKIP REASON: User %s in channel %s is on cooldown", username, channel)
+		logger.Debug(p.name, "SKIP REASON: User %s in channel %s is on cooldown", username, channel)
 		return nil
 	}
-	logger.Info(p.name, "Cooldown check passed for %s", username)
+	logger.Debug(p.name, "Cooldown check passed for %s", username)
 
 	// Check if last message in chat was a greeting to this user
 	lastGreeting, exists := p.lastGreeting[channel]
 	if exists && lastGreeting.username == username && time.Since(lastGreeting.sentAt) < 5*time.Minute {
-		logger.Info(p.name, "SKIP REASON: Last greeting was to %s, sent %v ago", username, time.Since(lastGreeting.sentAt))
+		logger.Debug(p.name, "SKIP REASON: Last greeting was to %s, sent %v ago", username, time.Since(lastGreeting.sentAt))
 		return nil
 	}
-	logger.Info(p.name, "Last greeting check passed for %s", username)
+	logger.Debug(p.name, "Last greeting check passed for %s", username)
 
 	// Apply skip probability (40-60%) as final check
 	skipRoll := rand.Float64()
 	if skipRoll < p.skipProbability {
-		logger.Info(p.name, "SKIP REASON: Random skip - roll=%.3f < probability=%.3f for user %s", skipRoll, p.skipProbability, username)
+		logger.Debug(p.name, "SKIP REASON: Random skip - roll=%.3f < probability=%.3f for user %s", skipRoll, p.skipProbability, username)
 		return nil
 	}
-	logger.Info(p.name, "Random skip check passed - roll=%.3f >= probability=%.3f", skipRoll, p.skipProbability)
+	logger.Debug(p.name, "Random skip check passed - roll=%.3f >= probability=%.3f", skipRoll, p.skipProbability)
 
 	// Queue greeting request
-	logger.Info(p.name, "Attempting to queue greeting for %s in channel %s", username, channel)
+	logger.Debug(p.name, "Attempting to queue greeting for %s in channel %s", username, channel)
 	select {
 	case p.greetingQueue <- &greetingRequest{
 		channel:  channel,
@@ -460,7 +477,7 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 		rank:     rank,
 		joinedAt: time.Now(),
 	}:
-		logger.Info(p.name, "Successfully queued greeting for %s in channel %s", username, channel)
+		logger.Debug(p.name, "Successfully queued greeting for %s in channel %s", username, channel)
 	default:
 		logger.Warn(p.name, "Greeting queue full, dropping greeting for %s", username)
 	}
@@ -471,6 +488,28 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 // handleUserLeave processes user leave events
 func (p *Plugin) handleUserLeave(event framework.Event) error {
 	// Currently we don't need to do anything on user leave
+	return nil
+}
+
+// handleUserListStart processes userlist start events (channel join/reconnect)
+func (p *Plugin) handleUserListStart(event framework.Event) error {
+	// Extract channel from the event
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil {
+		return nil
+	}
+
+	// Check RawMessage exists and has a channel
+	if dataEvent.Data.RawMessage != nil && dataEvent.Data.RawMessage.Channel != "" {
+		channel := dataEvent.Data.RawMessage.Channel
+		// Update the channel join time
+		p.channelMu.Lock()
+		p.channelJoinTimes[channel] = time.Now()
+		p.channelMu.Unlock()
+
+		logger.Info(p.name, "Detected channel join/reconnect for %s, starting 20-second grace period", channel)
+	}
+
 	return nil
 }
 
@@ -488,32 +527,32 @@ func (p *Plugin) updateCooldown(channel, username string) {
 // processGreetingQueue processes pending greetings
 func (p *Plugin) processGreetingQueue() {
 	defer p.wg.Done()
-	logger.Info(p.name, "Greeting queue processor started")
+	logger.Debug(p.name, "Greeting queue processor started")
 
 	for {
 		select {
 		case <-p.ctx.Done():
-			logger.Info(p.name, "Greeting queue processor stopping")
+			logger.Debug(p.name, "Greeting queue processor stopping")
 			return
 		case req, ok := <-p.greetingQueue:
 			if !ok {
-				logger.Info(p.name, "Greeting queue closed")
+				logger.Debug(p.name, "Greeting queue closed")
 				return
 			}
-			logger.Info(p.name, "=== PROCESSING GREETING REQUEST ===")
-			logger.Info(p.name, "User: %s, Channel: %s, Queued: %v ago",
+			logger.Debug(p.name, "=== PROCESSING GREETING REQUEST ===")
+			logger.Debug(p.name, "User: %s, Channel: %s, Queued: %v ago",
 				req.username, req.channel, time.Since(req.joinedAt))
 
 			// Random delay between 15s and 3min
 			delay := minGreetingDelay + time.Duration(rand.Int63n(int64(maxGreetingDelay-minGreetingDelay)))
-			logger.Info(p.name, "Waiting %v before sending greeting to %s", delay, req.username)
+			logger.Debug(p.name, "Waiting %v before sending greeting to %s", delay, req.username)
 			timer := time.NewTimer(delay)
 			select {
 			case <-p.ctx.Done():
 				timer.Stop()
 				return
 			case <-timer.C:
-				logger.Info(p.name, "=== SENDING GREETING NOW ===")
+				logger.Debug(p.name, "=== SENDING GREETING NOW ===")
 				p.sendGreeting(req)
 			}
 		}
@@ -522,17 +561,32 @@ func (p *Plugin) processGreetingQueue() {
 
 // sendGreeting sends a greeting message
 func (p *Plugin) sendGreeting(req *greetingRequest) {
-	logger.Info(p.name, "sendGreeting called for %s in channel %s", req.username, req.channel)
-	// Double-check cooldown
-	if !p.shouldGreet(req.channel, req.username) {
-		logger.Info(p.name, "User %s still on cooldown, skipping greeting", req.username)
+	logger.Debug(p.name, "sendGreeting called for %s in channel %s", req.username, req.channel)
+
+	// Check if we're in a channel grace period (recent reconnection)
+	if p.isInChannelGracePeriod(req.channel) {
+		logger.Debug(p.name, "SKIP GREETING: Still in channel grace period for %s", req.channel)
 		return
 	}
 
-	ctx := context.Background()
+	// Check if user is still in the channel
+	isPresent, err := p.isUserInChannel(p.ctx, req.channel, req.username)
+	if err != nil {
+		logger.Warn(p.name, "Failed to check user presence: %v", err)
+		// Continue anyway in case of database error
+	} else if !isPresent {
+		logger.Debug(p.name, "SKIP GREETING: User %s is no longer in channel %s", req.username, req.channel)
+		return
+	}
+
+	// Double-check cooldown
+	if !p.shouldGreet(req.channel, req.username) {
+		logger.Debug(p.name, "User %s still on cooldown, skipping greeting", req.username)
+		return
+	}
 
 	// Check if this is a first-time user
-	firstSeenTime, err := p.getUserFirstSeenTime(ctx, req.channel, req.username)
+	firstSeenTime, err := p.getUserFirstSeenTime(p.ctx, req.channel, req.username)
 	isFirstTime := err == nil && firstSeenTime == nil
 
 	var greeting string
@@ -550,7 +604,7 @@ func (p *Plugin) sendGreeting(req *greetingRequest) {
 	}
 
 	// Check if this greeting was just used
-	lastGreeting, err := p.getLastGreeting(ctx, req.channel, req.username)
+	lastGreeting, err := p.getLastGreeting(p.ctx, req.channel, req.username)
 	if err == nil && lastGreeting != nil && lastGreeting.GreetingText == greeting {
 		// Try to get a different greeting
 		if p.greetingManager != nil {
@@ -592,12 +646,12 @@ func (p *Plugin) sendGreeting(req *greetingRequest) {
 	p.mu.Unlock()
 
 	// Update channel state in database
-	if err := p.updateGreeterState(ctx, req.channel, req.username); err != nil {
+	if err := p.updateGreeterState(p.ctx, req.channel, req.username); err != nil {
 		logger.Warn(p.name, "Failed to update greeter state: %v", err)
 	}
 
 	// Record in database
-	if err := p.recordGreetingToDB(ctx, req.channel, req.username, "standard", greeting, nil); err != nil {
+	if err := p.recordGreetingToDB(p.ctx, req.channel, req.username, "standard", greeting, nil); err != nil {
 		logger.Error(p.name, "Failed to record greeting: %v", err)
 	}
 }
@@ -620,47 +674,30 @@ func (p *Plugin) getGreetingFromEngine(channel, username string, rank int) strin
 		},
 	}
 
-	// Use a channel to receive the response
-	responseChan := make(chan string, 1)
-	timeoutChan := time.After(5 * time.Second)
+	// Use context with timeout for cleaner cancellation
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
 
-	// Subscribe to response
-	responseHandler := func(event framework.Event) error {
-		if dataEvent, ok := event.(*framework.DataEvent); ok {
-			if dataEvent.Data != nil && dataEvent.Data.PluginResponse != nil {
-				resp := dataEvent.Data.PluginResponse
-				if resp.From == "greetingengine" {
-					if greeting, ok := resp.Data.KeyValue["greeting"]; ok {
-						select {
-						case responseChan <- greeting:
-						default:
-						}
-					}
-				}
-			}
+	// Use the event bus Request method instead of Subscribe/Broadcast pattern
+	// This avoids the memory leak from subscriptions that can't be unsubscribed
+	resp, err := p.eventBus.Request(ctx, "greetingengine", "generate", reqData, nil)
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			logger.Warn(p.name, "Timeout waiting for greeting engine response")
+		} else {
+			logger.Warn(p.name, "Failed to get greeting from engine: %v", err)
 		}
-		return nil
-	}
-
-	// Subscribe to response
-	topic := fmt.Sprintf("plugin.response.%s", p.name)
-	if err := p.eventBus.Subscribe(topic, responseHandler); err != nil {
-		logger.Warn(p.name, "Failed to subscribe to response topic: %v", err)
-	}
-	// Note: Since we can't unsubscribe, we'll rely on the handler checking correlation IDs
-	// to prevent processing stale responses
-
-	// Send request
-	_ = p.eventBus.Broadcast("plugin.request.greetingengine", reqData)
-
-	// Wait for response
-	select {
-	case greeting := <-responseChan:
-		return greeting
-	case <-timeoutChan:
-		logger.Warn(p.name, "Timeout waiting for greeting engine response")
 		return ""
 	}
+
+	// Extract greeting from response
+	if resp != nil && resp.PluginResponse != nil {
+		if greeting, ok := resp.PluginResponse.Data.KeyValue["greeting"]; ok {
+			return greeting
+		}
+	}
+
+	return ""
 }
 
 // loadCooldowns loads recent cooldowns from the database
@@ -788,13 +825,12 @@ func (p *Plugin) handleGreeterCommand(event framework.Event) error {
 
 // handleToggle handles toggling greetings on/off for a user
 func (p *Plugin) handleToggle(channel, username string, optOut bool, isPM bool) error {
-	ctx := context.Background()
 
 	var reason string
 	if optOut {
 		reason = "User requested via !greeter command"
 	}
-	err := p.setUserOptOut(ctx, channel, username, optOut, reason)
+	err := p.setUserOptOut(p.ctx, channel, username, optOut, reason)
 	if err != nil {
 		logger.Error(p.name, "Failed to update opt-out preference: %v", err)
 		p.sendResponse(channel, username, "Failed to update your preference. Please try again.", isPM)
@@ -842,4 +878,18 @@ func (p *Plugin) sendPM(channel, toUser, message string) {
 		},
 	}
 	_ = p.eventBus.Broadcast("cytube.send.pm", pmData)
+}
+
+// isInChannelGracePeriod checks if we're still in the grace period after joining a channel
+func (p *Plugin) isInChannelGracePeriod(channel string) bool {
+	p.channelMu.RLock()
+	channelJoinTime, exists := p.channelJoinTimes[channel]
+	p.channelMu.RUnlock()
+
+	if exists && time.Since(channelJoinTime) < 20*time.Second {
+		logger.Debug(p.name, "SKIP REASON: Channel reconnection grace period (%.1f seconds since joining %s)",
+			time.Since(channelJoinTime).Seconds(), channel)
+		return true
+	}
+	return false
 }

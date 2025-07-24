@@ -378,7 +378,7 @@ func (lm *LoggerMiddleware) writeEntry(entry LogEntry) error {
 	}
 
 	// Send exec request
-	lm.plugin.eventBus.Broadcast("sql.exec.request", data)
+	_ = lm.plugin.eventBus.Broadcast("sql.exec.request", data)
 
 	return nil
 }
@@ -406,7 +406,7 @@ func (lm *LoggerMiddleware) writeBatch(table string, entries []LogEntry) error {
 	}
 
 	// Send exec request
-	lm.plugin.eventBus.Broadcast("sql.exec.request", data)
+	_ = lm.plugin.eventBus.Broadcast("sql.exec.request", data)
 
 	log.Printf("[SQL Logger] Flushed %d entries to %s", len(entries), table)
 	return nil

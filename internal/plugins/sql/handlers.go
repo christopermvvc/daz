@@ -435,7 +435,11 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 		}
 		return fmt.Errorf("query failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error("SQL", "Error closing rows: %v", err)
+		}
+	}()
 
 	// Convert rows to response format
 	// rowProcessingStartTime := time.Now()
@@ -841,7 +845,7 @@ func (p *Plugin) handleBatchQueryRequest(event framework.Event) error {
 			// Process rows
 			columns, err := rows.Columns()
 			if err != nil {
-				rows.Close()
+				_ = rows.Close()
 				responses = append(responses, &framework.SQLQueryResponse{
 					ID:            queryReq.ID,
 					CorrelationID: queryReq.CorrelationID,
@@ -861,7 +865,7 @@ func (p *Plugin) handleBatchQueryRequest(event framework.Event) error {
 				}
 
 				if err := rows.Scan(scanArgs...); err != nil {
-					rows.Close()
+					_ = rows.Close()
 					responses = append(responses, &framework.SQLQueryResponse{
 						ID:            queryReq.ID,
 						CorrelationID: queryReq.CorrelationID,
@@ -888,7 +892,9 @@ func (p *Plugin) handleBatchQueryRequest(event framework.Event) error {
 				}
 				resultRows = append(resultRows, row)
 			}
-			rows.Close()
+			if err := rows.Close(); err != nil {
+				logger.Error(p.name, "Failed to close rows: %v", err)
+			}
 
 			if err := rows.Err(); err != nil {
 				responses = append(responses, &framework.SQLQueryResponse{
@@ -1285,7 +1291,11 @@ func (p *Plugin) executeBatchQuery(ctx context.Context, id, query string, params
 			Error:         err.Error(),
 		}
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error(p.name, "Failed to close rows: %v", err)
+		}
+	}()
 
 	// Convert rows to response format
 	columns, err := rows.Columns()

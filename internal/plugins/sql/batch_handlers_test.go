@@ -301,7 +301,7 @@ func TestHandleBatchQueryRequest(t *testing.T) {
 			var err error
 			mockDB, mock, err = sqlmock.New()
 			require.NoError(t, err)
-			defer mockDB.Close()
+			defer func() { _ = mockDB.Close() }()
 
 			// Setup mock expectations
 			tc.setupMock(mock)
@@ -343,7 +343,8 @@ func TestHandleBatchQueryRequest(t *testing.T) {
 				// Skip the actual handler call in unit tests
 				// Just validate the response format
 				var responses []*framework.SQLQueryResponse
-				if tc.name == "successful atomic batch query" {
+				switch tc.name {
+				case "successful atomic batch query":
 					// Simulate successful atomic batch
 					responses = []*framework.SQLQueryResponse{
 						{
@@ -366,7 +367,7 @@ func TestHandleBatchQueryRequest(t *testing.T) {
 							},
 						},
 					}
-				} else if tc.name == "atomic batch query with failure rolls back" {
+				case "atomic batch query with failure rolls back":
 					// Simulate atomic batch with failure
 					responses = []*framework.SQLQueryResponse{
 						{
@@ -434,7 +435,7 @@ func TestHandleBatchQueryRequest(t *testing.T) {
 						for i := range values {
 							scanArgs[i] = &values[i]
 						}
-						rows.Scan(scanArgs...)
+						_ = rows.Scan(scanArgs...)
 
 						row := make([]json.RawMessage, len(columns))
 						for i, val := range values {
@@ -447,7 +448,7 @@ func TestHandleBatchQueryRequest(t *testing.T) {
 						}
 						resultRows = append(resultRows, row)
 					}
-					rows.Close()
+					_ = rows.Close()
 
 					responses = append(responses, &framework.SQLQueryResponse{
 						ID:            queryReq.ID,

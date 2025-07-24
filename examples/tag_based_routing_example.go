@@ -27,73 +27,89 @@ func main() {
 		fmt.Printf("Chat event received: %s\n", event.Type())
 		return nil
 	}
-	eb.SubscribeWithTags("cytube.event.*", chatHandler, []string{"chat"})
+	if err := eb.SubscribeWithTags("cytube.event.*", chatHandler, []string{"chat"}); err != nil {
+		log.Fatalf("Failed to subscribe with chat tags: %v", err)
+	}
 
 	// Example 2: Subscribe to all user presence events
 	presenceHandler := func(event framework.Event) error {
 		fmt.Printf("User presence event: %s\n", event.Type())
 		return nil
 	}
-	eb.SubscribeWithTags("cytube.event.*", presenceHandler, []string{"user", "presence"})
+	if err := eb.SubscribeWithTags("cytube.event.*", presenceHandler, []string{"user", "presence"}); err != nil {
+		log.Fatalf("Failed to subscribe with presence tags: %v", err)
+	}
 
 	// Example 3: Subscribe to all media events
 	mediaHandler := func(event framework.Event) error {
 		fmt.Printf("Media event: %s\n", event.Type())
 		return nil
 	}
-	eb.SubscribeWithTags("cytube.event.*", mediaHandler, []string{"media"})
+	if err := eb.SubscribeWithTags("cytube.event.*", mediaHandler, []string{"media"}); err != nil {
+		log.Fatalf("Failed to subscribe with media tags: %v", err)
+	}
 
 	// Example 4: Subscribe to high-priority system events
 	systemHandler := func(event framework.Event) error {
 		fmt.Printf("System event: %s\n", event.Type())
 		return nil
 	}
-	eb.SubscribeWithTags("cytube.event.*", systemHandler, []string{"system"})
+	if err := eb.SubscribeWithTags("cytube.event.*", systemHandler, []string{"system"}); err != nil {
+		log.Fatalf("Failed to subscribe with system tags: %v", err)
+	}
 
 	// Example 5: Subscribe to all cytube events (no tag filter)
 	allEventsHandler := func(event framework.Event) error {
 		fmt.Printf("Any cytube event: %s\n", event.Type())
 		return nil
 	}
-	eb.SubscribeWithTags("cytube.event.*", allEventsHandler, nil)
+	if err := eb.SubscribeWithTags("cytube.event.*", allEventsHandler, nil); err != nil {
+		log.Fatalf("Failed to subscribe to all events: %v", err)
+	}
 
 	// Example 6: Traditional exact match subscription still works
 	specificHandler := func(event framework.Event) error {
 		fmt.Printf("Specific chatMsg event\n")
 		return nil
 	}
-	eb.Subscribe("cytube.event.chatMsg", specificHandler)
+	if err := eb.Subscribe("cytube.event.chatMsg", specificHandler); err != nil {
+		log.Fatalf("Failed to subscribe to specific event: %v", err)
+	}
 
 	// Simulate some events with metadata
 	// Chat message event
 	chatMetadata := framework.NewEventMetadata("cytube", "cytube.event.chatMsg").
 		WithTags("chat", "public", "user-content").
 		WithLogging("info")
-	eb.BroadcastWithMetadata("cytube.event.chatMsg", &framework.EventData{
+	if err := eb.BroadcastWithMetadata("cytube.event.chatMsg", &framework.EventData{
 		ChatMessage: &framework.ChatMessageData{
 			Username: "testuser",
 			Message:  "Hello, world!",
 			Channel:  "test-channel",
 		},
-	}, chatMetadata)
+	}, chatMetadata); err != nil {
+		log.Printf("Failed to broadcast chat message: %v", err)
+	}
 
 	// User join event
 	joinMetadata := framework.NewEventMetadata("cytube", "cytube.event.userJoin").
 		WithTags("user", "presence", "join").
 		WithLogging("info")
-	eb.BroadcastWithMetadata("cytube.event.userJoin", &framework.EventData{
+	if err := eb.BroadcastWithMetadata("cytube.event.userJoin", &framework.EventData{
 		UserJoin: &framework.UserJoinData{
 			Username: "newuser",
 			UserRank: 1,
 			Channel:  "test-channel",
 		},
-	}, joinMetadata)
+	}, joinMetadata); err != nil {
+		log.Printf("Failed to broadcast user join: %v", err)
+	}
 
 	// Media change event
 	mediaMetadata := framework.NewEventMetadata("cytube", "cytube.event.changeMedia").
 		WithTags("media", "playlist", "change").
 		WithLogging("info")
-	eb.BroadcastWithMetadata("cytube.event.changeMedia", &framework.EventData{
+	if err := eb.BroadcastWithMetadata("cytube.event.changeMedia", &framework.EventData{
 		VideoChange: &framework.VideoChangeData{
 			VideoID:   "dQw4w9WgXcQ",
 			VideoType: "yt",
@@ -101,18 +117,22 @@ func main() {
 			Duration:  212,
 			Channel:   "test-channel",
 		},
-	}, mediaMetadata)
+	}, mediaMetadata); err != nil {
+		log.Printf("Failed to broadcast media change: %v", err)
+	}
 
 	// System event using KeyValue for generic data
 	systemMetadata := framework.NewEventMetadata("cytube", "cytube.event.disconnect").
 		WithTags("system", "connection", "disconnect").
 		WithLogging("warn").
 		WithPriority(2)
-	eb.BroadcastWithMetadata("cytube.event.disconnect", &framework.EventData{
+	if err := eb.BroadcastWithMetadata("cytube.event.disconnect", &framework.EventData{
 		KeyValue: map[string]string{
 			"reason": "server restart",
 		},
-	}, systemMetadata)
+	}, systemMetadata); err != nil {
+		log.Printf("Failed to broadcast disconnect event: %v", err)
+	}
 
 	// Give handlers time to process
 	// In a real application, you would have proper lifecycle management

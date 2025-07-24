@@ -226,6 +226,9 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["help"] = cfg.GetPluginConfig("help")
 	pluginConfigs["uptime"] = cfg.GetPluginConfig("uptime")
 	pluginConfigs["tell"] = cfg.GetPluginConfig("tell")
+	pluginConfigs["greeter"] = cfg.GetPluginConfig("greeter")
+	pluginConfigs["weather"] = cfg.GetPluginConfig("weather")
+	pluginConfigs["random"] = cfg.GetPluginConfig("random")
 
 	// Initialize all plugins (respects dependencies)
 	if err := pluginManager.InitializeAll(pluginConfigs, bus); err != nil {

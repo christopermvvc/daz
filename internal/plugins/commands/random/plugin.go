@@ -71,12 +71,12 @@ func (p *Plugin) Start() error {
 			},
 		},
 	}
-	p.eventBus.Broadcast("command.register", registerEvent)
+	_ = p.eventBus.Broadcast("command.register", registerEvent)
 
 	// Subscribe to command execution events
-	p.eventBus.Subscribe("command.random.execute", p.handleRandomCommand)
-	p.eventBus.Subscribe("command.rand.execute", p.handleRandomCommand)
-	p.eventBus.Subscribe("command.r.execute", p.handleRandomCommand)
+	_ = p.eventBus.Subscribe("command.random.execute", p.handleRandomCommand)
+	_ = p.eventBus.Subscribe("command.rand.execute", p.handleRandomCommand)
+	_ = p.eventBus.Subscribe("command.r.execute", p.handleRandomCommand)
 
 	return nil
 }
@@ -223,7 +223,7 @@ func (p *Plugin) sendPMResponse(username, channel, message string) {
 			},
 		},
 	}
-	p.eventBus.Broadcast("plugin.response", responseData)
+	_ = p.eventBus.Broadcast("plugin.response", responseData)
 }
 
 func (p *Plugin) sendPublicResponse(username, channel, message string) {
@@ -234,5 +234,5 @@ func (p *Plugin) sendPublicResponse(username, channel, message string) {
 			Channel: channel,
 		},
 	}
-	p.eventBus.Broadcast("cytube.send", chatData)
+	_ = p.eventBus.Broadcast("cytube.send", chatData)
 }

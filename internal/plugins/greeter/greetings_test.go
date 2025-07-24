@@ -9,8 +9,10 @@ import (
 
 func TestNewGreetingManager(t *testing.T) {
 	// Clean up any existing test file
-	os.Remove("internal/plugins/greeter/greetings.txt")
-	defer os.Remove("internal/plugins/greeter/greetings.txt")
+	_ = os.Remove("internal/plugins/greeter/greetings.txt")
+	defer func() {
+		_ = os.Remove("internal/plugins/greeter/greetings.txt")
+	}()
 
 	gm, err := NewGreetingManager()
 	if err != nil {
@@ -58,7 +60,9 @@ first: Welcome <user>!
 	if err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
-	defer os.Remove(testFile)
+	defer func() {
+		_ = os.Remove(testFile)
+	}()
 
 	// Create greeting manager
 	gm := &GreetingManager{
@@ -70,7 +74,11 @@ first: Welcome <user>!
 	if err != nil {
 		t.Fatalf("Failed to open test file: %v", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Logf("Warning: failed to close test file: %v", closeErr)
+		}
+	}()
 
 	err = gm.parseGreetingsFile(file)
 	if err != nil {
@@ -221,7 +229,9 @@ morning: Good morning, <user>!`
 	if err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
-	defer os.Remove(testFile)
+	defer func() {
+		_ = os.Remove(testFile)
+	}()
 
 	// Create greeting manager with custom file location
 	gm := &GreetingManager{
@@ -231,9 +241,16 @@ morning: Good morning, <user>!`
 
 	// Override the loadGreetings method for testing
 	// Since we can't easily override methods in Go, we'll test the logic directly
-	file, _ := os.Open(testFile)
-	gm.parseGreetingsFile(file)
-	file.Close()
+	file, err := os.Open(testFile)
+	if err != nil {
+		t.Fatalf("Failed to open test file: %v", err)
+	}
+	if err := gm.parseGreetingsFile(file); err != nil {
+		t.Fatalf("Failed to parse greetings file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Logf("Warning: failed to close test file: %v", err)
+	}
 
 	// Verify initial greetings
 	if len(gm.greetings["general"]) != 1 {
@@ -253,9 +270,16 @@ afternoon: Good afternoon, <user>!`
 
 	// Clear and reload
 	gm.greetings = make(map[string][]string)
-	file2, _ := os.Open(testFile)
-	gm.parseGreetingsFile(file2)
-	file2.Close()
+	file2, err := os.Open(testFile)
+	if err != nil {
+		t.Fatalf("Failed to open test file: %v", err)
+	}
+	if err := gm.parseGreetingsFile(file2); err != nil {
+		t.Fatalf("Failed to parse greetings file: %v", err)
+	}
+	if err := file2.Close(); err != nil {
+		t.Logf("Warning: failed to close test file: %v", err)
+	}
 
 	// Verify reloaded greetings
 	if len(gm.greetings["general"]) != 3 {
@@ -273,7 +297,9 @@ func TestEmptyGreetingsFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
-	defer os.Remove(testFile)
+	defer func() {
+		_ = os.Remove(testFile)
+	}()
 
 	gm := &GreetingManager{
 		greetings: make(map[string][]string),
@@ -283,7 +309,11 @@ func TestEmptyGreetingsFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open test file: %v", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Logf("Warning: failed to close test file: %v", closeErr)
+		}
+	}()
 
 	err = gm.parseGreetingsFile(file)
 	if err == nil {

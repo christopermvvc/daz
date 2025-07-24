@@ -168,7 +168,7 @@ func TestPluginStart(t *testing.T) {
 		assert.NotNil(t, plugin.ctx)
 
 		// Clean up
-		plugin.Stop()
+		_ = plugin.Stop()
 	})
 }
 
@@ -251,7 +251,7 @@ func TestHandleEvent(t *testing.T) {
 		config := createTestConfig()
 		require.NoError(t, plugin.Init(config, eventBus))
 		require.NoError(t, plugin.Start())
-		defer plugin.Stop()
+		defer func() { _ = plugin.Stop() }()
 
 		// Send retry request
 		event := &framework.DataEvent{
@@ -280,7 +280,7 @@ func TestHandleEvent(t *testing.T) {
 		config := createTestConfig()
 		require.NoError(t, plugin.Init(config, eventBus))
 		require.NoError(t, plugin.Start())
-		defer plugin.Stop()
+		defer func() { _ = plugin.Stop() }()
 
 		// Send failure event
 		event := &framework.DataEvent{

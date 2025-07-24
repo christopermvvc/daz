@@ -306,7 +306,7 @@ func (p *Plugin) scheduleRetry(request *RetryRequest) error {
 	}
 
 	logger.Info("Retry", "Scheduled retry for %s (type: %s) after %v",
-		request.OperationID, request.OperationType, retryAfter.Sub(time.Now()))
+		request.OperationID, request.OperationType, time.Until(retryAfter))
 
 	return nil
 }
@@ -354,7 +354,11 @@ func (p *Plugin) pollQueue() {
 		metrics.DatabaseErrors.Inc()
 		return
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error("Retry", "Failed to close rows: %v", err)
+		}
+	}()
 
 	count := 0
 	for rows.Next() {
@@ -387,7 +391,7 @@ func (p *Plugin) pollQueue() {
 		// Unmarshal event data
 		if err := json.Unmarshal(eventDataJSON, &item.EventData); err != nil {
 			logger.Error("Retry", "Failed to unmarshal event data: %v", err)
-			p.markFailed(item.ID, fmt.Sprintf("invalid event data: %v", err))
+			_ = p.markFailed(item.ID, fmt.Sprintf("invalid event data: %v", err))
 			continue
 		}
 
@@ -484,7 +488,7 @@ func (p *Plugin) handleRetrySuccess(item RetryQueueItem, response *framework.Eve
 		UpdatedAt:     time.Now(),
 	}
 
-	p.eventBus.Broadcast("retry.success", &framework.EventData{
+	_ = p.eventBus.Broadcast("retry.success", &framework.EventData{
 		RetryStatus: statusData,
 	})
 
@@ -516,7 +520,7 @@ func (p *Plugin) handleRetryFailure(item RetryQueueItem, err error, duration tim
 			UpdatedAt:     time.Now(),
 		}
 
-		p.eventBus.Broadcast("retry.failed", &framework.EventData{
+		_ = p.eventBus.Broadcast("retry.failed", &framework.EventData{
 			RetryStatus: statusData,
 		})
 
@@ -711,6 +715,5 @@ func containsString(s, substr string) bool {
 
 func containsIgnoreCase(s, substr string) bool {
 	return len(s) >= len(substr) &&
-		(s[0:len(substr)] == substr ||
-			strings.ToLower(s[0:len(substr)]) == strings.ToLower(substr))
+		strings.EqualFold(s[0:len(substr)], substr)
 }
