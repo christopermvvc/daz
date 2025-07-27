@@ -36,6 +36,8 @@ CLAUDE.md
 *.pem
 *.cert
 *.crt
+sensitive-data-audit.md
+*-audit.md
 
 # Database files
 *.db
