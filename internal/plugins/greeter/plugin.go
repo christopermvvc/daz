@@ -94,7 +94,7 @@ func New() framework.Plugin {
 		greetingQueue:    make(chan *greetingRequest, greetingQueueSize),
 		readyChan:        make(chan struct{}),
 		lastGreeting:     make(map[string]*lastGreetingInfo),
-		skipProbability:  0.15 + rand.Float64()*0.2, // 15-35% skip rate
+		skipProbability:  0.4 + rand.Float64()*0.2, // 40-60% skip rate
 		channelJoinTimes: make(map[string]time.Time),
 		config: &Config{
 			CooldownMinutes:   30,
@@ -486,7 +486,7 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	}
 	logger.Debug(p.name, "Last greeting check passed for %s", username)
 
-	// Apply skip probability (15-35%) as final check
+	// Apply skip probability (40-60%) as final check
 	skipRoll := rand.Float64()
 	if skipRoll < p.skipProbability {
 		logger.Debug(p.name, "SKIP REASON: Random skip - roll=%.3f < probability=%.3f for user %s", skipRoll, p.skipProbability, username)
