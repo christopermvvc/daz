@@ -78,7 +78,7 @@ deploy_systemd() {
     
     # Copy files
     echo "Installing files..."
-    cp daz /opt/daz/
+    cp ./bin/daz /opt/daz/daz
     chmod +x /opt/daz/daz
     chown -R daz:daz /opt/daz
     
@@ -87,26 +87,32 @@ deploy_systemd() {
     cp "$SCRIPT_DIR/daz.service" /etc/systemd/system/
     systemctl daemon-reload
     
-    # Configure service
-    echo "Configuring service..."
-    read -p "Enter Cytube channel name: " CHANNEL
-    if [ -z "$CHANNEL" ]; then
-        echo "Error: Channel name is required"
-        exit 1
-    fi
-    
-    # Create override file
-    mkdir -p /etc/systemd/system/daz.service.d
-    cat > /etc/systemd/system/daz.service.d/override.conf <<EOF
+    # Check if service is already configured
+    if [ -f /etc/systemd/system/daz.service.d/override.conf ]; then
+        echo "Service already configured, restarting with new binary..."
+        systemctl restart daz.service
+    else
+        # Configure service for first time
+        echo "Configuring service..."
+        read -p "Enter Cytube channel name: " CHANNEL
+        if [ -z "$CHANNEL" ]; then
+            echo "Error: Channel name is required"
+            exit 1
+        fi
+        
+        # Create override file
+        mkdir -p /etc/systemd/system/daz.service.d
+        cat > /etc/systemd/system/daz.service.d/override.conf <<EOF
 [Service]
 ExecStart=
 ExecStart=/opt/daz/daz -channel=$CHANNEL
 EOF
-    
-    # Start service
-    echo "Starting service..."
-    systemctl enable daz.service
-    systemctl start daz.service
+        
+        # Start service
+        echo "Starting service..."
+        systemctl enable daz.service
+        systemctl start daz.service
+    fi
     
     # Check status
     systemctl status daz.service --no-pager
