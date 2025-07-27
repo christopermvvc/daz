@@ -1,0 +1,158 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/daz
+bin/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go vendor directory
+vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# IDE specific files
+.idea/
+*.swp
+*.swo
+*~
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Sensitive files
+CLAUDE.md
+.claude/
+*.key
+*.pem
+*.cert
+*.crt
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.sql.gz
+
+# Log files
+logs/
+*.log
+ping_pong_*.log
+websocket_*.log
+test_output.log
+
+# Environment files
+.env
+.env.*
+.env.local
+.env.production
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.cache
+tmp/
+temp/
+
+# Configuration files with secrets
+config.json
+config.json.backup
+config.local.json
+config.prod.json
+rooms.json
+secrets.json
+credentials.json
+admin_users.json
+
+# Session files
+*.session
+
+# Debug files
+debug
+debug.test
+*.pprof
+
+# Interface replacement summary (may contain implementation details)
+INTERFACE_REPLACEMENT_SUMMARY.md
+
+# Architectural documents (project-specific)
+daz-architecture-doc.md
+daz-architecture-doc-revisions.md
+
+# Archive files and folders
+daz-docs-archive/
+*.tar
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.zip
+*.rar
+*.7z
+
+# Temporary documentation
+PROGRESS.md
+TODO.md
+*_SUMMARY.md
+*_STATUS.md
+fixpm.md
+nextfix.md
+cytube_event_log.txt
+cytube-events-discovered.txt
+
+# Profiling and benchmark files
+*.prof
+*.mem
+*.cpu
+*.bench
+coverage.html
+coverage.txt
+
+# Process and runtime files
+*.pid
+*.sock
+*.socket
+*.lock
+
+# Patch and diff files
+*.patch
+*.diff
+*.orig
+*.rej
+
+# Additional test outputs
+*_test.log
+
+# Event discovery outputs
+*-discovered.txt
+*_discovered.txt
+
+# External repository clones and references
+dazza-repo/
+dazza-reference/
+*-repo/
+*-reference/
+
+# Documentation and fix tracking
+*_FIX.md
+CONNECTION_STATE_FIX.md
+COMMAND_PROCESSING_FIX.md

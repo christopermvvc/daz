@@ -1,0 +1,588 @@
+package analytics
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/pkg/eventbus"
+)
+
+// mockEventBus implements framework.EventBus for testing
+type mockEventBus struct {
+	subscribers    map[string][]framework.EventHandler
+	execCalls      []string
+	queryCalls     []string
+	sendCalls      []sendCall
+	broadcastCalls []broadcastCall
+	mu             sync.Mutex
+
+	// Control query responses
+	queryResponses map[string]*mockQueryResult
+}
+
+type sendCall struct {
+	target    string
+	eventType string
+	data      *framework.EventData
+}
+
+type broadcastCall struct {
+	eventType string
+	data      *framework.EventData
+}
+
+func newMockEventBus() *mockEventBus {
+	return &mockEventBus{
+		subscribers:    make(map[string][]framework.EventHandler),
+		execCalls:      []string{},
+		queryCalls:     []string{},
+		sendCalls:      []sendCall{},
+		broadcastCalls: []broadcastCall{},
+		queryResponses: make(map[string]*mockQueryResult),
+	}
+}
+
+func (m *mockEventBus) Broadcast(eventType string, data *framework.EventData) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.broadcastCalls = append(m.broadcastCalls, broadcastCall{eventType, data})
+	return nil
+}
+
+func (m *mockEventBus) Send(target string, eventType string, data *framework.EventData) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sendCalls = append(m.sendCalls, sendCall{target, eventType, data})
+	return nil
+}
+
+func (m *mockEventBus) Query(sql string, params ...framework.SQLParam) (framework.QueryResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.queryCalls = append(m.queryCalls, sql)
+
+	// Check for predefined responses
+	for key, result := range m.queryResponses {
+		if len(sql) >= len(key) && sql[:len(key)] == key {
+			return result, nil
+		}
+	}
+
+	return &mockQueryResult{}, nil
+}
+
+func (m *mockEventBus) Exec(sql string, params ...framework.SQLParam) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.execCalls = append(m.execCalls, sql)
+	return nil
+}
+
+func (m *mockEventBus) Subscribe(eventType string, handler framework.EventHandler) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.subscribers[eventType] = append(m.subscribers[eventType], handler)
+	return nil
+}
+
+func (m *mockEventBus) SubscribeWithTags(pattern string, handler framework.EventHandler, tags []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.subscribers[pattern] = append(m.subscribers[pattern], handler)
+	return nil
+}
+
+func (m *mockEventBus) SetSQLHandlers(queryHandler, execHandler framework.EventHandler) {
+	// No-op for tests
+}
+
+func (m *mockEventBus) GetDroppedEventCounts() map[string]int64 {
+	return make(map[string]int64)
+}
+
+func (m *mockEventBus) GetDroppedEventCount(eventType string) int64 {
+	return 0
+}
+
+func (m *mockEventBus) QuerySync(ctx context.Context, sql string, params ...framework.SQLParam) (*sql.Rows, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.queryCalls = append(m.queryCalls, sql)
+
+	// QuerySync is not used in current tests, return nil
+	// If needed in future tests, a proper mock implementation would be required
+	return nil, nil
+}
+
+func (m *mockEventBus) ExecSync(ctx context.Context, sql string, params ...framework.SQLParam) (sql.Result, error) {
+	m.mu.Lock()
+	m.execCalls = append(m.execCalls, sql)
+	m.mu.Unlock()
+	return &mockSQLResult{}, nil
+}
+
+func (m *mockEventBus) BroadcastWithMetadata(eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
+	return m.Broadcast(eventType, data)
+}
+
+func (m *mockEventBus) SendWithMetadata(target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
+	return m.Send(target, eventType, data)
+}
+
+func (m *mockEventBus) Request(ctx context.Context, target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) (*framework.EventData, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Handle SQL exec requests
+	if eventType == "sql.exec.request" && data != nil && data.SQLExecRequest != nil {
+		m.execCalls = append(m.execCalls, data.SQLExecRequest.Query)
+		return &framework.EventData{
+			SQLExecResponse: &framework.SQLExecResponse{
+				Success:      true,
+				RowsAffected: 1,
+			},
+		}, nil
+	}
+
+	// Handle SQL query requests
+	if eventType == "sql.query.request" && data != nil && data.SQLQueryRequest != nil {
+		m.queryCalls = append(m.queryCalls, data.SQLQueryRequest.Query)
+
+		// Check for predefined responses
+		for key, result := range m.queryResponses {
+			if len(data.SQLQueryRequest.Query) >= len(key) && data.SQLQueryRequest.Query[:len(key)] == key {
+				// Convert mock result to SQL response format
+				var rows [][]json.RawMessage
+				for _, row := range result.rows {
+					var jsonRow []json.RawMessage
+					for _, val := range row {
+						jsonBytes, _ := json.Marshal(val)
+						jsonRow = append(jsonRow, json.RawMessage(jsonBytes))
+					}
+					rows = append(rows, jsonRow)
+				}
+
+				return &framework.EventData{
+					SQLQueryResponse: &framework.SQLQueryResponse{
+						Success: true,
+						Columns: []string{"col1", "col2", "col3"}, // Generic columns
+						Rows:    rows,
+					},
+				}, nil
+			}
+		}
+
+		// Return empty result if no predefined response
+		return &framework.EventData{
+			SQLQueryResponse: &framework.SQLQueryResponse{
+				Success: true,
+				Columns: []string{},
+				Rows:    [][]json.RawMessage{},
+			},
+		}, nil
+	}
+
+	return nil, fmt.Errorf("request type %s not supported in mock", eventType)
+}
+
+func (m *mockEventBus) DeliverResponse(correlationID string, response *framework.EventData, err error) {
+	// Mock implementation - can be empty
+}
+
+func (m *mockEventBus) RegisterPlugin(name string, plugin framework.Plugin) error {
+	return nil
+}
+
+func (m *mockEventBus) UnregisterPlugin(name string) error {
+	return nil
+}
+
+func (m *mockEventBus) HandleEvent(ctx context.Context, event framework.Event) error {
+	return nil
+}
+
+// mockQueryResult implements framework.QueryResult
+type mockQueryResult struct {
+	rows     [][]interface{}
+	rowIndex int
+	closed   bool
+}
+
+func (m *mockQueryResult) Next() bool {
+	if m.closed || m.rowIndex >= len(m.rows) {
+		return false
+	}
+	m.rowIndex++
+	return m.rowIndex <= len(m.rows)
+}
+
+func (m *mockQueryResult) Scan(dest ...interface{}) error {
+	if m.rowIndex == 0 || m.rowIndex > len(m.rows) {
+		return errors.New("no current row")
+	}
+	row := m.rows[m.rowIndex-1]
+	for i, d := range dest {
+		if i >= len(row) {
+			return errors.New("column index out of range")
+		}
+		switch v := d.(type) {
+		case *string:
+			if row[i] != nil {
+				*v = row[i].(string)
+			}
+		case *int:
+			if row[i] != nil {
+				*v = row[i].(int)
+			}
+		case *int64:
+			if row[i] != nil {
+				*v = row[i].(int64)
+			}
+		case *time.Time:
+			if row[i] != nil {
+				*v = row[i].(time.Time)
+			}
+		}
+	}
+	return nil
+}
+
+func (m *mockQueryResult) Close() error {
+	m.closed = true
+	return nil
+}
+
+// mockSQLResult implements sql.Result
+type mockSQLResult struct{}
+
+func (m *mockSQLResult) LastInsertId() (int64, error) {
+	return 0, nil
+}
+
+func (m *mockSQLResult) RowsAffected() (int64, error) {
+	return 1, nil
+}
+
+func TestNewPlugin(t *testing.T) {
+	// Test with nil config
+	p := NewPlugin(nil)
+	if p.name != "analytics" {
+		t.Errorf("Expected plugin name to be 'analytics', got '%s'", p.name)
+	}
+	if p.config.HourlyInterval != 1*time.Hour {
+		t.Errorf("Expected default hourly interval to be 1 hour, got %v", p.config.HourlyInterval)
+	}
+	if p.config.DailyInterval != 24*time.Hour {
+		t.Errorf("Expected default daily interval to be 24 hours, got %v", p.config.DailyInterval)
+	}
+
+	// Test with custom config
+	config := &Config{
+		HourlyInterval: 30 * time.Minute,
+		DailyInterval:  12 * time.Hour,
+	}
+	p = NewPlugin(config)
+	if p.config.HourlyInterval != 30*time.Minute {
+		t.Errorf("Expected custom hourly interval to be 30 minutes, got %v", p.config.HourlyInterval)
+	}
+}
+
+func TestPluginInitialize(t *testing.T) {
+	p := NewPlugin(nil)
+	bus := newMockEventBus()
+
+	err := p.Initialize(bus)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Table creation is now deferred to Start(), not Init()
+	// So we should not expect it here
+
+	// Check that context was created
+	if p.ctx == nil {
+		t.Error("Expected context to be created")
+	}
+	if p.cancel == nil {
+		t.Error("Expected cancel function to be created")
+	}
+}
+
+func TestPluginStart(t *testing.T) {
+	p := NewPlugin(&Config{
+		HourlyInterval: 1 * time.Hour,
+		DailyInterval:  24 * time.Hour,
+	})
+	bus := newMockEventBus()
+
+	// Initialize first
+	err := p.Initialize(bus)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Start the plugin
+	err = p.Start()
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Wait for async table creation to complete
+	time.Sleep(3 * time.Second)
+
+	// Check that tables were created asynchronously
+	// Expected: 5 exec calls (3 CREATE TABLE + 2 ALTER TABLE for missing columns)
+	expectedExecCalls := 5
+	bus.mu.Lock()
+	actualExecCalls := len(bus.execCalls)
+	bus.mu.Unlock()
+	if actualExecCalls != expectedExecCalls {
+		t.Errorf("Expected %d exec calls after async table creation (3 CREATE + 2 ALTER), got %d", expectedExecCalls, actualExecCalls)
+	}
+
+	// Check that it subscribed to the right events
+	expectedSubscriptions := []string{
+		eventbus.EventCytubeChatMsg,
+		"plugin.analytics.stats",
+	}
+
+	for _, eventType := range expectedSubscriptions {
+		if _, ok := bus.subscribers[eventType]; !ok {
+			t.Errorf("Expected subscription to '%s' event", eventType)
+		}
+	}
+
+	// Check that it's marked as running
+	if !p.running {
+		t.Error("Expected plugin to be marked as running")
+	}
+
+	// Try starting again - should fail
+	err = p.Start()
+	if err == nil {
+		t.Error("Expected error when starting already running plugin")
+	}
+
+	// Stop the plugin
+	err = p.Stop()
+	if err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+}
+
+func TestHandleChatMessage(t *testing.T) {
+	p := NewPlugin(nil)
+	bus := newMockEventBus()
+
+	err := p.Initialize(bus)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Clear initial exec calls from table creation
+	bus.execCalls = []string{}
+
+	// Create a chat message event
+	chatData := &framework.ChatMessageData{
+		Username: "testuser",
+		Message:  "Hello world",
+		UserRank: 1,
+		Channel:  "test-channel",
+	}
+
+	event := &framework.DataEvent{
+		EventType: eventbus.EventCytubeChatMsg,
+		Data: &framework.EventData{
+			ChatMessage: chatData,
+		},
+	}
+
+	// Handle the event
+	err = p.handleChatMessage(event)
+	if err != nil {
+		t.Fatalf("handleChatMessage failed: %v", err)
+	}
+
+	// Check that message count increased
+	if p.messagesCount != 1 {
+		t.Errorf("Expected message count to be 1, got %d", p.messagesCount)
+	}
+
+	// Check that user was marked active
+	if !p.usersActive["testuser"] {
+		t.Error("Expected testuser to be marked active")
+	}
+
+	// Check that SQL was executed
+	if len(bus.execCalls) != 1 {
+		t.Errorf("Expected 1 SQL exec call, got %d", len(bus.execCalls))
+	}
+}
+
+func TestHandleStatsRequest(t *testing.T) {
+	p := NewPlugin(nil)
+	bus := newMockEventBus()
+
+	// Set up mock query responses
+	bus.queryResponses["SELECT message_count"] = &mockQueryResult{
+		rows: [][]interface{}{
+			{int64(100), int64(10), int64(5)},
+		},
+	}
+	bus.queryResponses["SELECT total_messages"] = &mockQueryResult{
+		rows: [][]interface{}{
+			{int64(1000), int64(50), int64(20)},
+		},
+	}
+	bus.queryResponses["SELECT username"] = &mockQueryResult{
+		rows: [][]interface{}{
+			{"user1", int64(500)},
+			{"user2", int64(300)},
+			{"user3", int64(200)},
+		},
+	}
+
+	err := p.Initialize(bus)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Create stats request event
+	event := &framework.DataEvent{
+		EventType: "plugin.analytics.stats",
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Channel: "test-channel",
+			},
+		},
+	}
+
+	err = p.handleStatsRequest(event)
+	if err != nil {
+		t.Fatalf("handleStatsRequest failed: %v", err)
+	}
+
+	// Check that queries were made
+	if len(bus.queryCalls) < 3 {
+		t.Errorf("Expected at least 3 query calls, got %d", len(bus.queryCalls))
+	}
+
+	// Check that response was broadcast
+	if len(bus.broadcastCalls) != 1 {
+		t.Fatal("Expected one broadcast call")
+	}
+	if bus.broadcastCalls[0].eventType != "plugin.response" {
+		t.Errorf("Expected broadcast to 'plugin.response', got '%s'", bus.broadcastCalls[0].eventType)
+	}
+
+	// Check that the response contains the expected data
+	if bus.broadcastCalls[0].data.PluginResponse == nil {
+		t.Fatal("Expected PluginResponse in broadcast data")
+	}
+	if bus.broadcastCalls[0].data.PluginResponse.From != "analytics" {
+		t.Errorf("Expected response from 'analytics', got '%s'", bus.broadcastCalls[0].data.PluginResponse.From)
+	}
+	if !bus.broadcastCalls[0].data.PluginResponse.Success {
+		t.Error("Expected successful response")
+	}
+}
+
+func TestPluginStop(t *testing.T) {
+	p := NewPlugin(&Config{
+		HourlyInterval: 100 * time.Millisecond, // Short intervals for testing
+		DailyInterval:  200 * time.Millisecond,
+	})
+	bus := newMockEventBus()
+
+	// Initialize and start
+	err := p.Initialize(bus)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	err = p.Start()
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Wait for goroutines to start using a channel
+	routinesStarted := make(chan struct{})
+	go func() {
+		timer := time.NewTimer(50 * time.Millisecond)
+		defer timer.Stop()
+		<-timer.C
+		close(routinesStarted)
+	}()
+	<-routinesStarted
+
+	// Stop the plugin
+	err = p.Stop()
+	if err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+
+	// Check that it's no longer running
+	if p.running {
+		t.Error("Expected plugin to be marked as not running")
+	}
+
+	// Stop again - should not error
+	err = p.Stop()
+	if err != nil {
+		t.Error("Expected no error when stopping already stopped plugin")
+	}
+}
+
+func TestDoHourlyAggregation(t *testing.T) {
+	p := NewPlugin(nil)
+	bus := newMockEventBus()
+
+	// Set up mock query responses
+	bus.queryResponses["SELECT COUNT(*)"] = &mockQueryResult{
+		rows: [][]interface{}{
+			{int64(150)}, // Message count
+		},
+	}
+	bus.queryResponses["SELECT COUNT(DISTINCT username)"] = &mockQueryResult{
+		rows: [][]interface{}{
+			{15}, // Unique users
+		},
+	}
+
+	err := p.Initialize(bus)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Clear initial calls
+	bus.queryCalls = []string{}
+	bus.execCalls = []string{}
+
+	// Run aggregation
+	p.doHourlyAggregation()
+
+	// With hardcoded channels, we should see queries for each channel's data
+	// We expect at least 3 queries per channel (messages, unique users, media plays)
+	expectedMinQueries := 3 * 3 // 3 queries per channel, 3 channels
+	if len(bus.queryCalls) < expectedMinQueries {
+		t.Errorf("Expected at least %d query calls for channel data, got %d", expectedMinQueries, len(bus.queryCalls))
+	}
+}
+
+func TestHandleEvent(t *testing.T) {
+	p := NewPlugin(nil)
+	event := &framework.DataEvent{}
+
+	// HandleEvent should always return nil as this plugin uses specific subscriptions
+	err := p.HandleEvent(event)
+	if err != nil {
+		t.Errorf("Expected HandleEvent to return nil, got %v", err)
+	}
+}

@@ -1,0 +1,45 @@
+# Greetings configuration file
+# Format: category: greeting template
+# Available placeholders: <user>
+# Categories: morning, afternoon, evening, night, first, general, first-morning, first-afternoon, first-evening, first-night
+
+# General greetings (used as fallback)
+general: Hello <user>!
+general: Hey there, <user>!
+general: Welcome, <user>!
+general: Hi <user>!
+
+# Time-based greetings
+morning: Good morning, <user>!
+morning: Morning <user>! Hope you're having a great start to your day!
+morning: Rise and shine, <user>!
+
+afternoon: Good afternoon, <user>!
+afternoon: Hey <user>, hope your afternoon is going well!
+afternoon: Afternoon, <user>!
+
+evening: Good evening, <user>!
+evening: Evening <user>! Hope you had a good day!
+evening: Hey <user>, nice to see you this evening!
+
+night: Good night, <user>!
+night: Hey <user>, burning the midnight oil?
+night: Late night greetings, <user>!
+
+# First-time user greetings
+first: Welcome <user>! Great to have you here!
+first: Hello <user>, welcome to the channel!
+first: Hey <user>! Nice to meet you!
+
+# First-time user time-based greetings
+first-morning: Good morning <user>, and welcome to the channel!
+first-morning: Morning <user>! Welcome aboard!
+
+first-afternoon: Good afternoon <user>, welcome to our community!
+first-afternoon: Hey <user>, welcome! Hope you're having a great afternoon!
+
+first-evening: Good evening <user>, and welcome!
+first-evening: Evening <user>! Welcome to the channel!
+
+first-night: Welcome <user>! Great to have you joining us tonight!
+first-night: Hey <user>, welcome to the late night crew!
