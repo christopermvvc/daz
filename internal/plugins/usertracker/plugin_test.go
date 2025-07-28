@@ -658,6 +658,156 @@ func TestUserListMetadata(t *testing.T) {
 	})
 }
 
+func TestConcurrentUserJoins(t *testing.T) {
+	// Create plugin instance
+	plugin := &Plugin{
+		name:               "usertracker",
+		users:              make(map[string]*UserState),
+		processingUserlist: make(map[string]bool),
+		config: &Config{
+			InactivityTimeout: 30 * time.Minute,
+		},
+	}
+
+	// Create mock event bus
+	bus := &MockEventBus{
+		broadcasts: []mockEvent{},
+		sends:      []mockEvent{},
+		queries:    []mockQuery{},
+		execs:      []mockExec{},
+		subs:       make(map[string][]framework.EventHandler),
+	}
+	
+	plugin.eventBus = bus
+	plugin.sqlClient = framework.NewSQLClient(bus, "usertracker")
+	plugin.ctx, plugin.cancel = context.WithCancel(context.Background())
+	defer plugin.cancel()
+
+	// Test concurrent regular joins
+	t.Run("ConcurrentRegularJoins", func(t *testing.T) {
+		var wg sync.WaitGroup
+		joinCount := 10
+		
+		// Clear previous state
+		plugin.mu.Lock()
+		plugin.users = make(map[string]*UserState)
+		plugin.mu.Unlock()
+		
+		// Launch concurrent joins
+		for i := 0; i < joinCount; i++ {
+			wg.Add(1)
+			go func(userNum int) {
+				defer wg.Done()
+				username := fmt.Sprintf("user%d", userNum)
+				event := &framework.AddUserEvent{
+					CytubeEvent: framework.CytubeEvent{
+						EventType:   "addUser",
+						EventTime:   time.Now(),
+						ChannelName: "test-channel",
+						Metadata:    map[string]string{},
+					},
+					Username: username,
+					UserRank: userNum % 4, // Vary ranks
+				}
+				
+				err := plugin.handleUserJoin(event)
+				if err != nil {
+					t.Errorf("Failed to handle join for %s: %v", username, err)
+				}
+			}(i)
+		}
+		
+		wg.Wait()
+		
+		// Verify all users were added
+		plugin.mu.RLock()
+		userCount := len(plugin.users)
+		plugin.mu.RUnlock()
+		
+		if userCount != joinCount {
+			t.Errorf("Expected %d users, got %d", joinCount, userCount)
+		}
+	})
+
+	// Test concurrent userlist processing
+	t.Run("ConcurrentUserlistJoins", func(t *testing.T) {
+		// Start userlist processing
+		plugin.userlistMutex.Lock()
+		plugin.processingUserlist["test-channel"] = true
+		plugin.userlistMutex.Unlock()
+		
+		// Clear users
+		plugin.mu.Lock()
+		plugin.users = make(map[string]*UserState)
+		plugin.mu.Unlock()
+		
+		var wg sync.WaitGroup
+		joinCount := 20
+		
+		// Launch concurrent userlist joins
+		for i := 0; i < joinCount; i++ {
+			wg.Add(1)
+			go func(userNum int) {
+				defer wg.Done()
+				plugin.handleUserlistJoin(
+					"test-channel",
+					fmt.Sprintf("listuser%d", userNum),
+					userNum % 4,
+					time.Now().UTC(),
+				)
+			}(i)
+		}
+		
+		wg.Wait()
+		
+		// Verify no race conditions occurred
+		plugin.mu.RLock()
+		userCount := len(plugin.users)
+		plugin.mu.RUnlock()
+		
+		if userCount != joinCount {
+			t.Errorf("Expected %d users from userlist, got %d", joinCount, userCount)
+		}
+	})
+
+	// Test concurrent stored function creation attempts
+	t.Run("ConcurrentStoredFunctionCreation", func(t *testing.T) {
+		// Reset stored function state
+		plugin.storedFunctionMutex.Lock()
+		plugin.storedFunctionAvailable = false
+		plugin.storedFunctionRetries = 0
+		plugin.storedFunctionMutex.Unlock()
+		
+		var wg sync.WaitGroup
+		attemptCount := 5
+		
+		// Launch concurrent attempts
+		for i := 0; i < attemptCount; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				plugin.handleUserlistJoin(
+					"test-channel",
+					"testuser",
+					1,
+					time.Now().UTC(),
+				)
+			}()
+		}
+		
+		wg.Wait()
+		
+		// Verify retry limit was respected
+		plugin.storedFunctionMutex.RLock()
+		retries := plugin.storedFunctionRetries
+		plugin.storedFunctionMutex.RUnlock()
+		
+		if retries > 3 {
+			t.Errorf("Expected max 3 retries, got %d", retries)
+		}
+	})
+}
+
 func TestDatabaseMaintenance(t *testing.T) {
 	// Create plugin instance
 	plugin := &Plugin{

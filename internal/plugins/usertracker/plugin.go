@@ -42,7 +42,10 @@ type Plugin struct {
 	
 	// Database state
 	storedFunctionAvailable bool
+	storedFunctionRetries   int
 	storedFunctionMutex     sync.RWMutex
+	migrationChecked        bool
+	migrationComplete       bool
 }
 
 // Config holds usertracker plugin configuration
@@ -379,7 +382,12 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	p.recordJoinHistory(channel, username, userRank, now, processingUserlist)
 
 	logger.Info("UserTracker", "User joined: %s (rank %d)", username, userRank)
+	
+	// Safely increment event counter
+	p.storedFunctionMutex.Lock()
 	p.status.EventsHandled++
+	p.storedFunctionMutex.Unlock()
+	
 	return nil
 }
 
@@ -423,17 +431,36 @@ func (p *Plugin) updateInMemoryUser(username string, userRank int, now time.Time
 
 // handleUserlistJoin handles user join during userlist processing
 func (p *Plugin) handleUserlistJoin(channel, username string, userRank int, now time.Time) {
+	// Update in-memory state
+	p.updateInMemoryUser(username, userRank, now)
+
 	// Check if stored function is available
 	p.storedFunctionMutex.RLock()
 	functionAvailable := p.storedFunctionAvailable
 	p.storedFunctionMutex.RUnlock()
 
 	// Try to create function if not available (might have failed during startup)
+	// Limit retries to avoid spam
+	const maxRetries = 3
 	if !functionAvailable {
-		if err := p.createStoredFunction(); err == nil {
-			functionAvailable = true
+		p.storedFunctionMutex.Lock()
+		// Check retry count under lock
+		if !p.storedFunctionAvailable && p.storedFunctionRetries < maxRetries {
+			p.storedFunctionRetries++
+			retryCount := p.storedFunctionRetries
+			p.storedFunctionMutex.Unlock()
+			
+			if err := p.createStoredFunction(); err == nil {
+				functionAvailable = true
+			} else {
+				if retryCount >= maxRetries {
+					logger.Error("UserTracker", "Failed to create stored function after %d attempts, giving up: %v", maxRetries, err)
+				} else {
+					logger.Debug("UserTracker", "Retry %d/%d: Still unable to create stored function: %v", retryCount, maxRetries, err)
+				}
+			}
 		} else {
-			logger.Debug("UserTracker", "Still unable to create stored function: %v", err)
+			p.storedFunctionMutex.Unlock()
 		}
 	}
 
@@ -990,6 +1017,14 @@ $$ LANGUAGE plpgsql;`
 
 // migrateToUTC migrates existing timestamps to UTC
 func (p *Plugin) migrateToUTC() error {
+	// Check cached status first
+	p.storedFunctionMutex.RLock()
+	if p.migrationChecked && p.migrationComplete {
+		p.storedFunctionMutex.RUnlock()
+		return nil
+	}
+	p.storedFunctionMutex.RUnlock()
+
 	// Check if we've already migrated by looking for a migration marker
 	checkMigrationSQL := `
 		SELECT COUNT(*) 
@@ -1015,6 +1050,12 @@ func (p *Plugin) migrateToUTC() error {
 			return fmt.Errorf("failed to scan migration status: %w", err)
 		}
 	}
+
+	// Cache the result
+	p.storedFunctionMutex.Lock()
+	p.migrationChecked = true
+	p.migrationComplete = migrationDone > 0
+	p.storedFunctionMutex.Unlock()
 
 	// Already migrated
 	if migrationDone > 0 {
@@ -1113,6 +1154,11 @@ func (p *Plugin) migrateToUTC() error {
 		}
 
 		logger.Info("UserTracker", "Successfully migrated timestamps to UTC")
+		
+		// Update cache to mark migration complete
+		p.storedFunctionMutex.Lock()
+		p.migrationComplete = true
+		p.storedFunctionMutex.Unlock()
 	} else {
 		logger.Debug("UserTracker", "No UTC migration needed")
 	}
