@@ -389,7 +389,44 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 
 	// If we're processing a userlist, update the existing session instead of creating a new one
 	if processingUserlist {
-		// Update existing session or insert if not exists
+		// First try to reactivate the most recent inactive session
+		// Note: We look for the most recent session by joined_at, not by whether it has left_at
+		updateSQL := `
+			UPDATE daz_user_tracker_sessions 
+			SET is_active = TRUE, 
+			    left_at = NULL,
+			    last_activity = $1,
+			    rank = $2
+			WHERE id = (
+			    SELECT id FROM daz_user_tracker_sessions
+			    WHERE channel = $3 
+			      AND username = $4
+			      AND is_active = FALSE
+			    ORDER BY joined_at DESC
+			    LIMIT 1
+			)
+			RETURNING id
+		`
+		
+		// Use a query to check if update affected any rows
+		ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+		defer cancel()
+		
+		sqlHelper := framework.NewSQLRequestHelper(p.eventBus, p.name)
+		rows, err := sqlHelper.FastQuery(ctx, updateSQL, now, userRank, channel, username)
+		if err != nil {
+			logger.Error("UserTracker", "Error checking for existing session: %v", err)
+		} else {
+			defer rows.Close()
+			
+			// If we updated an existing session, we're done
+			if rows.Next() {
+				logger.Debug("UserTracker", "Reactivated existing session for %s", username)
+				return nil
+			}
+		}
+		
+		// No existing session found, create a new one
 		sessionSQL := `
 			INSERT INTO daz_user_tracker_sessions 
 				(channel, username, rank, joined_at, last_activity, is_active)
@@ -401,14 +438,14 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 				is_active = TRUE,
 				left_at = NULL
 		`
-		err := p.sqlClient.Exec(sessionSQL,
+		err = p.sqlClient.Exec(sessionSQL,
 			channel,
 			username,
 			userRank,
 			now,
 			now)
 		if err != nil {
-			logger.Error("UserTracker", "Error updating user during userlist: %v", err)
+			logger.Error("UserTracker", "Error creating new session during userlist: %v", err)
 		}
 	} else {
 		// Regular user join - first mark all existing active sessions as inactive
@@ -488,25 +525,25 @@ func (p *Plugin) handleUserListStart(event framework.Event) error {
 
 	logger.Info("UserTracker", "Starting userlist processing for channel %s with %s users", channel, userCount)
 
-	// Mark all existing users for this channel as inactive
+	// Mark all existing users as inactive but preserve their join times
 	// They will be reactivated if they appear in the userlist
-	// Use SKIP LOCKED to avoid deadlocks with concurrent operations
+	// This prevents duplicate greetings while preserving session history
 	deactivateSQL := `
 		UPDATE daz_user_tracker_sessions 
-		SET is_active = FALSE, left_at = $1
+		SET is_active = FALSE
 		WHERE id IN (
 			SELECT id 
 			FROM daz_user_tracker_sessions 
-			WHERE channel = $2 AND is_active = TRUE
+			WHERE channel = $1 AND is_active = TRUE
 			FOR UPDATE SKIP LOCKED
 		)
 	`
-	err := p.sqlClient.Exec(deactivateSQL, time.Now(), channel)
+	err := p.sqlClient.Exec(deactivateSQL, channel)
 	if err != nil {
 		logger.Error("UserTracker", "Error deactivating users before userlist: %v", err)
 	}
 
-	// Clear in-memory cache
+	// Clear in-memory cache - we'll rebuild it from the userlist
 	p.mu.Lock()
 	p.users = make(map[string]*UserState)
 	p.mu.Unlock()
