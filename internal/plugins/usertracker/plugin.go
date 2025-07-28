@@ -5,11 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/hildolfr/daz/internal/logger"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/logger"
 	"github.com/hildolfr/daz/pkg/eventbus"
 )
 
@@ -389,74 +390,41 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 
 	// If we're processing a userlist, update the existing session instead of creating a new one
 	if processingUserlist {
-		// First try to reactivate the most recent inactive session
-		// Note: We look for the most recent session by joined_at, not by whether it has left_at
-		updateSQL := `
-			UPDATE daz_user_tracker_sessions 
-			SET is_active = TRUE, 
-			    left_at = NULL,
-			    last_activity = $1,
-			    rank = $2
-			WHERE id = (
-			    SELECT id FROM daz_user_tracker_sessions
-			    WHERE channel = $3 
-			      AND username = $4
-			      AND is_active = FALSE
-			    ORDER BY joined_at DESC
-			    LIMIT 1
-			)
-			RETURNING id
+		// Use atomic upsert to handle session reactivation or creation
+		// This prevents race conditions between checking and creating sessions
+		upsertSQL := `
+			SELECT session_id, was_reactivated 
+			FROM upsert_user_session($1, $2, $3, $4)
 		`
 		
-		// Use a query to check if update affected any rows
 		ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 		defer cancel()
 		
 		sqlHelper := framework.NewSQLRequestHelper(p.eventBus, p.name)
-		rows, err := sqlHelper.FastQuery(ctx, updateSQL, now, userRank, channel, username)
+		rows, err := sqlHelper.FastQuery(ctx, upsertSQL, channel, username, userRank, now)
 		if err != nil {
-			logger.Error("UserTracker", "Error checking for existing session: %v", err)
-		} else {
-			defer rows.Close()
-			
-			// If we updated an existing session, we're done
-			if rows.Next() {
-				logger.Debug("UserTracker", "Reactivated existing session for %s", username)
-				return nil
+			// Fallback to non-atomic approach if function doesn't exist
+			if strings.Contains(err.Error(), "upsert_user_session") || strings.Contains(err.Error(), "does not exist") {
+				logger.Debug("UserTracker", "Stored function not available, using fallback approach")
+				p.handleUserJoinFallback(channel, username, userRank, now)
+			} else {
+				logger.Error("UserTracker", "Error upserting user session: %v", err)
 			}
+			return nil
 		}
+		defer rows.Close()
 		
-		// No existing session found, create a new one
-		// First check if there's somehow still an active session we missed
-		deactivateSQL := `
-			UPDATE daz_user_tracker_sessions 
-			SET is_active = FALSE
-			WHERE channel = $1 AND username = $2 AND is_active = TRUE
-		`
-		err = p.sqlClient.Exec(deactivateSQL, channel, username)
-		if err != nil {
-			logger.Error("UserTracker", "Error deactivating stale sessions: %v", err)
-		}
-		
-		sessionSQL := `
-			INSERT INTO daz_user_tracker_sessions 
-				(channel, username, rank, joined_at, last_activity, is_active)
-			VALUES ($1, $2, $3, $4, $5, TRUE)
-			ON CONFLICT (channel, username, joined_at) 
-			DO UPDATE SET 
-				rank = EXCLUDED.rank,
-				last_activity = EXCLUDED.last_activity,
-				is_active = TRUE,
-				left_at = NULL
-		`
-		err = p.sqlClient.Exec(sessionSQL,
-			channel,
-			username,
-			userRank,
-			now,
-			now)
-		if err != nil {
-			logger.Error("UserTracker", "Error creating new session during userlist: %v", err)
+		// Log whether we reactivated or created a new session
+		if rows.Next() {
+			var sessionID int
+			var wasReactivated bool
+			if err := rows.Scan(&sessionID, &wasReactivated); err == nil {
+				if wasReactivated {
+					logger.Debug("UserTracker", "Reactivated existing session for %s (ID: %d)", username, sessionID)
+				} else {
+					logger.Debug("UserTracker", "Created new session for %s (ID: %d)", username, sessionID)
+				}
+			}
 		}
 	} else {
 		// Regular user join - first mark all existing active sessions as inactive
@@ -858,5 +826,76 @@ func formatDuration(d time.Duration) string {
 	} else {
 		days := int(d.Hours()) / 24
 		return fmt.Sprintf("%d days", days)
+	}
+}
+
+// handleUserJoinFallback is the non-atomic fallback approach when stored function is not available
+func (p *Plugin) handleUserJoinFallback(channel, username string, userRank int, now time.Time) {
+	// First try to reactivate the most recent inactive session
+	updateSQL := `
+		UPDATE daz_user_tracker_sessions 
+		SET is_active = TRUE, 
+		    left_at = NULL,
+		    last_activity = $1,
+		    rank = $2
+		WHERE id = (
+		    SELECT id FROM daz_user_tracker_sessions
+		    WHERE channel = $3 
+		      AND username = $4
+		      AND is_active = FALSE
+		    ORDER BY joined_at DESC
+		    LIMIT 1
+		)
+		RETURNING id
+	`
+	
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+	
+	sqlHelper := framework.NewSQLRequestHelper(p.eventBus, p.name)
+	rows, err := sqlHelper.FastQuery(ctx, updateSQL, now, userRank, channel, username)
+	if err != nil {
+		logger.Error("UserTracker", "Error checking for existing session: %v", err)
+	} else {
+		defer rows.Close()
+		
+		// If we updated an existing session, we're done
+		if rows.Next() {
+			logger.Debug("UserTracker", "Reactivated existing session for %s", username)
+			return
+		}
+	}
+	
+	// No existing session found, create a new one
+	// First check if there's somehow still an active session we missed
+	deactivateSQL := `
+		UPDATE daz_user_tracker_sessions 
+		SET is_active = FALSE
+		WHERE channel = $1 AND username = $2 AND is_active = TRUE
+	`
+	err = p.sqlClient.Exec(deactivateSQL, channel, username)
+	if err != nil {
+		logger.Error("UserTracker", "Error deactivating stale sessions: %v", err)
+	}
+	
+	sessionSQL := `
+		INSERT INTO daz_user_tracker_sessions 
+			(channel, username, rank, joined_at, last_activity, is_active)
+		VALUES ($1, $2, $3, $4, $5, TRUE)
+		ON CONFLICT (channel, username, joined_at) 
+		DO UPDATE SET 
+			rank = EXCLUDED.rank,
+			last_activity = EXCLUDED.last_activity,
+			is_active = TRUE,
+			left_at = NULL
+	`
+	err = p.sqlClient.Exec(sessionSQL,
+		channel,
+		username,
+		userRank,
+		now,
+		now)
+	if err != nil {
+		logger.Error("UserTracker", "Error creating new session during userlist: %v", err)
 	}
 }
