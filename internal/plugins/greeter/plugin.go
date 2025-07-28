@@ -990,8 +990,8 @@ func (p *Plugin) getFortune() (string, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, 1*time.Second)
 	defer cancel()
 
-	// Execute fortune command with -aos flags
-	cmd := exec.CommandContext(ctx, "fortune", "-aos")
+	// Execute fortune command with specific categories
+	cmd := exec.CommandContext(ctx, "fortune", "-so", "platitudes", "tao", "wisdom", "startrek")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to execute fortune: %w", err)
