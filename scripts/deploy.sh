@@ -76,51 +76,83 @@ deploy_systemd() {
         useradd -r -s /bin/false -d /opt/daz daz
     fi
     
-    # Copy files
-    echo "Installing files..."
-    cp ./bin/daz /opt/daz/daz
-    chmod +x /opt/daz/daz
-    chown -R daz:daz /opt/daz
-    
-    # Install systemd service
-    echo "Installing systemd service..."
-    cp "$SCRIPT_DIR/daz.service" /etc/systemd/system/
-    systemctl daemon-reload
-    
-    # Check if service is already configured
-    if [ -f /etc/systemd/system/daz.service.d/override.conf ]; then
-        echo "Service already configured, restarting with new binary..."
-        systemctl restart daz.service
-    else
-        # Configure service for first time
-        echo "Configuring service..."
-        read -p "Enter Cytube channel name: " CHANNEL
-        if [ -z "$CHANNEL" ]; then
-            echo "Error: Channel name is required"
-            exit 1
+    # Check if this is a new installation or update
+    if [ -f /opt/daz/daz ]; then
+        echo "Existing installation detected, updating..."
+        
+        # Stop service before copying
+        echo "Stopping service..."
+        systemctl stop daz.service
+        
+        # Copy files
+        echo "Installing files..."
+        cp ./bin/daz /opt/daz/daz
+        chmod +x /opt/daz/daz
+        
+        # Copy config.json if it exists in source but not in destination
+        if [ -f "$PROJECT_ROOT/config.json" ] && [ ! -f /opt/daz/config.json ]; then
+            echo "Copying config.json..."
+            cp "$PROJECT_ROOT/config.json" /opt/daz/config.json
         fi
         
-        # Create override file
-        mkdir -p /etc/systemd/system/daz.service.d
-        cat > /etc/systemd/system/daz.service.d/override.conf <<EOF
-[Service]
-ExecStart=
-ExecStart=/opt/daz/daz -channel=$CHANNEL
-EOF
+        chown -R daz:daz /opt/daz
         
         # Start service
         echo "Starting service..."
+        systemctl start daz.service
+    else
+        # New installation
+        echo "New installation detected..."
+        
+        # Copy files
+        echo "Installing files..."
+        cp ./bin/daz /opt/daz/daz
+        chmod +x /opt/daz/daz
+        
+        # Copy config.json if it exists
+        if [ -f "$PROJECT_ROOT/config.json" ]; then
+            echo "Copying config.json..."
+            cp "$PROJECT_ROOT/config.json" /opt/daz/config.json
+            chown -R daz:daz /opt/daz
+        else
+            echo "Warning: config.json not found in $PROJECT_ROOT"
+            echo "Make sure to create /opt/daz/config.json before starting the service"
+        fi
+        
+        # Install systemd service
+        echo "Installing systemd service..."
+        cp "$SCRIPT_DIR/daz.service" /etc/systemd/system/
+        systemctl daemon-reload
+        
+        # Enable and start service
+        echo "Enabling service..."
         systemctl enable daz.service
+        
+        echo "Starting service..."
         systemctl start daz.service
     fi
     
     # Check status
+    echo ""
+    echo "Checking service status..."
     systemctl status daz.service --no-pager
     
-    echo ""
-    echo "Deployment complete!"
-    echo "View logs with: journalctl -u daz -f"
-    echo "Stop with: systemctl stop daz"
+    # Show result
+    if systemctl is-active --quiet daz.service; then
+        echo ""
+        echo "✅ Deployment successful!"
+        echo ""
+        echo "Useful commands:"
+        echo "  View logs:    journalctl -u daz -f"
+        echo "  Stop service: systemctl stop daz"
+        echo "  Restart:      systemctl restart daz"
+        echo "  Status:       systemctl status daz"
+    else
+        echo ""
+        echo "❌ Service failed to start!"
+        echo "Check logs with: journalctl -u daz -n 50"
+        exit 1
+    fi
 }
 
 # Function to show usage

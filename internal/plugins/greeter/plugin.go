@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,10 @@ type Config struct {
 	DefaultGreeting string `json:"default_greeting"`
 	// Whether to use the greeting engine for dynamic greetings
 	UseGreetingEngine bool `json:"use_greeting_engine"`
+	// Whether to enable fortune messages after greetings
+	EnableFortune bool `json:"enable_fortune"`
+	// Probability of sending a fortune after a successful greeting (0.0-1.0)
+	FortuneProbability float64 `json:"fortune_probability"`
 }
 
 // Plugin implements the greeter functionality
@@ -55,7 +60,7 @@ type Plugin struct {
 	// Greeting manager
 	greetingManager *GreetingManager
 
-	// Skip probability (40-60%)
+	// Skip probability (60-80%)
 	skipProbability float64
 
 	// Track last greeting per channel
@@ -94,13 +99,15 @@ func New() framework.Plugin {
 		greetingQueue:    make(chan *greetingRequest, greetingQueueSize),
 		readyChan:        make(chan struct{}),
 		lastGreeting:     make(map[string]*lastGreetingInfo),
-		skipProbability:  0.4 + rand.Float64()*0.2, // 40-60% skip rate
+		skipProbability:  0.6 + rand.Float64()*0.2, // 60-80% skip rate
 		channelJoinTimes: make(map[string]time.Time),
 		config: &Config{
-			CooldownMinutes:   30,
-			Enabled:           true,
-			DefaultGreeting:   "Welcome back, %s!",
-			UseGreetingEngine: false,
+			CooldownMinutes:    30,
+			Enabled:            true,
+			DefaultGreeting:    "Welcome back, %s!",
+			UseGreetingEngine:  false,
+			EnableFortune:      true,
+			FortuneProbability: 0.25,
 		},
 	}
 }
@@ -486,7 +493,7 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	}
 	logger.Debug(p.name, "Last greeting check passed for %s", username)
 
-	// Apply skip probability (40-60%) as final check
+	// Apply skip probability (60-80%) as final check
 	skipRoll := rand.Float64()
 	if skipRoll < p.skipProbability {
 		logger.Debug(p.name, "SKIP REASON: Random skip - roll=%.3f < probability=%.3f for user %s", skipRoll, p.skipProbability, username)
@@ -679,6 +686,26 @@ func (p *Plugin) sendGreeting(req *greetingRequest) {
 	// Record in database
 	if err := p.recordGreetingToDB(p.ctx, req.channel, req.username, "standard", greeting, nil); err != nil {
 		logger.Error(p.name, "Failed to record greeting: %v", err)
+	}
+
+	// Roll for fortune (25% chance)
+	if p.config.EnableFortune {
+		fortuneRoll := rand.Float64()
+		logger.Debug(p.name, "Fortune roll for %s: %.3f (need < %.3f)", req.username, fortuneRoll, p.config.FortuneProbability)
+		
+		if fortuneRoll < p.config.FortuneProbability {
+			logger.Info(p.name, "Fortune roll successful for %s in channel %s", req.username, req.channel)
+			// Launch goroutine to send delayed fortune
+			p.wg.Add(1)
+			go func() {
+				defer p.wg.Done()
+				p.sendDelayedFortune(req.channel, 10*time.Second)
+			}()
+		} else {
+			logger.Debug(p.name, "Fortune roll failed for %s (%.3f >= %.3f)", req.username, fortuneRoll, p.config.FortuneProbability)
+		}
+	} else {
+		logger.Debug(p.name, "Fortune feature disabled")
 	}
 }
 
@@ -926,4 +953,58 @@ func (p *Plugin) isInChannelGracePeriod(channel string) bool {
 
 	logger.Debug(p.name, "Channel grace period expired for %s (%.1f seconds since join)", channel, timeSinceJoin.Seconds())
 	return false
+}
+
+// getFortune executes the fortune command and returns the output
+func (p *Plugin) getFortune() (string, error) {
+	// Create context with 1 second timeout
+	ctx, cancel := context.WithTimeout(p.ctx, 1*time.Second)
+	defer cancel()
+
+	// Execute fortune command with -aos flags
+	cmd := exec.CommandContext(ctx, "fortune", "-aos")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to execute fortune: %w", err)
+	}
+
+	// Trim whitespace and check length
+	fortune := strings.TrimSpace(string(output))
+	if len(fortune) > 160 {
+		// Truncate if somehow we got a long fortune despite -s flag
+		fortune = fortune[:157] + "..."
+	}
+
+	return fortune, nil
+}
+
+// sendDelayedFortune sends a fortune message after a delay
+func (p *Plugin) sendDelayedFortune(channel string, delay time.Duration) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-p.ctx.Done():
+		return
+	case <-timer.C:
+		fortune, err := p.getFortune()
+		if err != nil {
+			logger.Debug(p.name, "Failed to get fortune: %v", err)
+			return
+		}
+
+		// Send fortune with prefix
+		msgData := &framework.EventData{
+			RawMessage: &framework.RawMessageData{
+				Channel: channel,
+				Message: fmt.Sprintf("🔮[FORTUNE]🔮: \"%s\"", fortune),
+			},
+		}
+
+		if err := p.eventBus.Broadcast("cytube.send", msgData); err != nil {
+			logger.Error(p.name, "Failed to send fortune: %v", err)
+		} else {
+			logger.Info(p.name, "Sent fortune to channel %s: %s", channel, fortune)
+		}
+	}
 }
