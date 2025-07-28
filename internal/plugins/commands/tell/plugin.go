@@ -421,6 +421,9 @@ func (p *Plugin) deliverMessages(channel, username string) {
 		messagesBySender[msg.FromUser] = append(messagesBySender[msg.FromUser], msg)
 	}
 
+	// Track delivered message IDs to properly check remaining messages
+	deliveredIDs := make(map[int]bool)
+	
 	// Deliver messages in batches of up to 5
 	totalDelivered := 0
 	messagesInBatch := 0
@@ -439,9 +442,21 @@ func (p *Plugin) deliverMessages(channel, username string) {
 				if nextBatch > deliveryLimit {
 					nextBatch = deliveryLimit
 				}
+				
+				// Check if any remaining messages are private
+				hasPrivateRemaining := false
+				for _, checkMsg := range messages {
+					if !deliveredIDs[checkMsg.ID] && checkMsg.IsPM {
+						hasPrivateRemaining = true
+						break
+					}
+				}
+				
 				text := fmt.Sprintf("And I'll give you the next %d in 3 minutes.", nextBatch)
-				// Always send as PM for privacy
-				p.sendPM(channel, username, text)
+				// Always send batch notification as PM if any remaining messages are private
+				// Otherwise, use the current message's privacy setting
+				sendAsPM := hasPrivateRemaining || msg.IsPM
+				p.sendResponse(channel, username, text, sendAsPM)
 
 				// Schedule next batch delivery
 				p.scheduleNextBatch(channel, username, 3*time.Minute)
@@ -470,14 +485,17 @@ func (p *Plugin) deliverMessages(channel, username string) {
 				}
 			}
 
-			// Always send tell messages as PMs for privacy
-			p.sendPM(channel, username, text)
+			// Send message based on how the original tell command was sent
+			p.sendResponse(channel, username, text, msg.IsPM)
 
 			// Mark as delivered
 			if err := p.markDelivered(msg.ID); err != nil {
 				logger.Error(p.name, "Failed to mark message %d as delivered: %v", msg.ID, err)
 			}
 
+			// Track this message as delivered
+			deliveredIDs[msg.ID] = true
+			
 			lastSender = sender
 			totalDelivered++
 			messagesInBatch++
