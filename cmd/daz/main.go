@@ -23,6 +23,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/fortune"
 	"github.com/hildolfr/daz/internal/plugins/commands/help"
 	"github.com/hildolfr/daz/internal/plugins/commands/random"
+	"github.com/hildolfr/daz/internal/plugins/commands/seen"
 	"github.com/hildolfr/daz/internal/plugins/commands/tell"
 	"github.com/hildolfr/daz/internal/plugins/commands/uptime"
 	"github.com/hildolfr/daz/internal/plugins/commands/weather"
@@ -206,6 +207,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"weather", weather.New()},
 		{"random", random.New()},
 		{"tell", tell.New()},
+		{"seen", seen.New()},
 	}
 
 	// Register all plugins with the manager
