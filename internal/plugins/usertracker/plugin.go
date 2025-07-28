@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
@@ -33,8 +34,11 @@ type Plugin struct {
 	users map[string]*UserState
 
 	// Plugin status tracking
-	status    framework.PluginStatus
-	startTime time.Time
+	status      framework.PluginStatus
+	statusMutex sync.RWMutex
+	startTime   time.Time
+	// Use atomic counter for events handled
+	eventsHandled atomic.Int64
 
 	// Userlist processing state
 	processingUserlist map[string]bool
@@ -186,7 +190,9 @@ func (p *Plugin) Start() error {
 		case <-timer.C:
 			if err := p.createTables(); err != nil {
 				logger.Error("UserTracker", "Failed to create tables: %v", err)
+				p.statusMutex.Lock()
 				p.status.LastError = err
+				p.statusMutex.Unlock()
 				// Don't fail plugin startup, it can retry later
 			}
 		}
@@ -194,42 +200,56 @@ func (p *Plugin) Start() error {
 
 	// Subscribe to userlist events for bulk user updates
 	if err := p.eventBus.Subscribe("cytube.event.userlist.start", p.handleUserListStart); err != nil {
+		p.statusMutex.Lock()
 		p.status.LastError = err
+		p.statusMutex.Unlock()
 		return fmt.Errorf("failed to subscribe to userlist.start events: %w", err)
 	}
 
 	if err := p.eventBus.Subscribe("cytube.event.userlist.end", p.handleUserListEnd); err != nil {
+		p.statusMutex.Lock()
 		p.status.LastError = err
+		p.statusMutex.Unlock()
 		return fmt.Errorf("failed to subscribe to userlist.end events: %w", err)
 	}
 
 	// Subscribe to user events
 	// Note: CyTube sends "addUser" events for initial users and new joins
 	if err := p.eventBus.Subscribe("cytube.event.addUser", p.handleUserJoin); err != nil {
+		p.statusMutex.Lock()
 		p.status.LastError = err
+		p.statusMutex.Unlock()
 		return fmt.Errorf("failed to subscribe to addUser events: %w", err)
 	}
 
 	// Also subscribe to userJoin for users joining after we're connected
 	if err := p.eventBus.Subscribe("cytube.event.userJoin", p.handleUserJoin); err != nil {
+		p.statusMutex.Lock()
 		p.status.LastError = err
+		p.statusMutex.Unlock()
 		return fmt.Errorf("failed to subscribe to userJoin events: %w", err)
 	}
 
 	if err := p.eventBus.Subscribe(eventbus.EventCytubeUserLeave, p.handleUserLeave); err != nil {
+		p.statusMutex.Lock()
 		p.status.LastError = err
+		p.statusMutex.Unlock()
 		return fmt.Errorf("failed to subscribe to user leave events: %w", err)
 	}
 
 	// Subscribe to chat messages to track activity
 	if err := p.eventBus.Subscribe(eventbus.EventCytubeChatMsg, p.handleChatMessage); err != nil {
+		p.statusMutex.Lock()
 		p.status.LastError = err
+		p.statusMutex.Unlock()
 		return fmt.Errorf("failed to subscribe to chat events: %w", err)
 	}
 
 	// Subscribe to command requests for user info
 	if err := p.eventBus.Subscribe("plugin.usertracker.seen", p.handleSeenRequest); err != nil {
+		p.statusMutex.Lock()
 		p.status.LastError = err
+		p.statusMutex.Unlock()
 		return fmt.Errorf("failed to subscribe to seen requests: %w", err)
 	}
 
@@ -238,7 +258,9 @@ func (p *Plugin) Start() error {
 	go p.cleanupInactiveSessions()
 
 	p.running = true
+	p.statusMutex.Lock()
 	p.status.State = "running"
+	p.statusMutex.Unlock()
 	p.startTime = time.Now().UTC()
 
 	// Signal that the plugin is ready
@@ -264,7 +286,9 @@ func (p *Plugin) Stop() error {
 	p.wg.Wait()
 
 	p.running = false
+	p.statusMutex.Lock()
 	p.status.State = "stopped"
+	p.statusMutex.Unlock()
 	logger.Info("UserTracker", "Stopped user tracking")
 	return nil
 }
@@ -272,19 +296,28 @@ func (p *Plugin) Stop() error {
 // HandleEvent processes incoming events
 func (p *Plugin) HandleEvent(event framework.Event) error {
 	// This plugin uses specific event subscriptions
-	p.status.EventsHandled++
+	p.eventsHandled.Add(1)
 	return nil
 }
 
 // Status returns the current plugin status
 func (p *Plugin) Status() framework.PluginStatus {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
+	p.statusMutex.RLock()
 	status := p.status
-	if p.running && !p.startTime.IsZero() {
-		status.Uptime = time.Now().UTC().Sub(p.startTime)
+	p.statusMutex.RUnlock()
+	
+	p.mu.RLock()
+	running := p.running
+	startTime := p.startTime
+	p.mu.RUnlock()
+	
+	if running && !startTime.IsZero() {
+		status.Uptime = time.Now().UTC().Sub(startTime)
 	}
+	
+	// Update events handled from atomic counter
+	status.EventsHandled = p.eventsHandled.Load()
+	
 	return status
 }
 
@@ -341,7 +374,9 @@ func (p *Plugin) createTables() error {
 	if err := p.createStoredFunction(); err != nil {
 		logger.Error("UserTracker", "Failed to create stored function: %v", err)
 		logger.Warn("UserTracker", "Will use non-atomic fallback for session updates - this may cause race conditions")
+		p.statusMutex.Lock()
 		p.status.LastError = fmt.Errorf("stored function unavailable: %w", err)
+		p.statusMutex.Unlock()
 		// Don't fail startup - we have a fallback
 	}
 
@@ -383,10 +418,8 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 
 	logger.Info("UserTracker", "User joined: %s (rank %d)", username, userRank)
 	
-	// Safely increment event counter
-	p.storedFunctionMutex.Lock()
-	p.status.EventsHandled++
-	p.storedFunctionMutex.Unlock()
+	// Increment atomic event counter
+	p.eventsHandled.Add(1)
 	
 	return nil
 }
@@ -609,7 +642,7 @@ func (p *Plugin) handleUserListStart(event framework.Event) error {
 	p.users = make(map[string]*UserState)
 	p.mu.Unlock()
 
-	p.status.EventsHandled++
+	p.eventsHandled.Add(1)
 	return nil
 }
 
@@ -647,7 +680,7 @@ func (p *Plugin) handleUserListEnd(event framework.Event) error {
 		logger.Error("UserTracker", "Error recording userlist sync history: %v", err)
 	}
 
-	p.status.EventsHandled++
+	p.eventsHandled.Add(1)
 	return nil
 }
 
@@ -704,7 +737,7 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 	}
 
 	logger.Info("UserTracker", "User left: %s", userLeave.Username)
-	p.status.EventsHandled++
+	p.eventsHandled.Add(1)
 	return nil
 }
 
@@ -739,7 +772,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		logger.Error("UserTracker", "Error updating activity: %v", err)
 	}
 
-	p.status.EventsHandled++
+	p.eventsHandled.Add(1)
 	return nil
 }
 
@@ -1205,10 +1238,16 @@ func (p *Plugin) handleUserJoinFallback(channel, username string, userRank int, 
 
 	// No existing session found, create a new one
 	// First check if there's somehow still an active session we missed
+	// Use SKIP LOCKED to avoid deadlocks
 	deactivateSQL := `
 		UPDATE daz_user_tracker_sessions 
 		SET is_active = FALSE
-		WHERE channel = $1 AND username = $2 AND is_active = TRUE
+		WHERE id IN (
+			SELECT id 
+			FROM daz_user_tracker_sessions 
+			WHERE channel = $1 AND username = $2 AND is_active = TRUE
+			FOR UPDATE SKIP LOCKED
+		)
 	`
 	err = p.sqlClient.Exec(deactivateSQL, channel, username)
 	if err != nil {
