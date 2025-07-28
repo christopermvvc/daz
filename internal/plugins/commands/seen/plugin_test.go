@@ -46,7 +46,7 @@ func (m *mockEventBus) Broadcast(eventType string, data *framework.EventData) er
 	for _, handler := range handlers {
 		event := &framework.DataEvent{
 			EventType: eventType,
-			Data: data,
+			Data:      data,
 		}
 		if err := handler(event); err != nil {
 			return err

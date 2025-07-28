@@ -677,7 +677,7 @@ func TestDatabaseMaintenance(t *testing.T) {
 		execs:      []mockExec{},
 		subs:       make(map[string][]framework.EventHandler),
 	}
-	
+
 	plugin.eventBus = bus
 	plugin.sqlClient = framework.NewSQLClient(bus, "usertracker")
 	plugin.ctx, plugin.cancel = context.WithCancel(context.Background())
@@ -686,19 +686,19 @@ func TestDatabaseMaintenance(t *testing.T) {
 	t.Run("CreateStoredFunction", func(t *testing.T) {
 		// Clear previous execs
 		bus.execs = []mockExec{}
-		
+
 		// Test function creation
 		err := plugin.createStoredFunction()
 		// The function might succeed or fail depending on mock behavior
 		if err != nil {
 			t.Logf("Function creation failed (expected in mock): %v", err)
 		}
-		
+
 		// Should have attempted to check for existing function
 		if len(bus.queries) == 0 {
 			t.Error("Expected query to check for existing function")
 		}
-		
+
 		// Should have attempted to create function
 		foundCreate := false
 		for _, exec := range bus.execs {
@@ -714,16 +714,16 @@ func TestDatabaseMaintenance(t *testing.T) {
 
 	t.Run("MigrateToUTC", func(t *testing.T) {
 		// Clear previous operations
-		bus.queries = []mockQuery{} 
+		bus.queries = []mockQuery{}
 		bus.execs = []mockExec{}
-		
+
 		// Test migration
 		err := plugin.migrateToUTC()
 		// Error is expected in mock environment since queries don't return data
 		if err == nil {
 			t.Log("Migration completed (or skipped)")
 		}
-		
+
 		// Should have checked for existing migration
 		foundMigrationCheck := false
 		for _, query := range bus.queries {
@@ -740,13 +740,13 @@ func TestDatabaseMaintenance(t *testing.T) {
 	t.Run("CreateTables", func(t *testing.T) {
 		// Clear previous operations
 		bus.execs = []mockExec{}
-		
+
 		// Test table creation
 		err := plugin.createTables()
 		if err != nil {
 			t.Errorf("Unexpected error creating tables: %v", err)
 		}
-		
+
 		// Should have created sessions table
 		foundSessionsTable := false
 		for _, exec := range bus.execs {
@@ -758,7 +758,7 @@ func TestDatabaseMaintenance(t *testing.T) {
 		if !foundSessionsTable {
 			t.Error("Expected sessions table creation")
 		}
-		
+
 		// Should have created history table
 		foundHistoryTable := false
 		for _, exec := range bus.execs {

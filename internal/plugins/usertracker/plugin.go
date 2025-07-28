@@ -382,22 +382,22 @@ func (p *Plugin) extractUserJoinInfo(event framework.Event) (username string, us
 	if addUserEvent, ok := event.(*framework.AddUserEvent); ok {
 		return addUserEvent.Username, addUserEvent.UserRank, addUserEvent.ChannelName
 	}
-	
+
 	// Handle wrapped events
 	if dataEvent, ok := event.(*framework.DataEvent); ok && dataEvent.Data != nil {
 		if dataEvent.Data.UserJoin != nil {
-			return dataEvent.Data.UserJoin.Username, 
-			       dataEvent.Data.UserJoin.UserRank, 
-			       dataEvent.Data.UserJoin.Channel
+			return dataEvent.Data.UserJoin.Username,
+				dataEvent.Data.UserJoin.UserRank,
+				dataEvent.Data.UserJoin.Channel
 		}
-		
+
 		if dataEvent.Data.RawEvent != nil {
 			if addUserEvent, ok := dataEvent.Data.RawEvent.(*framework.AddUserEvent); ok {
 				return addUserEvent.Username, addUserEvent.UserRank, addUserEvent.ChannelName
 			}
 		}
 	}
-	
+
 	return "", 0, ""
 }
 
@@ -421,10 +421,10 @@ func (p *Plugin) handleUserlistJoin(channel, username string, userRank int, now 
 		SELECT session_id, was_reactivated 
 		FROM upsert_user_session($1, $2, $3, $4)
 	`
-	
+
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
-	
+
 	sqlHelper := framework.NewSQLRequestHelper(p.eventBus, p.name)
 	rows, err := sqlHelper.FastQuery(ctx, upsertSQL, channel, username, userRank, now)
 	if err != nil {
@@ -438,7 +438,7 @@ func (p *Plugin) handleUserlistJoin(channel, username string, userRank int, now 
 		return
 	}
 	defer rows.Close()
-	
+
 	// Log whether we reactivated or created a new session
 	if rows.Next() {
 		var sessionID int
@@ -989,7 +989,7 @@ func (p *Plugin) migrateToUTC() error {
 	// Get the server's timezone offset dynamically
 	_, offset := time.Now().Zone()
 	offsetHours := offset / 3600
-	
+
 	// Calculate threshold based on offset
 	// For UTC (offset 0), we need a different approach
 	var thresholdSeconds int
@@ -1046,7 +1046,7 @@ func (p *Plugin) migrateToUTC() error {
 			    END
 			WHERE ABS(EXTRACT(EPOCH FROM (joined_at - NOW()))) > 7200
 		`, offsetHours, offsetHours, offsetHours)
-		
+
 		err = p.sqlClient.Exec(sessionMigrationSQL)
 		if err != nil {
 			return fmt.Errorf("failed to migrate sessions to UTC: %w", err)
@@ -1058,7 +1058,7 @@ func (p *Plugin) migrateToUTC() error {
 			SET timestamp = timestamp - INTERVAL '%d hours'
 			WHERE ABS(EXTRACT(EPOCH FROM (timestamp - NOW()))) > 7200
 		`, offsetHours)
-		
+
 		err = p.sqlClient.Exec(historyMigrationSQL)
 		if err != nil {
 			return fmt.Errorf("failed to migrate history to UTC: %w", err)
@@ -1103,24 +1103,24 @@ func (p *Plugin) handleUserJoinFallback(channel, username string, userRank int, 
 		)
 		RETURNING id
 	`
-	
+
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
-	
+
 	sqlHelper := framework.NewSQLRequestHelper(p.eventBus, p.name)
 	rows, err := sqlHelper.FastQuery(ctx, updateSQL, now, userRank, channel, username)
 	if err != nil {
 		logger.Error("UserTracker", "Error checking for existing session: %v", err)
 	} else {
 		defer rows.Close()
-		
+
 		// If we updated an existing session, we're done
 		if rows.Next() {
 			logger.Debug("UserTracker", "Reactivated existing session for %s", username)
 			return
 		}
 	}
-	
+
 	// No existing session found, create a new one
 	// First check if there's somehow still an active session we missed
 	deactivateSQL := `
@@ -1132,7 +1132,7 @@ func (p *Plugin) handleUserJoinFallback(channel, username string, userRank int, 
 	if err != nil {
 		logger.Error("UserTracker", "Error deactivating stale sessions: %v", err)
 	}
-	
+
 	sessionSQL := `
 		INSERT INTO daz_user_tracker_sessions 
 			(channel, username, rank, joined_at, last_activity, is_active)

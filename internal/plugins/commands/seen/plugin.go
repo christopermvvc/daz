@@ -206,7 +206,7 @@ func (p *Plugin) handleSeenCommand(req *framework.PluginRequest) {
 		// Format response
 		var response string
 		if isActive {
-			response = fmt.Sprintf("%s is online (login: %s, last active: %s)", 
+			response = fmt.Sprintf("%s is online (login: %s, last active: %s)",
 				username,
 				formatTime(joinedAt),
 				formatTime(lastActivity))
