@@ -427,6 +427,17 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 		}
 		
 		// No existing session found, create a new one
+		// First check if there's somehow still an active session we missed
+		deactivateSQL := `
+			UPDATE daz_user_tracker_sessions 
+			SET is_active = FALSE
+			WHERE channel = $1 AND username = $2 AND is_active = TRUE
+		`
+		err = p.sqlClient.Exec(deactivateSQL, channel, username)
+		if err != nil {
+			logger.Error("UserTracker", "Error deactivating stale sessions: %v", err)
+		}
+		
 		sessionSQL := `
 			INSERT INTO daz_user_tracker_sessions 
 				(channel, username, rank, joined_at, last_activity, is_active)
