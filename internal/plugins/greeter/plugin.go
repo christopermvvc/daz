@@ -107,7 +107,7 @@ func New() framework.Plugin {
 			DefaultGreeting:    "Welcome back, %s!",
 			UseGreetingEngine:  false,
 			EnableFortune:      true,
-			FortuneProbability: 0.25,
+			FortuneProbability: 0.50,
 		},
 	}
 }
