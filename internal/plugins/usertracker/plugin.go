@@ -989,15 +989,32 @@ func (p *Plugin) migrateToUTC() error {
 	// Get the server's timezone offset dynamically
 	_, offset := time.Now().Zone()
 	offsetHours := offset / 3600
+	
+	// Calculate threshold based on offset
+	// For UTC (offset 0), we need a different approach
+	var thresholdSeconds int
+	if offsetHours == 0 {
+		// If server is already UTC, check if timestamps are in the future
+		thresholdSeconds = 3600 // 1 hour in future suggests non-UTC
+	} else {
+		// Use half the offset as threshold to be more accurate
+		absOffset := offset
+		if absOffset < 0 {
+			absOffset = -absOffset
+		}
+		thresholdSeconds = absOffset / 2
+		if thresholdSeconds < 3600 {
+			thresholdSeconds = 3600 // Minimum 1 hour threshold
+		}
+	}
 
-	// Check if any timestamps need migration by comparing with server time
-	// If joined_at is more than 1 hour different from NOW(), it's likely in local time
-	checkSQL := `
+	// Check if any timestamps need migration
+	checkSQL := fmt.Sprintf(`
 		SELECT COUNT(*) 
 		FROM daz_user_tracker_sessions 
-		WHERE ABS(EXTRACT(EPOCH FROM (joined_at - NOW()))) > 7200
+		WHERE ABS(EXTRACT(EPOCH FROM (joined_at - NOW()))) > %d
 		LIMIT 1
-	`
+	`, thresholdSeconds)
 
 	rows2, err := sqlHelper.FastQuery(ctx, checkSQL)
 	if err != nil {

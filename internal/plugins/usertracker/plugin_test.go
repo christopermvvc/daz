@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -654,5 +655,120 @@ func TestUserListMetadata(t *testing.T) {
 			t.Error("Expected userlistuser to exist")
 		}
 		plugin.mu.RUnlock()
+	})
+}
+
+func TestDatabaseMaintenance(t *testing.T) {
+	// Create plugin instance
+	plugin := &Plugin{
+		name:               "usertracker",
+		users:              make(map[string]*UserState),
+		processingUserlist: make(map[string]bool),
+		config: &Config{
+			InactivityTimeout: 30 * time.Minute,
+		},
+	}
+
+	// Create mock event bus
+	bus := &MockEventBus{
+		broadcasts: []mockEvent{},
+		sends:      []mockEvent{},
+		queries:    []mockQuery{},
+		execs:      []mockExec{},
+		subs:       make(map[string][]framework.EventHandler),
+	}
+	
+	plugin.eventBus = bus
+	plugin.sqlClient = framework.NewSQLClient(bus, "usertracker")
+	plugin.ctx, plugin.cancel = context.WithCancel(context.Background())
+	defer plugin.cancel()
+
+	t.Run("CreateStoredFunction", func(t *testing.T) {
+		// Clear previous execs
+		bus.execs = []mockExec{}
+		
+		// Test function creation
+		err := plugin.createStoredFunction()
+		// The function might succeed or fail depending on mock behavior
+		if err != nil {
+			t.Logf("Function creation failed (expected in mock): %v", err)
+		}
+		
+		// Should have attempted to check for existing function
+		if len(bus.queries) == 0 {
+			t.Error("Expected query to check for existing function")
+		}
+		
+		// Should have attempted to create function
+		foundCreate := false
+		for _, exec := range bus.execs {
+			if strings.Contains(exec.query, "CREATE OR REPLACE FUNCTION") {
+				foundCreate = true
+				break
+			}
+		}
+		if !foundCreate {
+			t.Error("Expected CREATE FUNCTION query")
+		}
+	})
+
+	t.Run("MigrateToUTC", func(t *testing.T) {
+		// Clear previous operations
+		bus.queries = []mockQuery{} 
+		bus.execs = []mockExec{}
+		
+		// Test migration
+		err := plugin.migrateToUTC()
+		// Error is expected in mock environment since queries don't return data
+		if err == nil {
+			t.Log("Migration completed (or skipped)")
+		}
+		
+		// Should have checked for existing migration
+		foundMigrationCheck := false
+		for _, query := range bus.queries {
+			if strings.Contains(query.query, "_utc_migration_complete") {
+				foundMigrationCheck = true
+				break
+			}
+		}
+		if !foundMigrationCheck {
+			t.Error("Expected query to check migration status")
+		}
+	})
+
+	t.Run("CreateTables", func(t *testing.T) {
+		// Clear previous operations
+		bus.execs = []mockExec{}
+		
+		// Test table creation
+		err := plugin.createTables()
+		if err != nil {
+			t.Errorf("Unexpected error creating tables: %v", err)
+		}
+		
+		// Should have created sessions table
+		foundSessionsTable := false
+		for _, exec := range bus.execs {
+			if strings.Contains(exec.query, "CREATE TABLE IF NOT EXISTS daz_user_tracker_sessions") {
+				foundSessionsTable = true
+				break
+			}
+		}
+		if !foundSessionsTable {
+			t.Error("Expected sessions table creation")
+		}
+		
+		// Should have created history table
+		foundHistoryTable := false
+		for _, exec := range bus.execs {
+			if strings.Contains(exec.query, "CREATE TABLE IF NOT EXISTS daz_user_tracker_history") {
+				foundHistoryTable = true
+				break
+			}
+		}
+		if !foundHistoryTable {
+			t.Error("Expected history table creation")
+		}
 	})
 }
