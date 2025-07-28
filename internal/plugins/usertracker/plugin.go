@@ -856,6 +856,33 @@ func formatDuration(d time.Duration) string {
 
 // createStoredFunction creates the upsert_user_session function in the database
 func (p *Plugin) createStoredFunction() error {
+	// First check if the function already exists
+	checkSQL := `
+		SELECT COUNT(*) 
+		FROM pg_proc 
+		WHERE proname = 'upsert_user_session'
+	`
+
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+
+	sqlHelper := framework.NewSQLRequestHelper(p.eventBus, p.name)
+	rows, err := sqlHelper.FastQuery(ctx, checkSQL)
+	if err != nil {
+		// Can't check, try to create anyway
+		logger.Debug("UserTracker", "Could not check for existing function: %v", err)
+	} else {
+		defer rows.Close()
+		var count int
+		if rows.Next() {
+			if err := rows.Scan(&count); err == nil && count > 0 {
+				logger.Debug("UserTracker", "Stored function already exists, skipping creation")
+				return nil
+			}
+		}
+	}
+
+	// Function doesn't exist, create it
 	functionSQL := `
 CREATE OR REPLACE FUNCTION upsert_user_session(
     p_channel VARCHAR(255),
@@ -916,7 +943,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;`
 
-	err := p.sqlClient.Exec(functionSQL)
+	err = p.sqlClient.Exec(functionSQL)
 	if err != nil {
 		return fmt.Errorf("failed to create stored function: %w", err)
 	}
@@ -927,11 +954,11 @@ $$ LANGUAGE plpgsql;`
 
 // migrateToUTC migrates existing timestamps to UTC
 func (p *Plugin) migrateToUTC() error {
-	// Check if migration is needed by looking at a sample timestamp
-	checkSQL := `
+	// Check if we've already migrated by looking for a migration marker
+	checkMigrationSQL := `
 		SELECT COUNT(*) 
-		FROM daz_user_tracker_sessions 
-		WHERE joined_at > NOW() + INTERVAL '1 hour'
+		FROM daz_user_tracker_history 
+		WHERE event_type = '_utc_migration_complete'
 		LIMIT 1
 	`
 
@@ -939,36 +966,69 @@ func (p *Plugin) migrateToUTC() error {
 	defer cancel()
 
 	sqlHelper := framework.NewSQLRequestHelper(p.eventBus, p.name)
-	rows, err := sqlHelper.FastQuery(ctx, checkSQL)
+	rows, err := sqlHelper.FastQuery(ctx, checkMigrationSQL)
 	if err != nil {
-		return fmt.Errorf("failed to check for UTC migration need: %w", err)
+		// Table might not exist yet, that's ok
+		return nil
 	}
 	defer rows.Close()
 
-	var count int
+	var migrationDone int
 	if rows.Next() {
-		if err := rows.Scan(&count); err != nil {
+		if err := rows.Scan(&migrationDone); err != nil {
+			return fmt.Errorf("failed to scan migration status: %w", err)
+		}
+	}
+
+	// Already migrated
+	if migrationDone > 0 {
+		logger.Debug("UserTracker", "UTC migration already completed")
+		return nil
+	}
+
+	// Get the server's timezone offset dynamically
+	_, offset := time.Now().Zone()
+	offsetHours := offset / 3600
+
+	// Check if any timestamps need migration by comparing with server time
+	// If joined_at is more than 1 hour different from NOW(), it's likely in local time
+	checkSQL := `
+		SELECT COUNT(*) 
+		FROM daz_user_tracker_sessions 
+		WHERE ABS(EXTRACT(EPOCH FROM (joined_at - NOW()))) > 7200
+		LIMIT 1
+	`
+
+	rows2, err := sqlHelper.FastQuery(ctx, checkSQL)
+	if err != nil {
+		return fmt.Errorf("failed to check for UTC migration need: %w", err)
+	}
+	defer rows2.Close()
+
+	var needsMigration int
+	if rows2.Next() {
+		if err := rows2.Scan(&needsMigration); err != nil {
 			return fmt.Errorf("failed to scan count: %w", err)
 		}
 	}
 
-	// If we have future timestamps, they're likely in local time and need conversion
-	if count > 0 {
-		logger.Info("UserTracker", "Detected timestamps in local time, migrating to UTC...")
+	// If we need migration and we know the offset
+	if needsMigration > 0 && offsetHours != 0 {
+		logger.Info("UserTracker", "Migrating timestamps to UTC (offset: %d hours)", offsetHours)
 
-		// Migrate sessions table
-		sessionMigrationSQL := `
+		// Migrate sessions table by subtracting the offset
+		sessionMigrationSQL := fmt.Sprintf(`
 			UPDATE daz_user_tracker_sessions
 			SET 
-			    joined_at = joined_at AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'UTC',
-			    last_activity = last_activity AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'UTC',
+			    joined_at = joined_at - INTERVAL '%d hours',
+			    last_activity = last_activity - INTERVAL '%d hours',
 			    left_at = CASE 
 			        WHEN left_at IS NOT NULL 
-			        THEN left_at AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'UTC'
+			        THEN left_at - INTERVAL '%d hours'
 			        ELSE NULL 
 			    END
-			WHERE joined_at > NOW() + INTERVAL '1 hour'
-		`
+			WHERE ABS(EXTRACT(EPOCH FROM (joined_at - NOW()))) > 7200
+		`, offsetHours, offsetHours, offsetHours)
 		
 		err = p.sqlClient.Exec(sessionMigrationSQL)
 		if err != nil {
@@ -976,15 +1036,27 @@ func (p *Plugin) migrateToUTC() error {
 		}
 
 		// Migrate history table
-		historyMigrationSQL := `
+		historyMigrationSQL := fmt.Sprintf(`
 			UPDATE daz_user_tracker_history
-			SET timestamp = timestamp AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'UTC'
-			WHERE timestamp > NOW() + INTERVAL '1 hour'
-		`
+			SET timestamp = timestamp - INTERVAL '%d hours'
+			WHERE ABS(EXTRACT(EPOCH FROM (timestamp - NOW()))) > 7200
+		`, offsetHours)
 		
 		err = p.sqlClient.Exec(historyMigrationSQL)
 		if err != nil {
 			return fmt.Errorf("failed to migrate history to UTC: %w", err)
+		}
+
+		// Mark migration as complete
+		markCompleteSQL := `
+			INSERT INTO daz_user_tracker_history 
+				(channel, username, event_type, timestamp, metadata)
+			VALUES ('_system', '_system', '_utc_migration_complete', $1, $2)
+		`
+		metadata := fmt.Sprintf(`{"offset_hours": %d, "migrated_at": "%s"}`, offsetHours, time.Now().UTC().Format(time.RFC3339))
+		err = p.sqlClient.Exec(markCompleteSQL, time.Now().UTC(), metadata)
+		if err != nil {
+			logger.Warn("UserTracker", "Failed to mark migration complete: %v", err)
 		}
 
 		logger.Info("UserTracker", "Successfully migrated timestamps to UTC")
