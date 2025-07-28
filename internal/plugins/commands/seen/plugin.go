@@ -279,8 +279,8 @@ func formatTime(t time.Time) string {
 	// but they're actually in the server's local time. We need to adjust.
 	// Get the local timezone offset
 	_, offset := time.Now().Zone()
-	// Adjust the time by the offset to get the correct local time
-	localTime := t.Add(time.Duration(offset) * time.Second)
+	// Subtract the offset to compensate for Go interpreting local time as UTC
+	localTime := t.Add(time.Duration(-offset) * time.Second)
 	
 	duration := time.Since(localTime)
 	if duration < time.Minute {
