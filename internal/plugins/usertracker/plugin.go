@@ -400,7 +400,6 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 				last_activity = EXCLUDED.last_activity,
 				is_active = TRUE,
 				left_at = NULL
-			WHERE daz_user_tracker_sessions.is_active = FALSE
 		`
 		err := p.sqlClient.Exec(sessionSQL,
 			channel,
