@@ -2,7 +2,6 @@ package seen
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -193,7 +192,7 @@ func (p *Plugin) handleSeenCommand(req *framework.PluginRequest) {
 	// Parse result
 	var username string
 	var joinedAt, lastActivity time.Time
-	var leftAt sql.NullTime
+	var leftAt *time.Time // Use pointer for nullable field
 	var isActive bool
 
 	if rows.Next() {
@@ -213,8 +212,8 @@ func (p *Plugin) handleSeenCommand(req *framework.PluginRequest) {
 				formatTime(lastActivity))
 		} else {
 			leaveTime := lastActivity
-			if leftAt.Valid {
-				leaveTime = leftAt.Time
+			if leftAt != nil {
+				leaveTime = *leftAt
 			}
 			response = fmt.Sprintf("%s (login: %s, active: %s, left: %s)",
 				username,
