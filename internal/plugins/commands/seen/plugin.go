@@ -275,14 +275,8 @@ func (p *Plugin) emitFailureEvent(eventType, correlationID, operationType string
 }
 
 func formatTime(t time.Time) string {
-	// The database stores timestamps without timezone, which are interpreted as UTC
-	// but they're actually in the server's local time. We need to adjust.
-	// Get the local timezone offset
-	_, offset := time.Now().Zone()
-	// Subtract the offset to compensate for Go interpreting local time as UTC
-	localTime := t.Add(time.Duration(-offset) * time.Second)
-	
-	duration := time.Since(localTime)
+	// Now that we store all timestamps as UTC, we can calculate duration directly
+	duration := time.Since(t)
 	if duration < time.Minute {
 		return fmt.Sprintf("%ds ago", int(duration.Seconds()))
 	} else if duration < time.Hour {

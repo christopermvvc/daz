@@ -230,7 +230,7 @@ func (p *Plugin) Start() error {
 
 	p.running = true
 	p.status.State = "running"
-	p.status.Uptime = time.Since(time.Now())
+	p.status.Uptime = time.Since(time.Now().UTC())
 
 	// Signal that the plugin is ready
 	close(p.readyChan)
@@ -274,7 +274,7 @@ func (p *Plugin) Status() framework.PluginStatus {
 
 	status := p.status
 	if p.running {
-		status.Uptime = time.Since(time.Now().Add(-status.Uptime))
+		status.Uptime = time.Since(time.Now().UTC().Add(-status.Uptime))
 	}
 	return status
 }
@@ -374,7 +374,7 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	processingUserlist := p.processingUserlist[channel]
 	p.userlistMutex.RUnlock()
 
-	now := time.Now()
+	now := time.Now().UTC()
 
 	// Update in-memory state
 	p.mu.Lock()
@@ -588,11 +588,11 @@ func (p *Plugin) handleUserListEnd(event framework.Event) error {
 	// Create proper JSON metadata
 	metadataMap := map[string]interface{}{
 		"user_count_message": userCount,
-		"timestamp":          time.Now().Format(time.RFC3339),
+		"timestamp":          time.Now().UTC().Format(time.RFC3339),
 	}
 	metadataJSON, _ := json.Marshal(metadataMap)
 
-	err := p.sqlClient.Exec(historySQL, channel, time.Now(), string(metadataJSON))
+	err := p.sqlClient.Exec(historySQL, channel, time.Now().UTC(), string(metadataJSON))
 	if err != nil {
 		logger.Error("UserTracker", "Error recording userlist sync history: %v", err)
 	}
@@ -615,7 +615,7 @@ func (p *Plugin) handleUserLeave(event framework.Event) error {
 		logger.Warn("UserTracker", "Skipping user leave event without channel information")
 		return nil
 	}
-	now := time.Now()
+	now := time.Now().UTC()
 
 	// Update in-memory state
 	p.mu.Lock()
@@ -666,7 +666,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	}
 
 	chat := dataEvent.Data.ChatMessage
-	now := time.Now()
+	now := time.Now().UTC()
 
 	// Update in-memory state
 	p.mu.Lock()
@@ -795,7 +795,7 @@ func (p *Plugin) cleanupInactiveSessions() {
 
 // doCleanup performs the actual cleanup
 func (p *Plugin) doCleanup() {
-	cutoffTime := time.Now().Add(-p.config.InactivityTimeout)
+	cutoffTime := time.Now().UTC().Add(-p.config.InactivityTimeout)
 
 	// Update database using SKIP LOCKED to avoid deadlocks
 	updateSQL := `
