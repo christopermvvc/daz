@@ -21,6 +21,8 @@ type Plugin struct {
 	cooldown       time.Duration
 	mu             sync.RWMutex
 	config         Config
+	cleanupCounter int
+	fortuneExists  bool
 }
 
 type Config struct {
@@ -55,6 +57,9 @@ func (p *Plugin) Start() error {
 	p.mu.Lock()
 	p.running = true
 	p.mu.Unlock()
+
+	// Check if fortune binary exists
+	p.checkFortuneBinary()
 
 	// Register command with eventfilter
 	registerEvent := &framework.EventData{
@@ -107,6 +112,19 @@ func (p *Plugin) Status() framework.PluginStatus {
 
 func (p *Plugin) Name() string {
 	return p.name
+}
+
+func (p *Plugin) checkFortuneBinary() {
+	// Check if fortune command exists
+	cmd := exec.Command("which", "fortune")
+	err := cmd.Run()
+	p.fortuneExists = err == nil
+	
+	if !p.fortuneExists {
+		logger.Warn(p.name, "Fortune binary not found. Install 'fortune-mod' package for this command to work.")
+	} else {
+		logger.Info(p.name, "Fortune binary found and ready")
+	}
 }
 
 func (p *Plugin) handleFortuneCommand(event framework.Event) error {
@@ -167,8 +185,12 @@ func (p *Plugin) checkRateLimit(username string) bool {
 	lastRequest, exists := p.lastRequestMap[username]
 	if !exists || time.Since(lastRequest) >= p.cooldown {
 		p.lastRequestMap[username] = time.Now()
-		// Clean up old entries periodically
-		p.cleanupOldEntries()
+		// Clean up old entries every 100 requests
+		p.cleanupCounter++
+		if p.cleanupCounter >= 100 {
+			p.cleanupOldEntries()
+			p.cleanupCounter = 0
+		}
 		return true
 	}
 	return false
@@ -185,7 +207,12 @@ func (p *Plugin) cleanupOldEntries() {
 }
 
 func (p *Plugin) getFortune() string {
-	// Execute fortune command with specific categories
+	// Check if fortune binary exists (cached from startup)
+	if !p.fortuneExists {
+		return "Sorry, fortune is not installed on this system. Ask an admin to install the 'fortune-mod' package."
+	}
+
+	// Try with specific categories first
 	cmd := exec.Command("fortune", "-so", "platitudes", "tao", "wisdom", "startrek")
 	var out bytes.Buffer
 	var errBuf bytes.Buffer
@@ -194,12 +221,21 @@ func (p *Plugin) getFortune() string {
 
 	err := cmd.Run()
 	if err != nil {
-		if _, ok := err.(*exec.ExitError); ok && strings.Contains(errBuf.String(), "not found") {
-			logger.Error(p.name, "Fortune command not found. Please install 'fortune-mod' package.")
-			return "Sorry, fortune is not installed on this system. Ask an admin to install the 'fortune-mod' package."
+		// If categories don't exist, fall back to default fortune
+		if strings.Contains(errBuf.String(), "No fortunes found") || strings.Contains(errBuf.String(), "not found") {
+			logger.Debug(p.name, "Specific categories not found, trying default fortune")
+			cmd = exec.Command("fortune", "-s")
+			out.Reset()
+			errBuf.Reset()
+			cmd.Stdout = &out
+			cmd.Stderr = &errBuf
+			err = cmd.Run()
 		}
-		logger.Error(p.name, "Failed to execute fortune command: %v, stderr: %s", err, errBuf.String())
-		return "Sorry, I couldn't fetch a fortune right now."
+		
+		if err != nil {
+			logger.Error(p.name, "Failed to execute fortune command: %v, stderr: %s", err, errBuf.String())
+			return "Sorry, I couldn't fetch a fortune right now."
+		}
 	}
 
 	// Clean up the output

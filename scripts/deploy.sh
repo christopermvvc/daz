@@ -95,6 +95,21 @@ deploy_systemd() {
             cp "$PROJECT_ROOT/config.json" /opt/daz/config.json
         fi
         
+        # Copy admin_users.json if it exists
+        if [ -f "$PROJECT_ROOT/admin_users.json" ]; then
+            echo "Copying admin_users.json..."
+            cp "$PROJECT_ROOT/admin_users.json" /opt/daz/admin_users.json
+        fi
+        
+        # Create systemd environment file from .env
+        if [ -f "$PROJECT_ROOT/.env" ]; then
+            echo "Creating systemd environment file..."
+            mkdir -p /etc/daz
+            cp "$PROJECT_ROOT/.env" /etc/daz/env
+            chmod 640 /etc/daz/env
+            chown root:daz /etc/daz/env
+        fi
+        
         chown -R daz:daz /opt/daz
         
         # Start service
@@ -113,11 +128,28 @@ deploy_systemd() {
         if [ -f "$PROJECT_ROOT/config.json" ]; then
             echo "Copying config.json..."
             cp "$PROJECT_ROOT/config.json" /opt/daz/config.json
-            chown -R daz:daz /opt/daz
         else
             echo "Warning: config.json not found in $PROJECT_ROOT"
             echo "Make sure to create /opt/daz/config.json before starting the service"
         fi
+        
+        # Copy admin_users.json if it exists
+        if [ -f "$PROJECT_ROOT/admin_users.json" ]; then
+            echo "Copying admin_users.json..."
+            cp "$PROJECT_ROOT/admin_users.json" /opt/daz/admin_users.json
+        fi
+        
+        # Create systemd environment file from .env
+        if [ -f "$PROJECT_ROOT/.env" ]; then
+            echo "Creating systemd environment file..."
+            mkdir -p /etc/daz
+            cp "$PROJECT_ROOT/.env" /etc/daz/env
+            chmod 640 /etc/daz/env
+            chown root:daz /etc/daz/env
+        fi
+        
+        # Set proper ownership
+        chown -R daz:daz /opt/daz
         
         # Install systemd service
         echo "Installing systemd service..."

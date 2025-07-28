@@ -994,7 +994,22 @@ func (p *Plugin) getFortune() (string, error) {
 	cmd := exec.CommandContext(ctx, "fortune", "-so", "platitudes", "tao", "wisdom", "startrek")
 	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to execute fortune: %w", err)
+		// If categories don't exist, fall back to default fortune
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderr := string(exitErr.Stderr)
+			if strings.Contains(stderr, "No fortunes found") || strings.Contains(stderr, "not found") {
+				// Try with default fortune
+				cmd = exec.CommandContext(ctx, "fortune", "-s")
+				output, err = cmd.Output()
+				if err != nil {
+					return "", fmt.Errorf("failed to execute fortune: %w", err)
+				}
+			} else {
+				return "", fmt.Errorf("failed to execute fortune: %w", err)
+			}
+		} else {
+			return "", fmt.Errorf("failed to execute fortune: %w", err)
+		}
 	}
 
 	// Trim whitespace and check length
