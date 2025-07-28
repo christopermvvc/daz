@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
@@ -75,6 +76,9 @@ type Plugin struct {
 	// Channel join time tracking (for reconnection grace period)
 	channelJoinTimes map[string]time.Time
 	channelMu        sync.RWMutex
+	
+	// Fortune goroutine tracking
+	activeFortuneCount int32
 }
 
 // greetingRequest represents a pending greeting
@@ -145,23 +149,32 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 		if cfg.CooldownMinutes > 0 {
 			p.config.CooldownMinutes = cfg.CooldownMinutes
 		}
-		// Only override Enabled if explicitly set in config
-		// Since JSON unmarshaling sets bool to false by default, we can't distinguish
-		// between "not set" and "set to false". For now, we'll preserve the default.
-		// In production, you'd want to use a pointer or a custom unmarshaler.
+		// Parse booleans and floats from raw config to handle explicit false values
 		if len(config) > 2 { // More than just "{}"
 			var rawConfig map[string]interface{}
 			if err := json.Unmarshal(config, &rawConfig); err == nil {
 				if enabled, ok := rawConfig["enabled"].(bool); ok {
 					p.config.Enabled = enabled
 				}
+				if useEngine, ok := rawConfig["use_greeting_engine"].(bool); ok {
+					p.config.UseGreetingEngine = useEngine
+				}
+				if enableFortune, ok := rawConfig["enable_fortune"].(bool); ok {
+					p.config.EnableFortune = enableFortune
+				}
+				if fortuneProb, ok := rawConfig["fortune_probability"].(float64); ok {
+					// Validate probability range
+					if fortuneProb < 0.0 {
+						fortuneProb = 0.0
+					} else if fortuneProb > 1.0 {
+						fortuneProb = 1.0
+					}
+					p.config.FortuneProbability = fortuneProb
+				}
 			}
 		}
 		if cfg.DefaultGreeting != "" {
 			p.config.DefaultGreeting = cfg.DefaultGreeting
-		}
-		if cfg.UseGreetingEngine {
-			p.config.UseGreetingEngine = cfg.UseGreetingEngine
 		}
 	}
 
@@ -171,6 +184,12 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 	if p.config.DefaultGreeting == "" {
 		p.config.DefaultGreeting = "Welcome back, %s!"
+	}
+	// Validate fortune probability is in valid range
+	if p.config.FortuneProbability < 0.0 {
+		p.config.FortuneProbability = 0.0
+	} else if p.config.FortuneProbability > 1.0 {
+		p.config.FortuneProbability = 1.0
 	}
 
 	p.eventBus = bus
@@ -694,13 +713,23 @@ func (p *Plugin) sendGreeting(req *greetingRequest) {
 		logger.Debug(p.name, "Fortune roll for %s: %.3f (need < %.3f)", req.username, fortuneRoll, p.config.FortuneProbability)
 		
 		if fortuneRoll < p.config.FortuneProbability {
-			logger.Info(p.name, "Fortune roll successful for %s in channel %s", req.username, req.channel)
-			// Launch goroutine to send delayed fortune
-			p.wg.Add(1)
-			go func() {
-				defer p.wg.Done()
-				p.sendDelayedFortune(req.channel, 10*time.Second)
-			}()
+			// Check if we have too many pending fortunes (limit to 10)
+			currentCount := atomic.LoadInt32(&p.activeFortuneCount)
+			if currentCount >= 10 {
+				logger.Warn(p.name, "Too many pending fortunes (%d), skipping fortune for %s", currentCount, req.username)
+			} else {
+				logger.Info(p.name, "Fortune roll successful for %s in channel %s", req.username, req.channel)
+				// Increment counter
+				atomic.AddInt32(&p.activeFortuneCount, 1)
+				
+				// Launch goroutine to send delayed fortune
+				p.wg.Add(1)
+				go func() {
+					defer p.wg.Done()
+					defer atomic.AddInt32(&p.activeFortuneCount, -1)
+					p.sendDelayedFortune(req.channel, 10*time.Second)
+				}()
+			}
 		} else {
 			logger.Debug(p.name, "Fortune roll failed for %s (%.3f >= %.3f)", req.username, fortuneRoll, p.config.FortuneProbability)
 		}
@@ -970,6 +999,20 @@ func (p *Plugin) getFortune() (string, error) {
 
 	// Trim whitespace and check length
 	fortune := strings.TrimSpace(string(output))
+	
+	// Sanitize output: remove control characters but keep newlines as spaces
+	fortune = strings.ReplaceAll(fortune, "\n", " ")
+	fortune = strings.ReplaceAll(fortune, "\r", "")
+	fortune = strings.ReplaceAll(fortune, "\t", " ")
+	
+	// Collapse multiple spaces
+	for strings.Contains(fortune, "  ") {
+		fortune = strings.ReplaceAll(fortune, "  ", " ")
+	}
+	
+	// Final trim after replacements
+	fortune = strings.TrimSpace(fortune)
+	
 	if len(fortune) > 160 {
 		// Truncate if somehow we got a long fortune despite -s flag
 		fortune = fortune[:157] + "..."
