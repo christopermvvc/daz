@@ -248,12 +248,14 @@ func TestPluginStart(t *testing.T) {
 	time.Sleep(5 * time.Second)
 
 	// Check that tables were created after Start
+	// We expect 2 table creations + 1 stored function creation (or attempt)
 	mockBus.mu.RLock()
 	execCount := len(mockBus.execs)
 	mockBus.mu.RUnlock()
 
-	if execCount != 2 {
-		t.Errorf("Expected 2 table creation queries after Start, got %d", execCount)
+	// Should have at least 2 executions (tables), possibly 3 if function creation succeeded
+	if execCount < 2 || execCount > 3 {
+		t.Errorf("Expected 2-3 SQL exec queries after Start (tables + optional function), got %d", execCount)
 	}
 
 	// Check subscriptions

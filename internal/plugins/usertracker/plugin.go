@@ -329,55 +329,80 @@ func (p *Plugin) createTables() error {
 		return fmt.Errorf("failed to create history table: %w", err)
 	}
 
+	// Create the stored function for atomic upserts
+	if err := p.createStoredFunction(); err != nil {
+		logger.Warn("UserTracker", "Failed to create stored function (will use fallback): %v", err)
+		// Don't fail startup - we have a fallback
+	}
+
+	// Migrate existing data to UTC if needed
+	if err := p.migrateToUTC(); err != nil {
+		logger.Error("UserTracker", "Failed to migrate to UTC: %v", err)
+		// Don't fail startup - new data will be UTC
+	}
+
 	return nil
 }
 
 // handleUserJoin processes user join events (both addUser and userJoin)
 func (p *Plugin) handleUserJoin(event framework.Event) error {
-	var username string
-	var userRank int
-	var channel string
-
-	// Handle direct AddUserEvent (from cytube.event.addUser)
-	if addUserEvent, ok := event.(*framework.AddUserEvent); ok {
-		username = addUserEvent.Username
-		userRank = addUserEvent.UserRank
-		channel = addUserEvent.ChannelName
-	} else if dataEvent, ok := event.(*framework.DataEvent); ok && dataEvent.Data != nil {
-		// Handle wrapped events
-		if dataEvent.Data.UserJoin != nil {
-			username = dataEvent.Data.UserJoin.Username
-			userRank = dataEvent.Data.UserJoin.UserRank
-			channel = dataEvent.Data.UserJoin.Channel
-		} else if dataEvent.Data.RawEvent != nil {
-			// Try to extract from RawEvent
-			if addUserEvent, ok := dataEvent.Data.RawEvent.(*framework.AddUserEvent); ok {
-				username = addUserEvent.Username
-				userRank = addUserEvent.UserRank
-				channel = addUserEvent.ChannelName
-			} else {
-				return nil
-			}
-		} else {
-			return nil
-		}
-	} else {
-		return nil
-	}
-
+	// Extract user information from the event
+	username, userRank, channel := p.extractUserJoinInfo(event)
 	if username == "" || channel == "" {
 		logger.Warn("UserTracker", "Skipping user join event without username or channel")
 		return nil
 	}
 
-	// Check if we're processing a userlist for this channel
+	// Update in-memory state
+	now := time.Now().UTC()
+	p.updateInMemoryUser(username, userRank, now)
+
+	// Handle database updates based on context
 	p.userlistMutex.RLock()
 	processingUserlist := p.processingUserlist[channel]
 	p.userlistMutex.RUnlock()
 
-	now := time.Now().UTC()
+	if processingUserlist {
+		p.handleUserlistJoin(channel, username, userRank, now)
+	} else {
+		p.handleRegularJoin(channel, username, userRank, now)
+	}
 
-	// Update in-memory state
+	// Record in history
+	p.recordJoinHistory(channel, username, userRank, now, processingUserlist)
+
+	logger.Info("UserTracker", "User joined: %s (rank %d)", username, userRank)
+	p.status.EventsHandled++
+	return nil
+}
+
+// extractUserJoinInfo extracts user information from various event types
+func (p *Plugin) extractUserJoinInfo(event framework.Event) (username string, userRank int, channel string) {
+	// Handle direct AddUserEvent (from cytube.event.addUser)
+	if addUserEvent, ok := event.(*framework.AddUserEvent); ok {
+		return addUserEvent.Username, addUserEvent.UserRank, addUserEvent.ChannelName
+	}
+	
+	// Handle wrapped events
+	if dataEvent, ok := event.(*framework.DataEvent); ok && dataEvent.Data != nil {
+		if dataEvent.Data.UserJoin != nil {
+			return dataEvent.Data.UserJoin.Username, 
+			       dataEvent.Data.UserJoin.UserRank, 
+			       dataEvent.Data.UserJoin.Channel
+		}
+		
+		if dataEvent.Data.RawEvent != nil {
+			if addUserEvent, ok := dataEvent.Data.RawEvent.(*framework.AddUserEvent); ok {
+				return addUserEvent.Username, addUserEvent.UserRank, addUserEvent.ChannelName
+			}
+		}
+	}
+	
+	return "", 0, ""
+}
+
+// updateInMemoryUser updates the in-memory user state
+func (p *Plugin) updateInMemoryUser(username string, userRank int, now time.Time) {
 	p.mu.Lock()
 	p.users[username] = &UserState{
 		Username:     username,
@@ -387,93 +412,97 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 		IsActive:     true,
 	}
 	p.mu.Unlock()
+}
 
-	// If we're processing a userlist, update the existing session instead of creating a new one
-	if processingUserlist {
-		// Use atomic upsert to handle session reactivation or creation
-		// This prevents race conditions between checking and creating sessions
-		upsertSQL := `
-			SELECT session_id, was_reactivated 
-			FROM upsert_user_session($1, $2, $3, $4)
-		`
-		
-		ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
-		defer cancel()
-		
-		sqlHelper := framework.NewSQLRequestHelper(p.eventBus, p.name)
-		rows, err := sqlHelper.FastQuery(ctx, upsertSQL, channel, username, userRank, now)
-		if err != nil {
-			// Fallback to non-atomic approach if function doesn't exist
-			if strings.Contains(err.Error(), "upsert_user_session") || strings.Contains(err.Error(), "does not exist") {
-				logger.Debug("UserTracker", "Stored function not available, using fallback approach")
-				p.handleUserJoinFallback(channel, username, userRank, now)
+// handleUserlistJoin handles user join during userlist processing
+func (p *Plugin) handleUserlistJoin(channel, username string, userRank int, now time.Time) {
+	// Use atomic upsert to handle session reactivation or creation
+	upsertSQL := `
+		SELECT session_id, was_reactivated 
+		FROM upsert_user_session($1, $2, $3, $4)
+	`
+	
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+	
+	sqlHelper := framework.NewSQLRequestHelper(p.eventBus, p.name)
+	rows, err := sqlHelper.FastQuery(ctx, upsertSQL, channel, username, userRank, now)
+	if err != nil {
+		// Fallback to non-atomic approach if function doesn't exist
+		if strings.Contains(err.Error(), "upsert_user_session") || strings.Contains(err.Error(), "does not exist") {
+			logger.Debug("UserTracker", "Stored function not available, using fallback approach")
+			p.handleUserJoinFallback(channel, username, userRank, now)
+		} else {
+			logger.Error("UserTracker", "Error upserting user session: %v", err)
+		}
+		return
+	}
+	defer rows.Close()
+	
+	// Log whether we reactivated or created a new session
+	if rows.Next() {
+		var sessionID int
+		var wasReactivated bool
+		if err := rows.Scan(&sessionID, &wasReactivated); err == nil {
+			if wasReactivated {
+				logger.Debug("UserTracker", "Reactivated existing session for %s (ID: %d)", username, sessionID)
 			} else {
-				logger.Error("UserTracker", "Error upserting user session: %v", err)
+				logger.Debug("UserTracker", "Created new session for %s (ID: %d)", username, sessionID)
 			}
-			return nil
-		}
-		defer rows.Close()
-		
-		// Log whether we reactivated or created a new session
-		if rows.Next() {
-			var sessionID int
-			var wasReactivated bool
-			if err := rows.Scan(&sessionID, &wasReactivated); err == nil {
-				if wasReactivated {
-					logger.Debug("UserTracker", "Reactivated existing session for %s (ID: %d)", username, sessionID)
-				} else {
-					logger.Debug("UserTracker", "Created new session for %s (ID: %d)", username, sessionID)
-				}
-			}
-		}
-	} else {
-		// Regular user join - first mark all existing active sessions as inactive
-		// to prevent multiple active sessions for the same user
-		// Use SKIP LOCKED to avoid deadlocks
-		deactivateSQL := `
-			UPDATE daz_user_tracker_sessions 
-			SET is_active = FALSE, left_at = $1
-			WHERE id IN (
-				SELECT id 
-				FROM daz_user_tracker_sessions 
-				WHERE channel = $2 AND username = $3 AND is_active = TRUE
-				FOR UPDATE SKIP LOCKED
-			)
-		`
-		err := p.sqlClient.Exec(deactivateSQL, now, channel, username)
-		if err != nil {
-			logger.Error("UserTracker", "Error deactivating old sessions: %v", err)
-		}
-
-		// Now create new session with conflict handling for duplicate events
-		sessionSQL := `
-			INSERT INTO daz_user_tracker_sessions 
-				(channel, username, rank, joined_at, last_activity, is_active)
-			VALUES ($1, $2, $3, $4, $5, TRUE)
-			ON CONFLICT (channel, username, joined_at) 
-			DO UPDATE SET 
-				rank = EXCLUDED.rank,
-				last_activity = EXCLUDED.last_activity,
-				is_active = TRUE
-		`
-		err = p.sqlClient.Exec(sessionSQL,
-			channel,
-			username,
-			userRank,
-			now,
-			now)
-		if err != nil {
-			logger.Error("UserTracker", "Error recording user join: %v", err)
 		}
 	}
+}
 
-	// Record in history
+// handleRegularJoin handles regular user join events (not during userlist)
+func (p *Plugin) handleRegularJoin(channel, username string, userRank int, now time.Time) {
+	// Regular user join - first mark all existing active sessions as inactive
+	// to prevent multiple active sessions for the same user
+	// Use SKIP LOCKED to avoid deadlocks
+	deactivateSQL := `
+		UPDATE daz_user_tracker_sessions 
+		SET is_active = FALSE, left_at = $1
+		WHERE id IN (
+			SELECT id 
+			FROM daz_user_tracker_sessions 
+			WHERE channel = $2 AND username = $3 AND is_active = TRUE
+			FOR UPDATE SKIP LOCKED
+		)
+	`
+	err := p.sqlClient.Exec(deactivateSQL, now, channel, username)
+	if err != nil {
+		logger.Error("UserTracker", "Error deactivating old sessions: %v", err)
+	}
+
+	// Now create new session with conflict handling for duplicate events
+	sessionSQL := `
+		INSERT INTO daz_user_tracker_sessions 
+			(channel, username, rank, joined_at, last_activity, is_active)
+		VALUES ($1, $2, $3, $4, $5, TRUE)
+		ON CONFLICT (channel, username, joined_at) 
+		DO UPDATE SET 
+			rank = EXCLUDED.rank,
+			last_activity = EXCLUDED.last_activity,
+			is_active = TRUE
+	`
+	err = p.sqlClient.Exec(sessionSQL,
+		channel,
+		username,
+		userRank,
+		now,
+		now)
+	if err != nil {
+		logger.Error("UserTracker", "Error recording user join: %v", err)
+	}
+}
+
+// recordJoinHistory records user join event in history table
+func (p *Plugin) recordJoinHistory(channel, username string, userRank int, now time.Time, fromUserlist bool) {
 	historySQL := `
 		INSERT INTO daz_user_tracker_history 
 			(channel, username, event_type, timestamp, metadata)
 		VALUES ($1, $2, 'join', $3, $4)
 	`
-	metadata := fmt.Sprintf(`{"rank": %d, "from_userlist": %t}`, userRank, processingUserlist)
+	metadata := fmt.Sprintf(`{"rank": %d, "from_userlist": %t}`, userRank, fromUserlist)
 	err := p.sqlClient.Exec(historySQL,
 		channel,
 		username,
@@ -482,10 +511,6 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	if err != nil {
 		logger.Error("UserTracker", "Error recording join history: %v", err)
 	}
-
-	logger.Info("UserTracker", "User joined: %s (rank %d)", username, userRank)
-	p.status.EventsHandled++
-	return nil
 }
 
 // handleUserListStart processes the start of a userlist event
@@ -827,6 +852,147 @@ func formatDuration(d time.Duration) string {
 		days := int(d.Hours()) / 24
 		return fmt.Sprintf("%d days", days)
 	}
+}
+
+// createStoredFunction creates the upsert_user_session function in the database
+func (p *Plugin) createStoredFunction() error {
+	functionSQL := `
+CREATE OR REPLACE FUNCTION upsert_user_session(
+    p_channel VARCHAR(255),
+    p_username VARCHAR(255),
+    p_rank INT,
+    p_now TIMESTAMP
+) RETURNS TABLE (
+    session_id INT,
+    was_reactivated BOOLEAN
+) AS $$
+DECLARE
+    v_session_id INT;
+    v_was_reactivated BOOLEAN := FALSE;
+BEGIN
+    -- First try to reactivate the most recent inactive session
+    UPDATE daz_user_tracker_sessions 
+    SET is_active = TRUE, 
+        left_at = NULL,
+        last_activity = p_now,
+        rank = p_rank
+    WHERE id = (
+        SELECT id FROM daz_user_tracker_sessions
+        WHERE channel = p_channel 
+          AND username = p_username
+          AND is_active = FALSE
+        ORDER BY joined_at DESC
+        LIMIT 1
+    )
+    RETURNING id INTO v_session_id;
+    
+    -- If we found and reactivated a session, we're done
+    IF FOUND THEN
+        v_was_reactivated := TRUE;
+        RETURN QUERY SELECT v_session_id, v_was_reactivated;
+        RETURN;
+    END IF;
+    
+    -- No existing inactive session found, ensure no active sessions exist
+    UPDATE daz_user_tracker_sessions 
+    SET is_active = FALSE
+    WHERE channel = p_channel 
+      AND username = p_username 
+      AND is_active = TRUE;
+    
+    -- Create a new session
+    INSERT INTO daz_user_tracker_sessions 
+        (channel, username, rank, joined_at, last_activity, is_active)
+    VALUES (p_channel, p_username, p_rank, p_now, p_now, TRUE)
+    ON CONFLICT (channel, username, joined_at) 
+    DO UPDATE SET 
+        rank = EXCLUDED.rank,
+        last_activity = EXCLUDED.last_activity,
+        is_active = TRUE,
+        left_at = NULL
+    RETURNING id INTO v_session_id;
+    
+    RETURN QUERY SELECT v_session_id, v_was_reactivated;
+END;
+$$ LANGUAGE plpgsql;`
+
+	err := p.sqlClient.Exec(functionSQL)
+	if err != nil {
+		return fmt.Errorf("failed to create stored function: %w", err)
+	}
+
+	logger.Info("UserTracker", "Successfully created upsert_user_session stored function")
+	return nil
+}
+
+// migrateToUTC migrates existing timestamps to UTC
+func (p *Plugin) migrateToUTC() error {
+	// Check if migration is needed by looking at a sample timestamp
+	checkSQL := `
+		SELECT COUNT(*) 
+		FROM daz_user_tracker_sessions 
+		WHERE joined_at > NOW() + INTERVAL '1 hour'
+		LIMIT 1
+	`
+
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+
+	sqlHelper := framework.NewSQLRequestHelper(p.eventBus, p.name)
+	rows, err := sqlHelper.FastQuery(ctx, checkSQL)
+	if err != nil {
+		return fmt.Errorf("failed to check for UTC migration need: %w", err)
+	}
+	defer rows.Close()
+
+	var count int
+	if rows.Next() {
+		if err := rows.Scan(&count); err != nil {
+			return fmt.Errorf("failed to scan count: %w", err)
+		}
+	}
+
+	// If we have future timestamps, they're likely in local time and need conversion
+	if count > 0 {
+		logger.Info("UserTracker", "Detected timestamps in local time, migrating to UTC...")
+
+		// Migrate sessions table
+		sessionMigrationSQL := `
+			UPDATE daz_user_tracker_sessions
+			SET 
+			    joined_at = joined_at AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'UTC',
+			    last_activity = last_activity AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'UTC',
+			    left_at = CASE 
+			        WHEN left_at IS NOT NULL 
+			        THEN left_at AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'UTC'
+			        ELSE NULL 
+			    END
+			WHERE joined_at > NOW() + INTERVAL '1 hour'
+		`
+		
+		err = p.sqlClient.Exec(sessionMigrationSQL)
+		if err != nil {
+			return fmt.Errorf("failed to migrate sessions to UTC: %w", err)
+		}
+
+		// Migrate history table
+		historyMigrationSQL := `
+			UPDATE daz_user_tracker_history
+			SET timestamp = timestamp AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'UTC'
+			WHERE timestamp > NOW() + INTERVAL '1 hour'
+		`
+		
+		err = p.sqlClient.Exec(historyMigrationSQL)
+		if err != nil {
+			return fmt.Errorf("failed to migrate history to UTC: %w", err)
+		}
+
+		logger.Info("UserTracker", "Successfully migrated timestamps to UTC")
+	} else {
+		logger.Debug("UserTracker", "No UTC migration needed")
+	}
+
+	return nil
 }
 
 // handleUserJoinFallback is the non-atomic fallback approach when stored function is not available
