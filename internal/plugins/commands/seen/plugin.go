@@ -276,7 +276,7 @@ func (p *Plugin) emitFailureEvent(eventType, correlationID, operationType string
 
 func formatTime(t time.Time) string {
 	// Now that we store all timestamps as UTC, we can calculate duration directly
-	duration := time.Since(t)
+	duration := time.Now().UTC().Sub(t)
 	if duration < time.Minute {
 		return fmt.Sprintf("%ds ago", int(duration.Seconds()))
 	} else if duration < time.Hour {

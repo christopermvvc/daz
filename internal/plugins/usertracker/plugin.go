@@ -33,11 +33,16 @@ type Plugin struct {
 	users map[string]*UserState
 
 	// Plugin status tracking
-	status framework.PluginStatus
+	status    framework.PluginStatus
+	startTime time.Time
 
 	// Userlist processing state
 	processingUserlist map[string]bool
 	userlistMutex      sync.RWMutex
+	
+	// Database state
+	storedFunctionAvailable bool
+	storedFunctionMutex     sync.RWMutex
 }
 
 // Config holds usertracker plugin configuration
@@ -231,7 +236,7 @@ func (p *Plugin) Start() error {
 
 	p.running = true
 	p.status.State = "running"
-	p.status.Uptime = time.Since(time.Now().UTC())
+	p.startTime = time.Now().UTC()
 
 	// Signal that the plugin is ready
 	close(p.readyChan)
@@ -274,8 +279,8 @@ func (p *Plugin) Status() framework.PluginStatus {
 	defer p.mu.RUnlock()
 
 	status := p.status
-	if p.running {
-		status.Uptime = time.Since(time.Now().UTC().Add(-status.Uptime))
+	if p.running && !p.startTime.IsZero() {
+		status.Uptime = time.Now().UTC().Sub(p.startTime)
 	}
 	return status
 }
@@ -331,7 +336,9 @@ func (p *Plugin) createTables() error {
 
 	// Create the stored function for atomic upserts
 	if err := p.createStoredFunction(); err != nil {
-		logger.Warn("UserTracker", "Failed to create stored function (will use fallback): %v", err)
+		logger.Error("UserTracker", "Failed to create stored function: %v", err)
+		logger.Warn("UserTracker", "Will use non-atomic fallback for session updates - this may cause race conditions")
+		p.status.LastError = fmt.Errorf("stored function unavailable: %w", err)
 		// Don't fail startup - we have a fallback
 	}
 
@@ -416,40 +423,63 @@ func (p *Plugin) updateInMemoryUser(username string, userRank int, now time.Time
 
 // handleUserlistJoin handles user join during userlist processing
 func (p *Plugin) handleUserlistJoin(channel, username string, userRank int, now time.Time) {
-	// Use atomic upsert to handle session reactivation or creation
-	upsertSQL := `
-		SELECT session_id, was_reactivated 
-		FROM upsert_user_session($1, $2, $3, $4)
-	`
+	// Check if stored function is available
+	p.storedFunctionMutex.RLock()
+	functionAvailable := p.storedFunctionAvailable
+	p.storedFunctionMutex.RUnlock()
 
-	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
-	defer cancel()
-
-	sqlHelper := framework.NewSQLRequestHelper(p.eventBus, p.name)
-	rows, err := sqlHelper.FastQuery(ctx, upsertSQL, channel, username, userRank, now)
-	if err != nil {
-		// Fallback to non-atomic approach if function doesn't exist
-		if strings.Contains(err.Error(), "upsert_user_session") || strings.Contains(err.Error(), "does not exist") {
-			logger.Debug("UserTracker", "Stored function not available, using fallback approach")
-			p.handleUserJoinFallback(channel, username, userRank, now)
+	// Try to create function if not available (might have failed during startup)
+	if !functionAvailable {
+		if err := p.createStoredFunction(); err == nil {
+			functionAvailable = true
 		} else {
-			logger.Error("UserTracker", "Error upserting user session: %v", err)
+			logger.Debug("UserTracker", "Still unable to create stored function: %v", err)
 		}
-		return
 	}
-	defer rows.Close()
 
-	// Log whether we reactivated or created a new session
-	if rows.Next() {
-		var sessionID int
-		var wasReactivated bool
-		if err := rows.Scan(&sessionID, &wasReactivated); err == nil {
-			if wasReactivated {
-				logger.Debug("UserTracker", "Reactivated existing session for %s (ID: %d)", username, sessionID)
+	// Use atomic upsert if function is available
+	if functionAvailable {
+		upsertSQL := `
+			SELECT session_id, was_reactivated 
+			FROM upsert_user_session($1, $2, $3, $4)
+		`
+
+		ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+		defer cancel()
+
+		sqlHelper := framework.NewSQLRequestHelper(p.eventBus, p.name)
+		rows, err := sqlHelper.FastQuery(ctx, upsertSQL, channel, username, userRank, now)
+		if err != nil {
+			// Fallback to non-atomic approach if function call fails
+			if strings.Contains(err.Error(), "upsert_user_session") || strings.Contains(err.Error(), "does not exist") {
+				logger.Debug("UserTracker", "Stored function not available, using fallback approach")
+				// Mark as unavailable for future calls
+				p.storedFunctionMutex.Lock()
+				p.storedFunctionAvailable = false
+				p.storedFunctionMutex.Unlock()
+				p.handleUserJoinFallback(channel, username, userRank, now)
 			} else {
-				logger.Debug("UserTracker", "Created new session for %s (ID: %d)", username, sessionID)
+				logger.Error("UserTracker", "Error upserting user session: %v", err)
+			}
+			return
+		}
+		defer rows.Close()
+
+		// Log whether we reactivated or created a new session
+		if rows.Next() {
+			var sessionID int
+			var wasReactivated bool
+			if err := rows.Scan(&sessionID, &wasReactivated); err == nil {
+				if wasReactivated {
+					logger.Debug("UserTracker", "Reactivated existing session for %s (ID: %d)", username, sessionID)
+				} else {
+					logger.Debug("UserTracker", "Created new session for %s (ID: %d)", username, sessionID)
+				}
 			}
 		}
+	} else {
+		// Stored function not available, use fallback
+		p.handleUserJoinFallback(channel, username, userRank, now)
 	}
 }
 
@@ -749,14 +779,15 @@ func (p *Plugin) handleSeenRequest(event framework.Event) error {
 
 		// Format response
 		var response string
+		now := time.Now().UTC()
 		if isActive {
-			duration := time.Since(lastActivity)
+			duration := now.Sub(lastActivity)
 			response = fmt.Sprintf("%s is currently online (last active %s ago)", username, formatDuration(duration))
 		} else if leftAt.Valid {
-			duration := time.Since(leftAt.Time)
+			duration := now.Sub(leftAt.Time)
 			response = fmt.Sprintf("%s was last seen %s ago", username, formatDuration(duration))
 		} else {
-			duration := time.Since(lastActivity)
+			duration := now.Sub(lastActivity)
 			response = fmt.Sprintf("%s was last seen %s ago", username, formatDuration(duration))
 		}
 
@@ -947,6 +978,11 @@ $$ LANGUAGE plpgsql;`
 	if err != nil {
 		return fmt.Errorf("failed to create stored function: %w", err)
 	}
+
+	// Mark stored function as available
+	p.storedFunctionMutex.Lock()
+	p.storedFunctionAvailable = true
+	p.storedFunctionMutex.Unlock()
 
 	logger.Info("UserTracker", "Successfully created upsert_user_session stored function")
 	return nil
