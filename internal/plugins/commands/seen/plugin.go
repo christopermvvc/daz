@@ -275,7 +275,14 @@ func (p *Plugin) emitFailureEvent(eventType, correlationID, operationType string
 }
 
 func formatTime(t time.Time) string {
-	duration := time.Since(t)
+	// The database stores timestamps without timezone, which are interpreted as UTC
+	// but they're actually in the server's local time. We need to adjust.
+	// Get the local timezone offset
+	_, offset := time.Now().Zone()
+	// Adjust the time by the offset to get the correct local time
+	localTime := t.Add(time.Duration(offset) * time.Second)
+	
+	duration := time.Since(localTime)
 	if duration < time.Minute {
 		return fmt.Sprintf("%ds ago", int(duration.Seconds()))
 	} else if duration < time.Hour {
