@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
 	"github.com/hildolfr/daz/internal/logger"
@@ -555,31 +556,100 @@ func (p *Plugin) handlePlaylistDeleteCommand(req *framework.PluginRequest) {
 }
 
 func (p *Plugin) findUIDByURL(channel, url string) string {
+	// First check in-memory cache
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-	
 	playlist, exists := p.playlists[channel]
-	if !exists {
-		logger.Warn(p.name, "No cached playlist for channel %s", channel)
-		// For now, we can't look up without the cache
-		// TODO: Implement playlist request or SQL lookup with UID storage
+	p.mu.RUnlock()
+	
+	if exists {
+		// Search for exact URL match in cache
+		for _, item := range playlist {
+			// For direct files (type "fi"), the MediaID is the URL
+			if item.MediaType == "fi" && item.MediaID == url {
+				return item.UID
+			}
+			
+			// For other media types, construct the URL and compare
+			constructedURL := p.constructURL(item.MediaType, item.MediaID)
+			if constructedURL == url {
+				return item.UID
+			}
+		}
+	}
+
+	// If not found in cache or cache doesn't exist, query SQL database
+	logger.Info(p.name, "Cache miss for channel %s, querying SQL for UID", channel)
+	
+	// Extract media ID and type from URL
+	mediaType := p.detectMediaType(url)
+	mediaID := p.extractMediaID(url, mediaType)
+	
+	logger.Info(p.name, "SQL lookup - Channel: %s, MediaID: %s, MediaType: %s", channel, mediaID, mediaType)
+	
+	// Generate a correlation ID for the request
+	correlationID := fmt.Sprintf("%d", time.Now().UnixNano())
+	
+	// Query the SQL database for the UID
+	queryReq := &framework.EventData{
+		SQLQueryRequest: &framework.SQLQueryRequest{
+			CorrelationID: correlationID,
+			Query: `SELECT uid FROM daz_mediatracker_queue 
+					WHERE channel = $1 AND media_id = $2 AND media_type = $3 
+					ORDER BY position ASC LIMIT 1`,
+			Params: []framework.SQLParam{
+				framework.NewSQLParam(channel),
+				framework.NewSQLParam(mediaID),
+				framework.NewSQLParam(mediaType),
+			},
+			RequestBy: p.name,
+		},
+	}
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	// Create metadata for the request
+	metadata := &framework.EventMetadata{
+		Source:        p.name,
+		CorrelationID: correlationID,
+	}
+	
+	responseEvent, err := p.eventBus.Request(ctx, "sql", "plugin.request", queryReq, metadata)
+	if err != nil {
+		logger.Error(p.name, "Failed to query SQL for UID: %v", err)
 		return ""
 	}
 	
-	// Search for exact URL match
-	for _, item := range playlist {
-		// For direct files (type "fi"), the MediaID is the URL
-		if item.MediaType == "fi" && item.MediaID == url {
-			return item.UID
-		}
-		
-		// For other media types, construct the URL and compare
-		constructedURL := p.constructURL(item.MediaType, item.MediaID)
-		if constructedURL == url {
-			return item.UID
+	// Log the raw response for debugging
+	if responseEvent != nil {
+		if responseEvent.PluginResponse != nil {
+			logger.Info(p.name, "Got plugin response instead of SQL response")
 		}
 	}
 	
+	if responseEvent == nil || responseEvent.SQLQueryResponse == nil {
+		logger.Error(p.name, "Invalid SQL response format - nil SQL response")
+		return ""
+	}
+	
+	response := responseEvent.SQLQueryResponse
+	if !response.Success {
+		logger.Error(p.name, "SQL query failed: %s", response.Error)
+		return ""
+	}
+	
+	if len(response.Rows) > 0 && len(response.Rows[0]) > 0 {
+		// Parse the UID from the response
+		var uid string
+		if err := json.Unmarshal(response.Rows[0][0], &uid); err != nil {
+			logger.Error(p.name, "Failed to parse UID from SQL response: %v", err)
+			return ""
+		}
+		logger.Info(p.name, "Found UID %s for URL %s via SQL", uid, url)
+		return uid
+	}
+	
+	logger.Warn(p.name, "URL %s not found in SQL database for channel %s", url, channel)
 	return ""
 }
 
@@ -601,6 +671,7 @@ func (p *Plugin) constructURL(mediaType, mediaID string) string {
 		return mediaID
 	}
 }
+
 
 func (p *Plugin) deleteFromPlaylist(channel, uid string) error {
 	// Create the delete request for the core plugin

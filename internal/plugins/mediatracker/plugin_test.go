@@ -304,7 +304,7 @@ func TestPluginStart(t *testing.T) {
 	time.Sleep(3 * time.Second)
 
 	// Check that tables were created asynchronously
-	expectedTables := 4 // plays, queue, stats, library
+	expectedTables := 6 // plays, queue, stats, library + ALTER TABLE for uid + CREATE INDEX for uid
 	bus.mu.Lock()
 	actualTables := len(bus.execCalls)
 	bus.mu.Unlock()

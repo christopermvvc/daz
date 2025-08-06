@@ -90,6 +90,7 @@ type VideoChangeData struct {
 
 // QueueItem represents a single item in the queue
 type QueueItem struct {
+	UID       string `json:"uid"`       // Unique identifier for playlist item
 	Position  int    `json:"position"`
 	MediaID   string `json:"media_id"`
 	MediaType string `json:"media_type"`

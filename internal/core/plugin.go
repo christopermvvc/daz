@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/hildolfr/daz/internal/logger"
+	"strconv"
 	"sync"
 	"time"
 
@@ -36,6 +37,30 @@ type GenericPayload struct {
 
 // IsEventPayload implements cytube.EventPayload interface
 func (g *GenericPayload) IsEventPayload() {}
+
+// StringPayload wraps a simple string value to implement cytube.EventPayload
+// Used for commands that expect just a string value, not an object
+type StringPayload string
+
+// IsEventPayload implements cytube.EventPayload interface
+func (s StringPayload) IsEventPayload() {}
+
+// MarshalJSON returns the string as a JSON value
+func (s StringPayload) MarshalJSON() ([]byte, error) {
+	return json.Marshal(string(s))
+}
+
+// IntPayload wraps an integer value to implement cytube.EventPayload
+// Used for commands that expect just a number value, not an object
+type IntPayload int
+
+// IsEventPayload implements cytube.EventPayload interface
+func (i IntPayload) IsEventPayload() {}
+
+// MarshalJSON returns the integer as a JSON number
+func (i IntPayload) MarshalJSON() ([]byte, error) {
+	return json.Marshal(int(i))
+}
 
 // MarshalJSON implements json.Marshaler
 func (g *GenericPayload) MarshalJSON() ([]byte, error) {
@@ -642,18 +667,23 @@ func (p *Plugin) handleDeleteMedia(req *framework.PluginRequest) error {
 		return fmt.Errorf("room '%s' is not connected", roomID)
 	}
 	
-	// Create a simple delete payload - just the UID
+	// Create delete payload - CyTube expects just the UID value directly
 	// From util.js: socket.emit("delete", li.data("uid"));
-	deletePayload := &GenericPayload{
-		Data: map[string]interface{}{
-			"uid": uid, // CyTube expects just the UID for delete
-		},
+	// CyTube's delete event expects the UID as a number, not a string
+	// Convert the UID string to an integer
+	uidInt, err := strconv.Atoi(uid)
+	if err != nil {
+		logger.Error("Core", "Invalid UID format: %s", uid)
+		return fmt.Errorf("invalid UID: %w", err)
 	}
 	
-	logger.Info("Core", "Sending delete event for UID: %s", uid)
+	// Use the IntPayload type to send the UID as a JSON number
+	payload := IntPayload(uidInt)
+	
+	logger.Info("Core", "Sending delete event for UID: %d", uidInt)
 	
 	// Send the delete event via WebSocket
-	if err := client.Send("delete", deletePayload); err != nil {
+	if err := client.Send("delete", payload); err != nil {
 		logger.Error("Core", "Failed to send delete event: %v", err)
 		return fmt.Errorf("failed to delete media: %w", err)
 	}

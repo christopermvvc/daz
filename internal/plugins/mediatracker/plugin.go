@@ -315,6 +315,7 @@ func (p *Plugin) createTables() error {
 		id SERIAL PRIMARY KEY,
 		channel VARCHAR(255) NOT NULL,
 		position INT NOT NULL,
+		uid VARCHAR(255),
 		media_id VARCHAR(255) NOT NULL,
 		media_type VARCHAR(50) NOT NULL,
 		title TEXT NOT NULL,
@@ -373,6 +374,18 @@ func (p *Plugin) createTables() error {
 		if err := p.sqlClient.Exec(sql); err != nil {
 			return fmt.Errorf("failed to create table: %w", err)
 		}
+	}
+
+	// Add UID column to existing tables if it doesn't exist
+	alterTableSQL := `ALTER TABLE daz_mediatracker_queue ADD COLUMN IF NOT EXISTS uid VARCHAR(255)`
+	if err := p.sqlClient.Exec(alterTableSQL); err != nil {
+		logger.Warn("MediaTracker", "Failed to add uid column (may already exist): %v", err)
+	}
+
+	// Create index on UID for faster lookups
+	createIndexSQL := `CREATE INDEX IF NOT EXISTS idx_queue_uid ON daz_mediatracker_queue(channel, uid)`
+	if err := p.sqlClient.Exec(createIndexSQL); err != nil {
+		logger.Warn("MediaTracker", "Failed to create uid index: %v", err)
 	}
 
 	return nil
@@ -619,9 +632,10 @@ func (p *Plugin) insertQueueItem(channel string, item *framework.QueueItem) erro
 
 	return p.sqlClient.Exec(`
 		INSERT INTO daz_mediatracker_queue 
-		(channel, position, media_id, media_type, title, duration, queued_by, queued_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		(channel, position, uid, media_id, media_type, title, duration, queued_by, queued_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (channel, position) DO UPDATE SET
+			uid = EXCLUDED.uid,
 			media_id = EXCLUDED.media_id,
 			media_type = EXCLUDED.media_type,
 			title = EXCLUDED.title,
@@ -630,6 +644,7 @@ func (p *Plugin) insertQueueItem(channel string, item *framework.QueueItem) erro
 			queued_at = EXCLUDED.queued_at
 	`, channel,
 		item.Position,
+		item.UID,
 		item.MediaID,
 		item.MediaType,
 		item.Title,
@@ -648,7 +663,7 @@ func (p *Plugin) bulkInsertQueueItems(channel string, items []framework.QueueIte
 	var sqlStr strings.Builder
 	sqlStr.WriteString(`
 		INSERT INTO daz_mediatracker_queue 
-		(channel, position, media_id, media_type, title, duration, queued_by, queued_at)
+		(channel, position, uid, media_id, media_type, title, duration, queued_by, queued_at)
 		VALUES `)
 
 	// Build value placeholders and collect all parameters
@@ -657,14 +672,15 @@ func (p *Plugin) bulkInsertQueueItems(channel string, items []framework.QueueIte
 		if i > 0 {
 			sqlStr.WriteString(", ")
 		}
-		base := i * 8
-		sqlStr.WriteString(fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
-			base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8))
+		base := i * 9
+		sqlStr.WriteString(fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9))
 
 		queuedAt := time.Unix(item.QueuedAt, 0)
 		params = append(params,
 			channel,
 			item.Position,
+			item.UID,
 			item.MediaID,
 			item.MediaType,
 			item.Title,
@@ -1082,6 +1098,7 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 			// Also update the queue table
 			for _, item := range batch {
 				if err := p.insertQueueItem(channel, &framework.QueueItem{
+					UID:       item.UID,
 					Position:  item.Position,
 					MediaID:   item.MediaID,
 					MediaType: item.MediaType,
