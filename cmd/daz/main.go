@@ -30,6 +30,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/eventfilter"
 	"github.com/hildolfr/daz/internal/plugins/greeter"
 	"github.com/hildolfr/daz/internal/plugins/mediatracker"
+	"github.com/hildolfr/daz/internal/plugins/playlist"
 	"github.com/hildolfr/daz/internal/plugins/retry"
 	"github.com/hildolfr/daz/internal/plugins/sql"
 	"github.com/hildolfr/daz/internal/plugins/usertracker"
@@ -208,6 +209,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"random", random.New()},
 		{"tell", tell.New()},
 		{"seen", seen.New()},
+		{"playlist", playlist.New()},
 	}
 
 	// Register all plugins with the manager
@@ -234,6 +236,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["greeter"] = cfg.GetPluginConfig("greeter")
 	pluginConfigs["weather"] = cfg.GetPluginConfig("weather")
 	pluginConfigs["random"] = cfg.GetPluginConfig("random")
+	pluginConfigs["playlist"] = cfg.GetPluginConfig("playlist")
 
 	// Initialize all plugins (respects dependencies)
 	if err := pluginManager.InitializeAll(pluginConfigs, bus); err != nil {

@@ -407,6 +407,14 @@ type PrivateMessageSendPayload struct {
 	Meta map[string]interface{} `json:"meta"`
 }
 
+// QueueMediaPayload represents a request to queue media
+type QueueMediaPayload struct {
+	Type string `json:"type"` // Media type (yt, fi, etc.)
+	ID   string `json:"id"`   // Media ID or URL
+	Pos  string `json:"pos"`  // Position in queue (end, next)
+	Temp bool   `json:"temp"` // Temporary addition
+}
+
 // EventPayload is an interface for all event payloads that can be sent
 type EventPayload interface {
 	// IsEventPayload is a marker method to ensure only valid event types implement this
@@ -431,6 +439,7 @@ func (SetUserRankPayload) IsEventPayload()        {}
 func (SetPermissionsPayload) IsEventPayload()     {}
 func (ChannelOptsPayload) IsEventPayload()        {}
 func (ChannelCSSJSPayload) IsEventPayload()       {}
+func (QueueMediaPayload) IsEventPayload()         {}
 
 // GenericEventData represents parsed generic event data with common fields
 type GenericEventData struct {

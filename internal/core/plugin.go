@@ -29,6 +29,19 @@ type Plugin struct {
 // eventHandler is a function that processes a specific event type
 type eventHandler func(event framework.Event) (string, *framework.EventData, bool)
 
+// GenericPayload wraps arbitrary data to implement cytube.EventPayload
+type GenericPayload struct {
+	Data map[string]interface{}
+}
+
+// IsEventPayload implements cytube.EventPayload interface
+func (g *GenericPayload) IsEventPayload() {}
+
+// MarshalJSON implements json.Marshaler
+func (g *GenericPayload) MarshalJSON() ([]byte, error) {
+	return json.Marshal(g.Data)
+}
+
 // NewPlugin creates a new instance of the core plugin
 func NewPlugin(config *Config) *Plugin {
 	if config == nil {
@@ -152,6 +165,13 @@ func (p *Plugin) Initialize(eventBus framework.EventBus) error {
 	if err := p.eventBus.Subscribe("cytube.send.pm", p.handleCytubeSendPM); err != nil {
 		return fmt.Errorf("failed to subscribe to cytube send pm events: %w", err)
 	}
+
+	// Subscribe to plugin requests
+	if err := p.eventBus.Subscribe("plugin.request", p.handlePluginRequest); err != nil {
+		return fmt.Errorf("failed to subscribe to plugin requests: %w", err)
+	}
+
+	logger.Info("Core", "Subscribed to plugin.request events")
 
 	return nil
 }
@@ -380,6 +400,8 @@ func (p *Plugin) handlePlaylistRequest(event framework.Event) error {
 
 // handlePluginRequest handles plugin requests for core plugin information
 func (p *Plugin) handlePluginRequest(event framework.Event) error {
+	logger.Debug("Core", "Received plugin.request event")
+	
 	dataEvent, ok := event.(*framework.DataEvent)
 	if !ok || dataEvent.Data == nil || dataEvent.Data.PluginRequest == nil {
 		logger.Debug("Core", "Received plugin.request event with no valid request data")
@@ -387,18 +409,23 @@ func (p *Plugin) handlePluginRequest(event framework.Event) error {
 	}
 
 	req := dataEvent.Data.PluginRequest
+	
+	logger.Debug("Core", "Plugin request from '%s' to '%s' type '%s'", req.From, req.To, req.Type)
 
 	// Check if this request is targeted at the core plugin
 	if req.To != "core" {
+		// Not for us
 		return nil
 	}
 
-	logger.Debug("Core", "Handling plugin request from '%s' of type '%s'", req.From, req.Type)
+	logger.Info("Core", "Handling plugin request from '%s' of type '%s'", req.From, req.Type)
 
 	// Handle different request types
 	switch req.Type {
 	case "get_configured_channels":
 		return p.handleGetConfiguredChannels(req)
+	case "queue_media":
+		return p.handleQueueMedia(req)
 	default:
 		// Send error response for unknown request types
 		response := &framework.EventData{
@@ -469,6 +496,101 @@ func (p *Plugin) handleGetConfiguredChannels(req *framework.PluginRequest) error
 	}
 
 	// Send response back to requesting plugin
+	return p.eventBus.Broadcast(fmt.Sprintf("plugin.response.%s", req.From), response)
+}
+
+// handleQueueMedia handles requests to queue media in CyTube
+func (p *Plugin) handleQueueMedia(req *framework.PluginRequest) error {
+	logger.Info("Core", "handleQueueMedia called from plugin: %s", req.From)
+	
+	if req.Data == nil || req.Data.KeyValue == nil {
+		logger.Error("Core", "Missing queue data in request from %s", req.From)
+		return fmt.Errorf("missing queue data")
+	}
+	
+	data := req.Data.KeyValue
+	channel := data["channel"]
+	mediaType := data["type"]
+	mediaID := data["id"]
+	pos := data["pos"]
+	temp := data["temp"] == "true"
+	
+	logger.Info("Core", "Queue media request - Channel: %s, Type: %s, ID: %s, Pos: %s, Temp: %v", 
+		channel, mediaType, mediaID, pos, temp)
+	
+	// Find the room ID for this channel
+	roomID := ""
+	for _, room := range p.config.Rooms {
+		if room.Channel == channel {
+			roomID = room.ID
+			break
+		}
+	}
+	
+	if roomID == "" {
+		return fmt.Errorf("channel '%s' not found", channel)
+	}
+	
+	// Get the connection for this room
+	p.mu.RLock()
+	conn, exists := p.roomManager.connections[roomID]
+	p.mu.RUnlock()
+	
+	if !exists || conn == nil {
+		return fmt.Errorf("no connection for room '%s'", roomID)
+	}
+	
+	conn.mu.RLock()
+	client := conn.Client
+	connected := conn.Connected
+	conn.mu.RUnlock()
+	
+	if !connected || client == nil {
+		return fmt.Errorf("room '%s' is not connected", roomID)
+	}
+	
+	// Create the queue payload for CyTube matching the JS client format
+	// From CyTube's ui.js: socket.emit("queue", { id, type, pos, temp, title, duration })
+	queuePayload := map[string]interface{}{
+		"id":   mediaID,
+		"type": mediaType,
+		"pos":  pos,
+		"temp": temp,
+	}
+	
+	// Add title if provided and not default
+	title := data["title"]
+	if title != "" && title != "Default Title" {
+		queuePayload["title"] = title
+	}
+	
+	// For direct files (type "fi"), we pass the full URL as the ID
+	if mediaType == "fi" {
+		queuePayload["id"] = mediaID
+	}
+	
+	logger.Info("Core", "Sending queue payload: %+v", queuePayload)
+	
+	// Create a generic payload that implements EventPayload
+	genericPayload := &GenericPayload{Data: queuePayload}
+	
+	// Send the queue event via WebSocket
+	if err := client.Send("queue", genericPayload); err != nil {
+		logger.Error("Core", "Failed to send queue event: %v", err)
+		return fmt.Errorf("failed to queue media: %w", err)
+	}
+	
+	logger.Info("Core", "Successfully sent queue event for %s:%s", mediaType, mediaID)
+	
+	// Send success response
+	response := &framework.EventData{
+		PluginResponse: &framework.PluginResponse{
+			ID:      req.ID,
+			From:    "core",
+			Success: true,
+		},
+	}
+	
 	return p.eventBus.Broadcast(fmt.Sprintf("plugin.response.%s", req.From), response)
 }
 
