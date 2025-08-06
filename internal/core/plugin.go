@@ -426,6 +426,8 @@ func (p *Plugin) handlePluginRequest(event framework.Event) error {
 		return p.handleGetConfiguredChannels(req)
 	case "queue_media":
 		return p.handleQueueMedia(req)
+	case "delete_media":
+		return p.handleDeleteMedia(req)
 	default:
 		// Send error response for unknown request types
 		response := &framework.EventData{
@@ -581,6 +583,82 @@ func (p *Plugin) handleQueueMedia(req *framework.PluginRequest) error {
 	}
 	
 	logger.Info("Core", "Successfully sent queue event for %s:%s", mediaType, mediaID)
+	
+	// Send success response
+	response := &framework.EventData{
+		PluginResponse: &framework.PluginResponse{
+			ID:      req.ID,
+			From:    "core",
+			Success: true,
+		},
+	}
+	
+	return p.eventBus.Broadcast(fmt.Sprintf("plugin.response.%s", req.From), response)
+}
+
+// handleDeleteMedia handles requests to delete media from CyTube playlist
+func (p *Plugin) handleDeleteMedia(req *framework.PluginRequest) error {
+	logger.Info("Core", "handleDeleteMedia called from plugin: %s", req.From)
+	
+	if req.Data == nil || req.Data.KeyValue == nil {
+		logger.Error("Core", "Missing delete data in request from %s", req.From)
+		return fmt.Errorf("missing delete data")
+	}
+	
+	data := req.Data.KeyValue
+	channel := data["channel"]
+	uid := data["uid"]
+	
+	logger.Info("Core", "Delete media request - Channel: %s, UID: %s", channel, uid)
+	
+	// Find the room ID for this channel
+	roomID := ""
+	for _, room := range p.config.Rooms {
+		if room.Channel == channel {
+			roomID = room.ID
+			break
+		}
+	}
+	
+	if roomID == "" {
+		return fmt.Errorf("channel '%s' not found", channel)
+	}
+	
+	// Get the connection for this room
+	p.mu.RLock()
+	conn, exists := p.roomManager.connections[roomID]
+	p.mu.RUnlock()
+	
+	if !exists || conn == nil {
+		return fmt.Errorf("no connection for room '%s'", roomID)
+	}
+	
+	conn.mu.RLock()
+	client := conn.Client
+	connected := conn.Connected
+	conn.mu.RUnlock()
+	
+	if !connected || client == nil {
+		return fmt.Errorf("room '%s' is not connected", roomID)
+	}
+	
+	// Create a simple delete payload - just the UID
+	// From util.js: socket.emit("delete", li.data("uid"));
+	deletePayload := &GenericPayload{
+		Data: map[string]interface{}{
+			"uid": uid, // CyTube expects just the UID for delete
+		},
+	}
+	
+	logger.Info("Core", "Sending delete event for UID: %s", uid)
+	
+	// Send the delete event via WebSocket
+	if err := client.Send("delete", deletePayload); err != nil {
+		logger.Error("Core", "Failed to send delete event: %v", err)
+		return fmt.Errorf("failed to delete media: %w", err)
+	}
+	
+	logger.Info("Core", "Successfully sent delete event for UID %s", uid)
 	
 	// Send success response
 	response := &framework.EventData{

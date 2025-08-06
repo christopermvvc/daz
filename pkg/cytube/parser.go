@@ -294,6 +294,7 @@ func (p *Parser) parsePlaylist(base framework.CytubeEvent, data json.RawMessage)
 			}
 
 			playlistItems[i] = framework.PlaylistItem{
+				UID:       item.UID.String(), // Convert FlexibleUID to string
 				Position:  i,
 				MediaID:   item.Media.ID,
 				MediaType: item.Media.Type,
