@@ -50,16 +50,15 @@ type PlaylistItem struct {
 
 // BatchImport tracks an ongoing batch import operation
 type BatchImport struct {
-	URLs        []string
-	Current     int
-	Total       int
-	Succeeded   int
-	Failed      int
-	StartTime   time.Time
-	User        string
-	Channel     string
-	Timer       *time.Timer
-	PendingURLs map[string]bool // Track URLs we're waiting for responses on
+	URLs      []string
+	Current   int
+	Total     int
+	Succeeded int
+	Failed    int
+	StartTime time.Time
+	User      string
+	Channel   string
+	Timer     *time.Timer
 }
 
 func New() framework.Plugin {
@@ -846,15 +845,14 @@ func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isP
 	
 	// Create new batch import
 	batchImport := &BatchImport{
-		URLs:        urls,
-		Current:     0,
-		Total:       len(urls),
-		Succeeded:   0,
-		Failed:      0,
-		StartTime:   time.Now(),
-		User:        username,
-		Channel:     channel,
-		PendingURLs: make(map[string]bool),
+		URLs:      urls,
+		Current:   0,
+		Total:     len(urls),
+		Succeeded: 0,
+		Failed:    0,
+		StartTime: time.Now(),
+		User:      username,
+		Channel:   channel,
 	}
 	p.batchImports[channel] = batchImport
 	p.mu.Unlock()
@@ -942,16 +940,30 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 
 // handleQueueSuccess tracks successful queue additions during batch imports
 func (p *Plugin) handleQueueSuccess(event framework.Event) error {
+	// Extract channel name from the event
+	var channelName string
+	if cytubeEvent, ok := event.(*framework.CytubeEvent); ok {
+		channelName = cytubeEvent.ChannelName
+	} else if genericEvent, ok := event.(*framework.GenericEvent); ok {
+		// GenericEvent embeds CytubeEvent
+		channelName = genericEvent.ChannelName
+	}
+	
+	if channelName == "" {
+		// Can't determine channel, skip tracking
+		return nil
+	}
+	
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	
-	// Check if there's a batch import in progress
-	for _, batch := range p.batchImports {
-		// For now, just increment success counter when we get a queue event
-		// This is a simplified approach - ideally we'd match the specific video
+	// Only track for the specific channel with a batch import
+	if batch, exists := p.batchImports[channelName]; exists {
+		// Only count if we're expecting a response (haven't counted all items yet)
 		if batch.Current > batch.Succeeded + batch.Failed {
 			batch.Succeeded++
-			logger.Debug(p.name, "Batch import item succeeded (%d/%d)", batch.Succeeded, batch.Total)
+			logger.Debug(p.name, "Batch import item succeeded for channel %s (%d/%d)", 
+				channelName, batch.Succeeded, batch.Total)
 		}
 	}
 	
@@ -960,20 +972,45 @@ func (p *Plugin) handleQueueSuccess(event framework.Event) error {
 
 // handleQueueFail tracks failed queue additions during batch imports
 func (p *Plugin) handleQueueFail(event framework.Event) error {
+	// Extract channel name from the event
+	var channelName string
+	var failureReason string
+	
+	if cytubeEvent, ok := event.(*framework.CytubeEvent); ok {
+		channelName = cytubeEvent.ChannelName
+	} else if genericEvent, ok := event.(*framework.GenericEvent); ok {
+		// GenericEvent embeds CytubeEvent
+		channelName = genericEvent.ChannelName
+		
+		// Try to extract failure reason from raw JSON
+		if len(genericEvent.RawJSON) > 0 {
+			var queueFailData struct {
+				Msg string `json:"msg"`
+			}
+			if err := json.Unmarshal(genericEvent.RawJSON, &queueFailData); err == nil {
+				failureReason = queueFailData.Msg
+			}
+		}
+	}
+	
+	if channelName == "" {
+		// Can't determine channel, skip tracking
+		return nil
+	}
+	
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	
-	// Check if there's a batch import in progress
-	for _, batch := range p.batchImports {
-		// For now, just increment failure counter when we get a queueFail event
-		// This is a simplified approach - ideally we'd match the specific video
+	// Only track for the specific channel with a batch import
+	if batch, exists := p.batchImports[channelName]; exists {
+		// Only count if we're expecting a response (haven't counted all items yet)
 		if batch.Current > batch.Succeeded + batch.Failed {
 			batch.Failed++
-			logger.Debug(p.name, "Batch import item failed (%d/%d)", batch.Failed, batch.Total)
+			logger.Debug(p.name, "Batch import item failed for channel %s (%d/%d)", 
+				channelName, batch.Failed, batch.Total)
 			
-			// Log the failure reason if available
-			if genericEvent, ok := event.(*framework.GenericEvent); ok {
-				logger.Info(p.name, "Queue failure during batch import: %s", string(genericEvent.RawJSON))
+			if failureReason != "" {
+				logger.Info(p.name, "Queue failure reason: %s", failureReason)
 			}
 		}
 	}
