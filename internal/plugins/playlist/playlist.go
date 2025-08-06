@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -26,6 +28,9 @@ type Plugin struct {
 	
 	// Playlist state tracking per channel
 	playlists map[string][]PlaylistItem // channel -> playlist items
+	
+	// Batch import tracking
+	batchImports map[string]*BatchImport // channel -> active batch import
 }
 
 type Config struct {
@@ -43,11 +48,23 @@ type PlaylistItem struct {
 	Temp      bool   `json:"temp"`
 }
 
+// BatchImport tracks an ongoing batch import operation
+type BatchImport struct {
+	URLs      []string
+	Current   int
+	Total     int
+	StartTime time.Time
+	User      string
+	Channel   string
+	Timer     *time.Timer
+}
+
 func New() framework.Plugin {
 	return &Plugin{
-		name:      "playlist",
-		adminOnly: true, // Default to admin only
-		playlists: make(map[string][]PlaylistItem),
+		name:         "playlist",
+		adminOnly:    true, // Default to admin only
+		playlists:    make(map[string][]PlaylistItem),
+		batchImports: make(map[string]*BatchImport),
 	}
 }
 
@@ -339,6 +356,13 @@ func (p *Plugin) handlePlaylistAddCommand(req *framework.PluginRequest) {
 		}
 		
 		logger.Info(p.name, "Parsed normally - Title: %s, URL: %s", title, url)
+	}
+	
+	// Check if it's a Pastebin URL
+	if strings.Contains(url, "pastebin.com/") && !strings.Contains(url, "/raw/") {
+		logger.Info(p.name, "Detected Pastebin URL, processing batch import")
+		p.handlePastebinImport(params["channel"], params["username"], url, params["is_pm"] == "true")
+		return
 	}
 	
 	logger.Info(p.name, "Adding item to playlist - Title: %s, URL: %s, Channel: %s, User: %s",
@@ -697,4 +721,154 @@ func (p *Plugin) deleteFromPlaylist(channel, uid string) error {
 	logger.Info(p.name, "Sent delete request for UID '%s' in channel %s", uid, channel)
 	
 	return nil
+}
+
+// handlePastebinImport processes a Pastebin URL containing a list of URLs to import
+func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isPM bool) {
+	// Convert to raw URL
+	rawURL := strings.Replace(pastebinURL, "pastebin.com/", "pastebin.com/raw/", 1)
+	
+	logger.Info(p.name, "Fetching Pastebin content from %s", rawURL)
+	
+	// Fetch the content
+	resp, err := http.Get(rawURL)
+	if err != nil {
+		logger.Error(p.name, "Failed to fetch Pastebin content: %v", err)
+		p.sendResponse(channel, username, "Failed to fetch Pastebin content. Please check the URL.", isPM)
+		return
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		logger.Error(p.name, "Pastebin returned status %d", resp.StatusCode)
+		p.sendResponse(channel, username, fmt.Sprintf("Failed to fetch Pastebin content (status %d).", resp.StatusCode), isPM)
+		return
+	}
+	
+	// Read the content
+	content, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Error(p.name, "Failed to read Pastebin content: %v", err)
+		p.sendResponse(channel, username, "Failed to read Pastebin content.", isPM)
+		return
+	}
+	
+	// Parse URLs from content (one per line, skip empty lines and comments)
+	lines := strings.Split(string(content), "\n")
+	var urls []string
+	
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Skip empty lines and comments (lines starting with #)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		
+		// Basic URL validation
+		if strings.Contains(line, "://") || strings.HasPrefix(line, "www.") {
+			urls = append(urls, line)
+		}
+	}
+	
+	if len(urls) == 0 {
+		p.sendResponse(channel, username, "No valid URLs found in the Pastebin content.", isPM)
+		return
+	}
+	
+	// Check if there's already a batch import in progress for this channel
+	p.mu.Lock()
+	if existing, exists := p.batchImports[channel]; exists {
+		p.mu.Unlock()
+		p.sendResponse(channel, username, 
+			fmt.Sprintf("A batch import is already in progress (%d/%d items). Please wait for it to complete.", 
+				existing.Current, existing.Total), isPM)
+		return
+	}
+	
+	// Create new batch import
+	batchImport := &BatchImport{
+		URLs:      urls,
+		Current:   0,
+		Total:     len(urls),
+		StartTime: time.Now(),
+		User:      username,
+		Channel:   channel,
+	}
+	p.batchImports[channel] = batchImport
+	p.mu.Unlock()
+	
+	// Send initial response
+	p.sendResponse(channel, username, 
+		fmt.Sprintf("Starting batch import of %d URLs. Items will be added every 10 seconds.", len(urls)), isPM)
+	
+	// Start the batch import process
+	p.wg.Add(1)
+	go p.processBatchImport(batchImport, isPM)
+}
+
+// processBatchImport handles the actual batch import process
+func (p *Plugin) processBatchImport(batch *BatchImport, isPM bool) {
+	defer p.wg.Done()
+	
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	
+	// Add first item immediately
+	p.addBatchItem(batch, isPM)
+	
+	for {
+		select {
+		case <-ticker.C:
+			if !p.addBatchItem(batch, isPM) {
+				// Batch complete
+				return
+			}
+			
+		case <-p.ctx.Done():
+			// Plugin shutting down
+			p.mu.Lock()
+			delete(p.batchImports, batch.Channel)
+			p.mu.Unlock()
+			return
+		}
+	}
+}
+
+// addBatchItem adds the next item from the batch and returns false if batch is complete
+func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	
+	// Check if batch is complete
+	if batch.Current >= batch.Total {
+		// Batch complete
+		elapsed := time.Since(batch.StartTime)
+		p.sendResponse(batch.Channel, batch.User,
+			fmt.Sprintf("Batch import complete! Added %d items in %s.", batch.Total, elapsed.Round(time.Second)), isPM)
+		delete(p.batchImports, batch.Channel)
+		return false
+	}
+	
+	// Get next URL
+	url := batch.URLs[batch.Current]
+	batch.Current++
+	
+	// Check if we should send a progress update (at 50% for lists > 100 items)
+	if batch.Total > 100 && batch.Current == batch.Total/2 {
+		p.sendResponse(batch.Channel, batch.User,
+			fmt.Sprintf("Batch import 50%% complete (%d/%d items added).", batch.Current, batch.Total), isPM)
+	}
+	
+	// Add the item to playlist (title will be auto-fetched by CyTube)
+	logger.Info(p.name, "Adding batch item %d/%d: %s", batch.Current, batch.Total, url)
+	
+	// Use goroutine to avoid blocking the ticker
+	go func(url string, current, total int) {
+		if err := p.addToPlaylist(batch.Channel, "", url); err != nil {
+			logger.Error(p.name, "Failed to add batch item %d/%d: %v", current, total, err)
+			// Continue with next item even if this one fails
+		}
+	}(url, batch.Current, batch.Total)
+	
+	return true
 }
