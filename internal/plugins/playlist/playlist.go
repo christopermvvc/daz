@@ -561,6 +561,8 @@ func (p *Plugin) findUIDByURL(channel, url string) string {
 	playlist, exists := p.playlists[channel]
 	if !exists {
 		logger.Warn(p.name, "No cached playlist for channel %s", channel)
+		// For now, we can't look up without the cache
+		// TODO: Implement playlist request or SQL lookup with UID storage
 		return ""
 	}
 	
