@@ -674,7 +674,6 @@ func (rm *RoomManager) checkConnections() {
 		conn.mu.RLock()
 		roomID := conn.Room.ID
 		connected := conn.Connected
-		lastMediaUpdate := conn.LastMediaUpdate
 		conn.mu.RUnlock()
 
 		// Check if we need to reconnect
@@ -687,10 +686,6 @@ func (rm *RoomManager) checkConnections() {
 			needsReconnect = true
 			logger.Warn("RoomManager", "Room '%s': Not connected (manager: %v, client: %v), will attempt reconnection",
 				roomID, connected, clientConnected)
-		} else if time.Since(lastMediaUpdate) > 5*time.Minute {
-			needsReconnect = true
-			logger.Warn("RoomManager", "Room '%s': No MediaUpdate for %v, assuming disconnected",
-				roomID, time.Since(lastMediaUpdate))
 		}
 
 		if needsReconnect {

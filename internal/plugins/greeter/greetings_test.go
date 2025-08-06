@@ -8,12 +8,6 @@ import (
 )
 
 func TestNewGreetingManager(t *testing.T) {
-	// Clean up any existing test file
-	_ = os.Remove("internal/plugins/greeter/greetings.txt")
-	defer func() {
-		_ = os.Remove("internal/plugins/greeter/greetings.txt")
-	}()
-
 	gm, err := NewGreetingManager()
 	if err != nil {
 		t.Fatalf("Failed to create greeting manager: %v", err)
@@ -24,14 +18,17 @@ func TestNewGreetingManager(t *testing.T) {
 		t.Error("Location should be set")
 	}
 
-	// Check that greetings are loaded
+	// Check that greetings are loaded from embedded file
 	if len(gm.greetings) == 0 {
-		t.Error("Greetings should be loaded")
+		t.Error("Greetings should be loaded from embedded file")
 	}
-
-	// Verify default file was created
-	if _, err := os.Stat("internal/plugins/greeter/greetings.txt"); os.IsNotExist(err) {
-		t.Error("Default greetings.txt should have been created")
+	
+	// Verify we have the expected categories from the embedded greetings
+	expectedCategories := []string{"general", "morning", "afternoon", "evening", "night", "first"}
+	for _, cat := range expectedCategories {
+		if _, exists := gm.greetings[cat]; !exists {
+			t.Errorf("Expected category %s not found in loaded greetings", cat)
+		}
 	}
 }
 
@@ -80,9 +77,13 @@ first: Welcome <user>!
 		}
 	}()
 
-	err = gm.parseGreetingsFile(file)
+	content, err := os.ReadFile(testFile)
 	if err != nil {
-		t.Fatalf("Failed to parse greetings file: %v", err)
+		t.Fatalf("Failed to read test file: %v", err)
+	}
+	err = gm.parseGreetingsString(string(content))
+	if err != nil {
+		t.Fatalf("Failed to parse greetings: %v", err)
 	}
 
 	// Verify parsed greetings
@@ -245,8 +246,12 @@ morning: Good morning, <user>!`
 	if err != nil {
 		t.Fatalf("Failed to open test file: %v", err)
 	}
-	if err := gm.parseGreetingsFile(file); err != nil {
-		t.Fatalf("Failed to parse greetings file: %v", err)
+	content, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("Failed to read test file: %v", err)
+	}
+	if err := gm.parseGreetingsString(string(content)); err != nil {
+		t.Fatalf("Failed to parse greetings: %v", err)
 	}
 	if err := file.Close(); err != nil {
 		t.Logf("Warning: failed to close test file: %v", err)
@@ -274,8 +279,12 @@ afternoon: Good afternoon, <user>!`
 	if err != nil {
 		t.Fatalf("Failed to open test file: %v", err)
 	}
-	if err := gm.parseGreetingsFile(file2); err != nil {
-		t.Fatalf("Failed to parse greetings file: %v", err)
+	content2, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("Failed to read test file: %v", err)
+	}
+	if err := gm.parseGreetingsString(string(content2)); err != nil {
+		t.Fatalf("Failed to parse greetings: %v", err)
 	}
 	if err := file2.Close(); err != nil {
 		t.Logf("Warning: failed to close test file: %v", err)
@@ -315,7 +324,11 @@ func TestEmptyGreetingsFile(t *testing.T) {
 		}
 	}()
 
-	err = gm.parseGreetingsFile(file)
+	content, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("Failed to read test file: %v", err)
+	}
+	err = gm.parseGreetingsString(string(content))
 	if err == nil {
 		t.Error("Should return error for empty greetings file")
 	}

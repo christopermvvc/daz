@@ -50,13 +50,16 @@ type PlaylistItem struct {
 
 // BatchImport tracks an ongoing batch import operation
 type BatchImport struct {
-	URLs      []string
-	Current   int
-	Total     int
-	StartTime time.Time
-	User      string
-	Channel   string
-	Timer     *time.Timer
+	URLs        []string
+	Current     int
+	Total       int
+	Succeeded   int
+	Failed      int
+	StartTime   time.Time
+	User        string
+	Channel     string
+	Timer       *time.Timer
+	PendingURLs map[string]bool // Track URLs we're waiting for responses on
 }
 
 func New() framework.Plugin {
@@ -122,6 +125,18 @@ func (p *Plugin) Start() error {
 		logger.Error(p.name, "Failed to subscribe to cytube.event.playlist: %v", err)
 	} else {
 		logger.Info(p.name, "Successfully subscribed to cytube.event.playlist")
+	}
+	
+	// Subscribe to queue success events during batch imports
+	err = p.eventBus.Subscribe("cytube.event.queue", p.handleQueueSuccess)
+	if err != nil {
+		logger.Error(p.name, "Failed to subscribe to cytube.event.queue: %v", err)
+	}
+	
+	// Subscribe to queue failure events during batch imports
+	err = p.eventBus.Subscribe("cytube.event.queueFail", p.handleQueueFail)
+	if err != nil {
+		logger.Error(p.name, "Failed to subscribe to cytube.event.queueFail: %v", err)
 	}
 	
 	logger.Info(p.name, "Playlist plugin started")
@@ -433,6 +448,8 @@ func (p *Plugin) detectMediaType(url string) string {
 		return "tw"
 	case strings.Contains(lowerURL, "soundcloud.com"):
 		return "sc"
+	case strings.Contains(lowerURL, "docs.google.com") || strings.Contains(lowerURL, "drive.google.com"):
+		return "gd" // Google Drive
 	case strings.HasSuffix(lowerURL, ".mp4") || strings.HasSuffix(lowerURL, ".webm") || 
 		 strings.HasSuffix(lowerURL, ".ogg") || strings.HasSuffix(lowerURL, ".mp3"):
 		return "fi" // Direct file
@@ -460,6 +477,30 @@ func (p *Plugin) extractMediaID(url, mediaType string) string {
 				return id
 			}
 		}
+	case "gd":
+		// Extract Google Drive file ID
+		// Format: https://docs.google.com/file/d/FILE_ID/...
+		// or: https://drive.google.com/file/d/FILE_ID/...
+		if strings.Contains(url, "/file/d/") {
+			parts := strings.Split(url, "/file/d/")
+			if len(parts) > 1 {
+				// Get the ID part (everything before the next /)
+				idParts := strings.Split(parts[1], "/")
+				if len(idParts) > 0 {
+					return idParts[0]
+				}
+			}
+		} else if strings.Contains(url, "/d/") {
+			parts := strings.Split(url, "/d/")
+			if len(parts) > 1 {
+				idParts := strings.Split(parts[1], "/")
+				if len(idParts) > 0 {
+					return idParts[0]
+				}
+			}
+		}
+		// Fallback: return the full URL for Google Drive
+		return url
 	case "fi":
 		// For direct files, use the full URL as ID
 		return url
@@ -753,20 +794,38 @@ func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isP
 		return
 	}
 	
-	// Parse URLs from content (one per line, skip empty lines and comments)
-	lines := strings.Split(string(content), "\n")
+	// Parse URLs from content - handle both newline and comma-separated formats
+	contentStr := string(content)
 	var urls []string
 	
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		// Skip empty lines and comments (lines starting with #)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	// First check if content contains commas (likely comma-separated)
+	if strings.Contains(contentStr, ",") {
+		// Split by commas
+		items := strings.Split(contentStr, ",")
+		for _, item := range items {
+			item = strings.TrimSpace(item)
+			// Skip empty items and comments
+			if item == "" || strings.HasPrefix(item, "#") {
+				continue
+			}
+			// Basic URL validation
+			if strings.Contains(item, "://") || strings.HasPrefix(item, "www.") {
+				urls = append(urls, item)
+			}
 		}
-		
-		// Basic URL validation
-		if strings.Contains(line, "://") || strings.HasPrefix(line, "www.") {
-			urls = append(urls, line)
+	} else {
+		// Split by newlines (original format)
+		lines := strings.Split(contentStr, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			// Skip empty lines and comments (lines starting with #)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			// Basic URL validation
+			if strings.Contains(line, "://") || strings.HasPrefix(line, "www.") {
+				urls = append(urls, line)
+			}
 		}
 	}
 	
@@ -787,19 +846,22 @@ func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isP
 	
 	// Create new batch import
 	batchImport := &BatchImport{
-		URLs:      urls,
-		Current:   0,
-		Total:     len(urls),
-		StartTime: time.Now(),
-		User:      username,
-		Channel:   channel,
+		URLs:        urls,
+		Current:     0,
+		Total:       len(urls),
+		Succeeded:   0,
+		Failed:      0,
+		StartTime:   time.Now(),
+		User:        username,
+		Channel:     channel,
+		PendingURLs: make(map[string]bool),
 	}
 	p.batchImports[channel] = batchImport
 	p.mu.Unlock()
 	
 	// Send initial response
 	p.sendResponse(channel, username, 
-		fmt.Sprintf("Starting batch import of %d URLs. Items will be added every 10 seconds.", len(urls)), isPM)
+		fmt.Sprintf("Starting batch import of %d URLs. Items will be added every 2 seconds.", len(urls)), isPM)
 	
 	// Start the batch import process
 	p.wg.Add(1)
@@ -810,7 +872,7 @@ func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isP
 func (p *Plugin) processBatchImport(batch *BatchImport, isPM bool) {
 	defer p.wg.Done()
 	
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	
 	// Add first item immediately
@@ -843,8 +905,12 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 	if batch.Current >= batch.Total {
 		// Batch complete
 		elapsed := time.Since(batch.StartTime)
-		p.sendResponse(batch.Channel, batch.User,
-			fmt.Sprintf("Batch import complete! Added %d items in %s.", batch.Total, elapsed.Round(time.Second)), isPM)
+		message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d", 
+			batch.Total, elapsed.Round(time.Second), batch.Succeeded, batch.Failed)
+		if batch.Failed > 0 {
+			message += " (Failed items likely due to Google Drive restrictions)"
+		}
+		p.sendResponse(batch.Channel, batch.User, message, isPM)
 		delete(p.batchImports, batch.Channel)
 		return false
 	}
@@ -864,11 +930,53 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 	
 	// Use goroutine to avoid blocking the ticker
 	go func(url string, current, total int) {
-		if err := p.addToPlaylist(batch.Channel, "", url); err != nil {
+		// Don't pass empty title - let CyTube fetch it
+		if err := p.addToPlaylist(batch.Channel, "Batch Import Item", url); err != nil {
 			logger.Error(p.name, "Failed to add batch item %d/%d: %v", current, total, err)
 			// Continue with next item even if this one fails
 		}
 	}(url, batch.Current, batch.Total)
 	
 	return true
+}
+
+// handleQueueSuccess tracks successful queue additions during batch imports
+func (p *Plugin) handleQueueSuccess(event framework.Event) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	
+	// Check if there's a batch import in progress
+	for _, batch := range p.batchImports {
+		// For now, just increment success counter when we get a queue event
+		// This is a simplified approach - ideally we'd match the specific video
+		if batch.Current > batch.Succeeded + batch.Failed {
+			batch.Succeeded++
+			logger.Debug(p.name, "Batch import item succeeded (%d/%d)", batch.Succeeded, batch.Total)
+		}
+	}
+	
+	return nil
+}
+
+// handleQueueFail tracks failed queue additions during batch imports
+func (p *Plugin) handleQueueFail(event framework.Event) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	
+	// Check if there's a batch import in progress
+	for _, batch := range p.batchImports {
+		// For now, just increment failure counter when we get a queueFail event
+		// This is a simplified approach - ideally we'd match the specific video
+		if batch.Current > batch.Succeeded + batch.Failed {
+			batch.Failed++
+			logger.Debug(p.name, "Batch import item failed (%d/%d)", batch.Failed, batch.Total)
+			
+			// Log the failure reason if available
+			if genericEvent, ok := event.(*framework.GenericEvent); ok {
+				logger.Info(p.name, "Queue failure during batch import: %s", string(genericEvent.RawJSON))
+			}
+		}
+	}
+	
+	return nil
 }
