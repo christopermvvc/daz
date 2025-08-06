@@ -48,17 +48,27 @@ type PlaylistItem struct {
 	Temp      bool   `json:"temp"`
 }
 
+// BatchImportItem represents a single item in a batch import
+type BatchImportItem struct {
+	URL    string
+	ID     string // Unique ID for tracking
+	Status string // "pending", "success", "failed"
+	Error  string // Error message if failed
+}
+
 // BatchImport tracks an ongoing batch import operation
 type BatchImport struct {
-	URLs      []string
-	Current   int
-	Total     int
-	Succeeded int
-	Failed    int
-	StartTime time.Time
-	User      string
-	Channel   string
-	Timer     *time.Timer
+	Items       []*BatchImportItem
+	Current     int      // Index of next item to process
+	Total       int      // Total number of items
+	Succeeded   int      // Count of successful items
+	Failed      int      // Count of failed items  
+	Pending     int      // Count of items sent but not yet responded
+	PendingMap  map[string]*BatchImportItem // Map ID to item for tracking
+	StartTime   time.Time
+	User        string
+	Channel     string
+	Timer       *time.Timer
 }
 
 func New() framework.Plugin {
@@ -432,6 +442,43 @@ func (p *Plugin) addToPlaylist(channel, title, url string) error {
 	return nil
 }
 
+// addToPlaylistWithID is like addToPlaylist but includes a tracking ID in metadata
+func (p *Plugin) addToPlaylistWithID(channel, title, url, trackingID string) error {
+	// Detect media type from URL
+	mediaType := p.detectMediaType(url)
+	mediaID := p.extractMediaID(url, mediaType)
+	
+	// Create the queue request for the core plugin with tracking ID
+	queueRequest := &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			To:   "core",
+			From: p.name,
+			Type: "queue_media",
+			Data: &framework.RequestData{
+				KeyValue: map[string]string{
+					"channel":     channel,
+					"type":        mediaType,
+					"id":          mediaID,
+					"pos":         "end",
+					"temp":        "false",
+					"title":       title,
+					"tracking_id": trackingID, // Add tracking ID for correlation
+				},
+			},
+		},
+	}
+	
+	// Send queue request to core plugin
+	if err := p.eventBus.Broadcast("plugin.request", queueRequest); err != nil {
+		return fmt.Errorf("failed to send queue request: %w", err)
+	}
+	
+	logger.Info(p.name, "Sent queue request with tracking ID %s for '%s' (type: %s, id: %s) in channel %s", 
+		trackingID, title, mediaType, mediaID, channel)
+	
+	return nil
+}
+
 // detectMediaType attempts to determine the media type from URL
 func (p *Plugin) detectMediaType(url string) string {
 	lowerURL := strings.ToLower(url)
@@ -795,27 +842,33 @@ func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isP
 	
 	// Parse URLs from content - handle both newline and comma-separated formats
 	contentStr := string(content)
-	var urls []string
+	var items []*BatchImportItem
 	
 	// First check if content contains commas (likely comma-separated)
 	if strings.Contains(contentStr, ",") {
 		// Split by commas
-		items := strings.Split(contentStr, ",")
-		for _, item := range items {
-			item = strings.TrimSpace(item)
+		urlList := strings.Split(contentStr, ",")
+		for i, url := range urlList {
+			url = strings.TrimSpace(url)
 			// Skip empty items and comments
-			if item == "" || strings.HasPrefix(item, "#") {
+			if url == "" || strings.HasPrefix(url, "#") {
 				continue
 			}
 			// Basic URL validation
-			if strings.Contains(item, "://") || strings.HasPrefix(item, "www.") {
-				urls = append(urls, item)
+			if strings.Contains(url, "://") || strings.HasPrefix(url, "www.") {
+				// Generate unique ID for this item
+				id := fmt.Sprintf("%s_%d_%d", channel, time.Now().UnixNano(), i)
+				items = append(items, &BatchImportItem{
+					URL:    url,
+					ID:     id,
+					Status: "pending",
+				})
 			}
 		}
 	} else {
 		// Split by newlines (original format)
 		lines := strings.Split(contentStr, "\n")
-		for _, line := range lines {
+		for i, line := range lines {
 			line = strings.TrimSpace(line)
 			// Skip empty lines and comments (lines starting with #)
 			if line == "" || strings.HasPrefix(line, "#") {
@@ -823,12 +876,18 @@ func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isP
 			}
 			// Basic URL validation
 			if strings.Contains(line, "://") || strings.HasPrefix(line, "www.") {
-				urls = append(urls, line)
+				// Generate unique ID for this item
+				id := fmt.Sprintf("%s_%d_%d", channel, time.Now().UnixNano(), i)
+				items = append(items, &BatchImportItem{
+					URL:    line,
+					ID:     id,
+					Status: "pending",
+				})
 			}
 		}
 	}
 	
-	if len(urls) == 0 {
+	if len(items) == 0 {
 		p.sendResponse(channel, username, "No valid URLs found in the Pastebin content.", isPM)
 		return
 	}
@@ -845,21 +904,23 @@ func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isP
 	
 	// Create new batch import
 	batchImport := &BatchImport{
-		URLs:      urls,
-		Current:   0,
-		Total:     len(urls),
-		Succeeded: 0,
-		Failed:    0,
-		StartTime: time.Now(),
-		User:      username,
-		Channel:   channel,
+		Items:      items,
+		Current:    0,
+		Total:      len(items),
+		Succeeded:  0,
+		Failed:     0,
+		Pending:    0,
+		PendingMap: make(map[string]*BatchImportItem),
+		StartTime:  time.Now(),
+		User:       username,
+		Channel:    channel,
 	}
 	p.batchImports[channel] = batchImport
 	p.mu.Unlock()
 	
 	// Send initial response
 	p.sendResponse(channel, username, 
-		fmt.Sprintf("Starting batch import of %d URLs. Items will be added every 2 seconds.", len(urls)), isPM)
+		fmt.Sprintf("Starting batch import of %d URLs. Items will be added every 2 seconds.", len(items)), isPM)
 	
 	// Start the batch import process
 	p.wg.Add(1)
@@ -901,57 +962,94 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 	
 	// Check if batch is complete
 	if batch.Current >= batch.Total {
-		// Batch complete
-		elapsed := time.Since(batch.StartTime)
-		message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d", 
-			batch.Total, elapsed.Round(time.Second), batch.Succeeded, batch.Failed)
-		if batch.Failed > 0 {
-			message += " (Failed items likely due to Google Drive restrictions)"
+		// Batch complete - wait for pending items to resolve
+		if batch.Pending == 0 {
+			// All items have been processed
+			elapsed := time.Since(batch.StartTime)
+			message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d", 
+				batch.Total, elapsed.Round(time.Second), batch.Succeeded, batch.Failed)
+			if batch.Failed > 0 {
+				message += " (Failed items likely due to Google Drive restrictions)"
+			}
+			p.sendResponse(batch.Channel, batch.User, message, isPM)
+			delete(p.batchImports, batch.Channel)
 		}
-		p.sendResponse(batch.Channel, batch.User, message, isPM)
-		delete(p.batchImports, batch.Channel)
 		return false
 	}
 	
-	// Get next URL
-	url := batch.URLs[batch.Current]
+	// Get next item
+	item := batch.Items[batch.Current]
 	batch.Current++
 	
-	// Check if we should send a progress update (at 50% for lists > 100 items)
-	if batch.Total > 100 && batch.Current == batch.Total/2 {
-		p.sendResponse(batch.Channel, batch.User,
-			fmt.Sprintf("Batch import 50%% complete (%d/%d items added).", batch.Current, batch.Total), isPM)
+	// Mark as pending and track it
+	batch.Pending++
+	batch.PendingMap[item.ID] = item
+	
+	// Check if we should send a progress update
+	if batch.Total > 100 {
+		if batch.Current == batch.Total/4 {
+			p.sendResponse(batch.Channel, batch.User,
+				fmt.Sprintf("Batch import 25%% complete (%d/%d items sent).", batch.Current, batch.Total), isPM)
+		} else if batch.Current == batch.Total/2 {
+			p.sendResponse(batch.Channel, batch.User,
+				fmt.Sprintf("Batch import 50%% complete (%d/%d items sent).", batch.Current, batch.Total), isPM)
+		} else if batch.Current == 3*batch.Total/4 {
+			p.sendResponse(batch.Channel, batch.User,
+				fmt.Sprintf("Batch import 75%% complete (%d/%d items sent).", batch.Current, batch.Total), isPM)
+		}
 	}
 	
 	// Add the item to playlist (title will be auto-fetched by CyTube)
-	logger.Info(p.name, "Adding batch item %d/%d: %s", batch.Current, batch.Total, url)
+	logger.Info(p.name, "Adding batch item %d/%d (ID: %s): %s", batch.Current, batch.Total, item.ID, item.URL)
 	
 	// Use goroutine to avoid blocking the ticker
-	go func(url string, current, total int) {
-		// Don't pass empty title - let CyTube fetch it
-		if err := p.addToPlaylist(batch.Channel, "Batch Import Item", url); err != nil {
+	go func(itemID, url string, current, total int) {
+		// Send with the item ID as metadata so we can track responses
+		if err := p.addToPlaylistWithID(batch.Channel, "Batch Import Item", url, itemID); err != nil {
 			logger.Error(p.name, "Failed to add batch item %d/%d: %v", current, total, err)
-			// Continue with next item even if this one fails
+			// Mark as failed immediately if we couldn't even send it
+			p.mu.Lock()
+			if item, exists := batch.PendingMap[itemID]; exists {
+				item.Status = "failed"
+				item.Error = err.Error()
+				batch.Failed++
+				batch.Pending--
+				delete(batch.PendingMap, itemID)
+			}
+			p.mu.Unlock()
 		}
-	}(url, batch.Current, batch.Total)
+	}(item.ID, item.URL, batch.Current, batch.Total)
 	
 	return true
 }
 
 // handleQueueSuccess tracks successful queue additions during batch imports
 func (p *Plugin) handleQueueSuccess(event framework.Event) error {
-	// Extract channel name from the event
+	// Extract channel name and media info from the event
 	var channelName string
-	if cytubeEvent, ok := event.(*framework.CytubeEvent); ok {
-		channelName = cytubeEvent.ChannelName
-	} else if genericEvent, ok := event.(*framework.GenericEvent); ok {
-		// GenericEvent embeds CytubeEvent
+	var mediaID string
+	
+	if genericEvent, ok := event.(*framework.GenericEvent); ok {
 		channelName = genericEvent.ChannelName
+		// Try to extract media ID from the event data
+		if len(genericEvent.RawJSON) > 0 {
+			var queueData struct {
+				Item struct {
+					Media struct {
+						ID string `json:"id"`
+					} `json:"media"`
+				} `json:"item"`
+			}
+			if err := json.Unmarshal(genericEvent.RawJSON, &queueData); err == nil {
+				mediaID = queueData.Item.Media.ID
+			}
+		}
+	} else if cytubeEvent, ok := event.(*framework.CytubeEvent); ok {
+		channelName = cytubeEvent.ChannelName
 	}
 	
 	if channelName == "" {
-		// Can't determine channel, skip tracking
-		return nil
+		return nil // Can't determine channel
 	}
 	
 	p.mu.Lock()
@@ -959,12 +1057,40 @@ func (p *Plugin) handleQueueSuccess(event framework.Event) error {
 	
 	// Only track for the specific channel with a batch import
 	if batch, exists := p.batchImports[channelName]; exists {
-		// Only count if we're expecting a response (haven't counted all items yet)
-		if batch.Current > batch.Succeeded + batch.Failed {
-			batch.Succeeded++
-			logger.Debug(p.name, "Batch import item succeeded for channel %s (%d/%d)", 
-				channelName, batch.Succeeded, batch.Total)
+		// Try to find the item by media ID match
+		var foundItem *BatchImportItem
+		for _, item := range batch.PendingMap {
+			// Check if this item's URL contains the media ID
+			if mediaID != "" && strings.Contains(item.URL, mediaID) {
+				foundItem = item
+				break
+			}
 		}
+		
+		if foundItem != nil {
+			// Found the specific item that succeeded
+			foundItem.Status = "success"
+			batch.Succeeded++
+			batch.Pending--
+			delete(batch.PendingMap, foundItem.ID)
+			logger.Debug(p.name, "Batch import item %s succeeded for channel %s (%d/%d)", 
+				foundItem.ID, channelName, batch.Succeeded, batch.Total)
+		} else if batch.Pending > 0 {
+			// Couldn't match specific item, but we have pending items
+			// Take the oldest pending item as a fallback
+			for id, item := range batch.PendingMap {
+				item.Status = "success"
+				batch.Succeeded++
+				batch.Pending--
+				delete(batch.PendingMap, id)
+				logger.Debug(p.name, "Batch import item succeeded (fallback) for channel %s (%d/%d)", 
+					channelName, batch.Succeeded, batch.Total)
+				break // Only process one
+			}
+		}
+		
+		// Check if batch is complete
+		p.checkBatchComplete(batch, channelName)
 	}
 	
 	return nil
@@ -972,16 +1098,12 @@ func (p *Plugin) handleQueueSuccess(event framework.Event) error {
 
 // handleQueueFail tracks failed queue additions during batch imports
 func (p *Plugin) handleQueueFail(event framework.Event) error {
-	// Extract channel name from the event
+	// Extract channel name and failure info from the event
 	var channelName string
 	var failureReason string
 	
-	if cytubeEvent, ok := event.(*framework.CytubeEvent); ok {
-		channelName = cytubeEvent.ChannelName
-	} else if genericEvent, ok := event.(*framework.GenericEvent); ok {
-		// GenericEvent embeds CytubeEvent
+	if genericEvent, ok := event.(*framework.GenericEvent); ok {
 		channelName = genericEvent.ChannelName
-		
 		// Try to extract failure reason from raw JSON
 		if len(genericEvent.RawJSON) > 0 {
 			var queueFailData struct {
@@ -991,11 +1113,12 @@ func (p *Plugin) handleQueueFail(event framework.Event) error {
 				failureReason = queueFailData.Msg
 			}
 		}
+	} else if cytubeEvent, ok := event.(*framework.CytubeEvent); ok {
+		channelName = cytubeEvent.ChannelName
 	}
 	
 	if channelName == "" {
-		// Can't determine channel, skip tracking
-		return nil
+		return nil // Can't determine channel
 	}
 	
 	p.mu.Lock()
@@ -1003,17 +1126,61 @@ func (p *Plugin) handleQueueFail(event framework.Event) error {
 	
 	// Only track for the specific channel with a batch import
 	if batch, exists := p.batchImports[channelName]; exists {
-		// Only count if we're expecting a response (haven't counted all items yet)
-		if batch.Current > batch.Succeeded + batch.Failed {
-			batch.Failed++
-			logger.Debug(p.name, "Batch import item failed for channel %s (%d/%d)", 
-				channelName, batch.Failed, batch.Total)
-			
-			if failureReason != "" {
-				logger.Info(p.name, "Queue failure reason: %s", failureReason)
+		if batch.Pending > 0 {
+			// Take the oldest pending item as the one that failed
+			// (queueFail events don't include enough info to identify the specific item)
+			for id, item := range batch.PendingMap {
+				item.Status = "failed"
+				item.Error = failureReason
+				batch.Failed++
+				batch.Pending--
+				delete(batch.PendingMap, id)
+				logger.Debug(p.name, "Batch import item %s failed for channel %s (%d/%d): %s", 
+					id, channelName, batch.Failed, batch.Total, failureReason)
+				break // Only process one
 			}
 		}
+		
+		// Check if batch is complete
+		p.checkBatchComplete(batch, channelName)
 	}
 	
 	return nil
+}
+
+// checkBatchComplete checks if a batch import is complete and sends final message
+func (p *Plugin) checkBatchComplete(batch *BatchImport, channelName string) {
+	// Check if all items have been processed
+	if batch.Current >= batch.Total && batch.Pending == 0 {
+		// All items have been processed
+		elapsed := time.Since(batch.StartTime)
+		message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d", 
+			batch.Total, elapsed.Round(time.Second), batch.Succeeded, batch.Failed)
+		
+		if batch.Failed > 0 {
+			// Add details about common failure reasons
+			failureReasons := make(map[string]int)
+			for _, item := range batch.Items {
+				if item.Status == "failed" && item.Error != "" {
+					if strings.Contains(item.Error, "Google Drive") {
+						failureReasons["Google Drive restrictions"]++
+					} else {
+						failureReasons["Other errors"]++
+					}
+				}
+			}
+			
+			if gdCount, ok := failureReasons["Google Drive restrictions"]; ok && gdCount > 0 {
+				message += fmt.Sprintf(" (%d failed due to Google Drive restrictions)", gdCount)
+			}
+		}
+		
+		// Send completion message (assuming not PM for now - would need to track this)
+		p.sendResponse(channelName, batch.User, message, false)
+		
+		// Clean up
+		delete(p.batchImports, channelName)
+		logger.Info(p.name, "Batch import completed for channel %s: %d succeeded, %d failed out of %d total",
+			channelName, batch.Succeeded, batch.Failed, batch.Total)
+	}
 }
