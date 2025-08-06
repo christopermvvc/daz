@@ -423,7 +423,7 @@ func (p *Plugin) deliverMessages(channel, username string) {
 
 	// Track delivered message IDs to properly check remaining messages
 	deliveredIDs := make(map[int]bool)
-	
+
 	// Deliver messages in batches of up to 5
 	totalDelivered := 0
 	messagesInBatch := 0
@@ -442,7 +442,7 @@ func (p *Plugin) deliverMessages(channel, username string) {
 				if nextBatch > deliveryLimit {
 					nextBatch = deliveryLimit
 				}
-				
+
 				// Check if any remaining messages are private
 				hasPrivateRemaining := false
 				for _, checkMsg := range messages {
@@ -451,7 +451,7 @@ func (p *Plugin) deliverMessages(channel, username string) {
 						break
 					}
 				}
-				
+
 				text := fmt.Sprintf("And I'll give you the next %d in 3 minutes.", nextBatch)
 				// Always send batch notification as PM if any remaining messages are private
 				// Otherwise, use the current message's privacy setting
@@ -495,7 +495,7 @@ func (p *Plugin) deliverMessages(channel, username string) {
 
 			// Track this message as delivered
 			deliveredIDs[msg.ID] = true
-			
+
 			lastSender = sender
 			totalDelivered++
 			messagesInBatch++

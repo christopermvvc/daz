@@ -156,7 +156,7 @@ func TestPlugin_HandleFortuneCommand(t *testing.T) {
 		cooldown:       30 * time.Second,
 		lastRequestMap: make(map[string]time.Time),
 	}
-	
+
 	mockBus := new(MockEventBus)
 	p.eventBus = mockBus
 
@@ -197,7 +197,7 @@ func TestPlugin_HandleFortuneCommandPM(t *testing.T) {
 		cooldown:       30 * time.Second,
 		lastRequestMap: make(map[string]time.Time),
 	}
-	
+
 	mockBus := new(MockEventBus)
 	p.eventBus = mockBus
 
@@ -239,7 +239,7 @@ func TestPlugin_HandleFortuneCommandRateLimit(t *testing.T) {
 		cooldown:       30 * time.Second,
 		lastRequestMap: make(map[string]time.Time),
 	}
-	
+
 	mockBus := new(MockEventBus)
 	p.eventBus = mockBus
 
@@ -271,7 +271,7 @@ func TestPlugin_HandleFortuneCommandRateLimit(t *testing.T) {
 	mockBus.On("Broadcast", "cytube.send", mock.MatchedBy(func(data *framework.EventData) bool {
 		return data.RawMessage != nil && strings.Contains(data.RawMessage.Message, "Please wait")
 	})).Return(nil).Once()
-	
+
 	err = p.handleFortuneCommand(event)
 	assert.NoError(t, err)
 
@@ -297,13 +297,13 @@ func TestPlugin_GetFortune(t *testing.T) {
 	// Test getting a fortune
 	fortune := p.getFortune()
 	assert.NotEmpty(t, fortune)
-	
+
 	// Check for error messages
 	if strings.Contains(fortune, "Sorry") {
 		// If fortune is not installed, we should get a helpful error message
-		assert.True(t, 
-			strings.Contains(fortune, "not installed") || 
-			strings.Contains(fortune, "couldn't fetch"),
+		assert.True(t,
+			strings.Contains(fortune, "not installed") ||
+				strings.Contains(fortune, "couldn't fetch"),
 			"Expected helpful error message, got: %s", fortune)
 	}
 }

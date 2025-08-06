@@ -185,7 +185,7 @@ func TestPlugin_CommandRegistration(t *testing.T) {
 
 	// Track command registration
 	registered := false
-	bus.Subscribe("command.register", func(event framework.Event) error {
+	if err := bus.Subscribe("command.register", func(event framework.Event) error {
 		dataEvent, ok := event.(*framework.DataEvent)
 		if ok && dataEvent.Data != nil && dataEvent.Data.PluginRequest != nil {
 			req := dataEvent.Data.PluginRequest
@@ -194,7 +194,9 @@ func TestPlugin_CommandRegistration(t *testing.T) {
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("Failed to subscribe: %v", err)
+	}
 
 	if err := plugin.Init(nil, bus); err != nil {
 		t.Fatalf("Failed to init plugin: %v", err)
@@ -209,6 +211,7 @@ func TestPlugin_CommandRegistration(t *testing.T) {
 	for _, bc := range broadcasts {
 		if bc.eventType == "command.register" {
 			// Already handled via subscription
+			_ = bc // Mark as used
 		}
 	}
 
@@ -216,7 +219,9 @@ func TestPlugin_CommandRegistration(t *testing.T) {
 		t.Error("Command was not registered")
 	}
 
-	plugin.Stop()
+	if err := plugin.Stop(); err != nil {
+		t.Errorf("Failed to stop plugin: %v", err)
+	}
 }
 
 func TestPlugin_HandleCommand(t *testing.T) {
@@ -236,7 +241,7 @@ func TestPlugin_HandleCommand(t *testing.T) {
 	responseReceived := false
 	var responseMessage string
 
-	bus.Subscribe("plugin.response", func(event framework.Event) error {
+	if err := bus.Subscribe("plugin.response", func(event framework.Event) error {
 		dataEvent, ok := event.(*framework.DataEvent)
 		if ok && dataEvent.Data != nil && dataEvent.Data.PluginResponse != nil {
 			resp := dataEvent.Data.PluginResponse
@@ -250,7 +255,9 @@ func TestPlugin_HandleCommand(t *testing.T) {
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("Failed to subscribe: %v", err)
+	}
 
 	// Create command event without args (should return usage)
 	cmdEvent := &framework.DataEvent{
@@ -278,7 +285,9 @@ func TestPlugin_HandleCommand(t *testing.T) {
 	// but the plugin subscribes to command.seen.execute
 	handlers := bus.subscriptions["command.seen.execute"]
 	if len(handlers) > 0 {
-		handlers[0](cmdEvent)
+		if err := handlers[0](cmdEvent); err != nil {
+			t.Errorf("Handler failed: %v", err)
+		}
 	}
 
 	// Wait a moment for async processing
@@ -297,7 +306,9 @@ func TestPlugin_HandleCommand(t *testing.T) {
 		t.Errorf("Expected usage message, got: %s", gotMessage)
 	}
 
-	plugin.Stop()
+	if err := plugin.Stop(); err != nil {
+		t.Errorf("Failed to stop plugin: %v", err)
+	}
 }
 
 func TestPlugin_Dependencies(t *testing.T) {

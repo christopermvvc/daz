@@ -43,7 +43,7 @@ type Plugin struct {
 	// Userlist processing state
 	processingUserlist map[string]bool
 	userlistMutex      sync.RWMutex
-	
+
 	// Database state
 	storedFunctionAvailable bool
 	storedFunctionRetries   int
@@ -305,19 +305,19 @@ func (p *Plugin) Status() framework.PluginStatus {
 	p.statusMutex.RLock()
 	status := p.status
 	p.statusMutex.RUnlock()
-	
+
 	p.mu.RLock()
 	running := p.running
 	startTime := p.startTime
 	p.mu.RUnlock()
-	
+
 	if running && !startTime.IsZero() {
 		status.Uptime = time.Now().UTC().Sub(startTime)
 	}
-	
+
 	// Update events handled from atomic counter
 	status.EventsHandled = p.eventsHandled.Load()
-	
+
 	return status
 }
 
@@ -417,10 +417,10 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	p.recordJoinHistory(channel, username, userRank, now, processingUserlist)
 
 	logger.Info("UserTracker", "User joined: %s (rank %d)", username, userRank)
-	
+
 	// Increment atomic event counter
 	p.eventsHandled.Add(1)
-	
+
 	return nil
 }
 
@@ -482,7 +482,7 @@ func (p *Plugin) handleUserlistJoin(channel, username string, userRank int, now 
 			p.storedFunctionRetries++
 			retryCount := p.storedFunctionRetries
 			p.storedFunctionMutex.Unlock()
-			
+
 			if err := p.createStoredFunction(); err == nil {
 				functionAvailable = true
 			} else {
@@ -523,7 +523,11 @@ func (p *Plugin) handleUserlistJoin(channel, username string, userRank int, now 
 			}
 			return
 		}
-		defer rows.Close()
+		defer func() {
+			if err := rows.Close(); err != nil {
+				logger.Debug("UserTracker", "Failed to close rows: %v", err)
+			}
+		}()
 
 		// Log whether we reactivated or created a new session
 		if rows.Next() {
@@ -963,7 +967,11 @@ func (p *Plugin) createStoredFunction() error {
 		// Can't check, try to create anyway
 		logger.Debug("UserTracker", "Could not check for existing function: %v", err)
 	} else {
-		defer rows.Close()
+		defer func() {
+			if err := rows.Close(); err != nil {
+				logger.Debug("UserTracker", "Failed to close rows: %v", err)
+			}
+		}()
 		var count int
 		if rows.Next() {
 			if err := rows.Scan(&count); err == nil && count > 0 {
@@ -1075,7 +1083,11 @@ func (p *Plugin) migrateToUTC() error {
 		// Table might not exist yet, that's ok
 		return nil
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Debug("UserTracker", "Failed to close rows: %v", err)
+		}
+	}()
 
 	var migrationDone int
 	if rows.Next() {
@@ -1130,7 +1142,11 @@ func (p *Plugin) migrateToUTC() error {
 	if err != nil {
 		return fmt.Errorf("failed to check for UTC migration need: %w", err)
 	}
-	defer rows2.Close()
+	defer func() {
+		if err := rows2.Close(); err != nil {
+			logger.Debug("UserTracker", "Failed to close rows2: %v", err)
+		}
+	}()
 
 	var needsMigration int
 	if rows2.Next() {
@@ -1187,7 +1203,7 @@ func (p *Plugin) migrateToUTC() error {
 		}
 
 		logger.Info("UserTracker", "Successfully migrated timestamps to UTC")
-		
+
 		// Update cache to mark migration complete
 		p.storedFunctionMutex.Lock()
 		p.migrationComplete = true
@@ -1227,7 +1243,11 @@ func (p *Plugin) handleUserJoinFallback(channel, username string, userRank int, 
 	if err != nil {
 		logger.Error("UserTracker", "Error checking for existing session: %v", err)
 	} else {
-		defer rows.Close()
+		defer func() {
+			if err := rows.Close(); err != nil {
+				logger.Debug("UserTracker", "Failed to close rows: %v", err)
+			}
+		}()
 
 		// If we updated an existing session, we're done
 		if rows.Next() {

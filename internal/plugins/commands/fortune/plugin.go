@@ -119,7 +119,7 @@ func (p *Plugin) checkFortuneBinary() {
 	cmd := exec.Command("which", "fortune")
 	err := cmd.Run()
 	p.fortuneExists = err == nil
-	
+
 	if !p.fortuneExists {
 		logger.Warn(p.name, "Fortune binary not found. Install 'fortune-mod' package for this command to work.")
 	} else {
@@ -167,7 +167,7 @@ func (p *Plugin) handleFortuneCommand(event framework.Event) error {
 
 	// Get fortune
 	fortune := p.getFortune()
-	
+
 	// Send response based on context (PM or public)
 	if isPM {
 		p.sendPMResponse(username, channel, fortune)
@@ -231,7 +231,7 @@ func (p *Plugin) getFortune() string {
 			cmd.Stderr = &errBuf
 			err = cmd.Run()
 		}
-		
+
 		if err != nil {
 			logger.Error(p.name, "Failed to execute fortune command: %v, stderr: %s", err, errBuf.String())
 			return "Sorry, I couldn't fetch a fortune right now."

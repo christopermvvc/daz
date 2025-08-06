@@ -76,7 +76,7 @@ type Plugin struct {
 	// Channel join time tracking (for reconnection grace period)
 	channelJoinTimes map[string]time.Time
 	channelMu        sync.RWMutex
-	
+
 	// Fortune goroutine tracking
 	activeFortuneCount int32
 }
@@ -711,7 +711,7 @@ func (p *Plugin) sendGreeting(req *greetingRequest) {
 	if p.config.EnableFortune {
 		fortuneRoll := rand.Float64()
 		logger.Debug(p.name, "Fortune roll for %s: %.3f (need < %.3f)", req.username, fortuneRoll, p.config.FortuneProbability)
-		
+
 		if fortuneRoll < p.config.FortuneProbability {
 			// Check if we have too many pending fortunes (limit to 10)
 			currentCount := atomic.LoadInt32(&p.activeFortuneCount)
@@ -721,7 +721,7 @@ func (p *Plugin) sendGreeting(req *greetingRequest) {
 				logger.Info(p.name, "Fortune roll successful for %s in channel %s", req.username, req.channel)
 				// Increment counter
 				atomic.AddInt32(&p.activeFortuneCount, 1)
-				
+
 				// Launch goroutine to send delayed fortune
 				p.wg.Add(1)
 				go func() {
@@ -1014,20 +1014,20 @@ func (p *Plugin) getFortune() (string, error) {
 
 	// Trim whitespace and check length
 	fortune := strings.TrimSpace(string(output))
-	
+
 	// Sanitize output: remove control characters but keep newlines as spaces
 	fortune = strings.ReplaceAll(fortune, "\n", " ")
 	fortune = strings.ReplaceAll(fortune, "\r", "")
 	fortune = strings.ReplaceAll(fortune, "\t", " ")
-	
+
 	// Collapse multiple spaces
 	for strings.Contains(fortune, "  ") {
 		fortune = strings.ReplaceAll(fortune, "  ", " ")
 	}
-	
+
 	// Final trim after replacements
 	fortune = strings.TrimSpace(fortune)
-	
+
 	if len(fortune) > 160 {
 		// Truncate if somehow we got a long fortune despite -s flag
 		fortune = fortune[:157] + "..."
