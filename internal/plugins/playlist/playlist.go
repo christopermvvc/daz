@@ -69,6 +69,7 @@ type BatchImport struct {
 	User        string
 	Channel     string
 	Timer       *time.Timer
+	Completed   bool     // Flag to prevent duplicate completion messages
 }
 
 func New() framework.Plugin {
@@ -972,8 +973,9 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 	// Check if batch is complete
 	if batch.Current >= batch.Total {
 		// Batch complete - wait for pending items to resolve
-		if batch.Pending == 0 {
+		if batch.Pending == 0 && !batch.Completed {
 			// All items have been processed
+			batch.Completed = true
 			elapsed := time.Since(batch.StartTime)
 			message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d", 
 				batch.Total, elapsed.Round(time.Second), batch.Succeeded, batch.Failed)
@@ -988,7 +990,7 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 					defer p.mu.Unlock()
 					
 					// Check if batch still exists (might have completed normally)
-					if b, exists := p.batchImports[batch.Channel]; exists && b == batch {
+					if b, exists := p.batchImports[batch.Channel]; exists && b == batch && !batch.Completed {
 						// Mark remaining pending items as failed
 						for id, item := range batch.PendingMap {
 							item.Status = "failed"
@@ -999,7 +1001,8 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 							logger.Debug(p.name, "Marking pending item %s as failed due to timeout", id)
 						}
 						
-						// Send completion message
+						// Mark as completed and send completion message
+						batch.Completed = true
 						elapsed := time.Since(batch.StartTime)
 						message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d", 
 							batch.Total, elapsed.Round(time.Second), batch.Succeeded, batch.Failed)
@@ -1224,14 +1227,15 @@ func (p *Plugin) checkBatchComplete(batch *BatchImport, channelName string) {
 		channelName, batch.Current, batch.Total, batch.Pending, batch.Succeeded, batch.Failed)
 	
 	// Check if all items have been processed
-	if batch.Current >= batch.Total && batch.Pending == 0 {
+	if batch.Current >= batch.Total && batch.Pending == 0 && !batch.Completed {
 		// Cancel timer if it was started
 		if batch.Timer != nil {
 			batch.Timer.Stop()
 			batch.Timer = nil
 		}
 		
-		// All items have been processed
+		// Mark as completed and prepare message
+		batch.Completed = true
 		elapsed := time.Since(batch.StartTime)
 		message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d", 
 			batch.Total, elapsed.Round(time.Second), batch.Succeeded, batch.Failed)
