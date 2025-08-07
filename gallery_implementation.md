@@ -1,12 +1,14 @@
 # Gallery Feature Implementation
 
 ## Overview
-Implementing a comprehensive image gallery system for Daz bot, inspired by dazza's gallery feature. The system automatically collects images from chat, manages galleries per user, includes health monitoring, and provides web-based viewing.
+Implementing a comprehensive image gallery system for Daz bot, inspired by dazza's gallery feature. The system automatically collects image URLs from chat messages, manages galleries per user, includes health monitoring, and provides web-based viewing.
+
+**Important**: This system does NOT store actual images - it only stores URLs to images hosted elsewhere. The gallery displays these external images via their URLs.
 
 ## Project Status
 - **Start Date**: 2025-08-07
-- **Target Completion**: 2 weeks
-- **Current Phase**: Database Schema Design
+- **Completion Date**: 2025-08-07
+- **Status**: ✅ DEPLOYED TO PRODUCTION
 
 ## Goals
 
@@ -72,22 +74,22 @@ internal/plugins/gallery/
 
 ### Key Components
 
-1. **Image Detection**
-   - Extract URLs from chat messages
-   - Validate image formats (jpg, png, gif, webp, etc.)
-   - Store with metadata
+1. **Image URL Detection**
+   - Extract image URLs from chat messages
+   - Validate URL formats and image extensions (jpg, png, gif, webp, etc.)
+   - Store URLs with metadata (NO actual image storage)
 
-2. **Health Monitoring**
-   - Concurrent health checks using goroutines
-   - 3-strike system before marking as dead
+2. **URL Health Monitoring**
+   - Concurrent health checks on URLs using HEAD requests
+   - 3-strike system before marking URL as dead
    - Exponential backoff for rechecks
-   - Automatic recovery mechanism
+   - Automatic recovery mechanism if URL becomes accessible again
 
-3. **Gallery Generation**
-   - Static HTML with cyberpunk theme
-   - Per-user galleries
-   - Lock status indicators
-   - 25 image limit with auto-pruning
+3. **Gallery HTML Generation**
+   - Static HTML pages that display images via their external URLs
+   - Per-user galleries showing up to 25 image URLs
+   - Lock status indicators for privacy control
+   - Images loaded directly from their original hosting locations
 
 4. **Commands**
    - `!gallery` - Get gallery link
@@ -142,30 +144,24 @@ internal/plugins/gallery/
 5. `/internal/plugins/gallery/health.go` - Health monitoring
 6. `/internal/plugins/gallery/generator.go` - HTML generation
 
-## Next Steps for Deployment
+## Deployment Status
 
-1. Apply SQL migration:
+### ✅ Completed Steps
+1. SQL migration applied successfully
+2. Binary built and deployed via systemd
+3. Service is running with gallery plugin active
+
+### 📝 Remaining Setup
+
+1. Create directory for HTML gallery files:
    ```bash
-   psql -U daz_user -d daz_db -f scripts/sql/027_gallery_system.sql
+   mkdir -p ~/daz-galleries
    ```
+   Note: This stores the generated HTML files only, not images. Images are displayed from their original URLs.
 
-2. Build the binary:
-   ```bash
-   make build
-   ```
-
-3. Deploy:
-   ```bash
-   sudo ./scripts/deploy.sh systemd
-   ```
-
-4. Create gallery output directory:
-   ```bash
-   sudo mkdir -p /var/www/daz/galleries
-   sudo chown user:user /var/www/daz/galleries
-   ```
-
-5. Test commands:
+2. Configure web server (nginx/apache) to serve gallery HTML files
+   
+3. Test commands in chat:
    - `!gallery` - Get gallery link
    - `!gallery_lock` - Lock gallery
    - `!gallery_unlock` - Unlock gallery
@@ -174,10 +170,37 @@ internal/plugins/gallery/
 ## Technical Decisions
 
 1. **PostgreSQL over SQLite**: Leverage existing daz database
-2. **Static HTML first**: Simple, immediate results
-3. **Goroutines for concurrency**: Idiomatic Go for health checks
-4. **Event-driven architecture**: Integrate with daz EventBus
-5. **Reuse SQL plugin**: Don't reinvent database connectivity
+2. **URL Storage Only**: Store image URLs, not actual images - images remain at their original hosting locations
+3. **Static HTML Generation**: Generate HTML files that reference external image URLs
+4. **Goroutines for concurrency**: Idiomatic Go for health checks
+5. **Event-driven architecture**: Integrate with daz EventBus
+6. **Reuse SQL plugin**: Don't reinvent database connectivity
+
+## Architecture Summary
+
+The gallery system works as follows:
+1. **Detection**: Monitors chat for image URLs (jpg, png, gif, etc.)
+2. **Storage**: Saves URLs to PostgreSQL with metadata
+3. **Health Checks**: Periodically verifies URLs are still accessible (HEAD requests)
+4. **HTML Generation**: Creates static HTML that displays images from their original URLs
+5. **Commands**: Users can view, lock/unlock their galleries
+
+## Current Status
+
+✅ **FULLY DEPLOYED AND OPERATIONAL**
+- Database schema created and active
+- Plugin integrated and running in production
+- Commands registered and available
+- Service running via systemd
+
+## For Future Reference
+
+When returning to this project with a new context window:
+1. The core implementation is complete and deployed
+2. Gallery HTML files need a web server configured to serve them
+3. The system stores URLs only - no actual image hosting
+4. Health monitoring runs automatically every 5 minutes
+5. HTML generation runs automatically every 5 minutes
 
 ## Code Standards
 
