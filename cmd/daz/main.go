@@ -28,6 +28,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/uptime"
 	"github.com/hildolfr/daz/internal/plugins/commands/weather"
 	"github.com/hildolfr/daz/internal/plugins/eventfilter"
+	"github.com/hildolfr/daz/internal/plugins/gallery"
 	"github.com/hildolfr/daz/internal/plugins/greeter"
 	"github.com/hildolfr/daz/internal/plugins/mediatracker"
 	"github.com/hildolfr/daz/internal/plugins/playlist"
@@ -201,6 +202,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"mediatracker", mediatracker.New()},
 		{"analytics", analytics.New()},
 		{"greeter", greeter.New()},
+		{"gallery", gallery.New()},
 		{"about", about.New()},
 		{"fortune", fortune.New()},
 		{"help", help.New()},
@@ -237,6 +239,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["weather"] = cfg.GetPluginConfig("weather")
 	pluginConfigs["random"] = cfg.GetPluginConfig("random")
 	pluginConfigs["playlist"] = cfg.GetPluginConfig("playlist")
+	pluginConfigs["gallery"] = cfg.GetPluginConfig("gallery")
 
 	// Initialize all plugins (respects dependencies)
 	if err := pluginManager.InitializeAll(pluginConfigs, bus); err != nil {

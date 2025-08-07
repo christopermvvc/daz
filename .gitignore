@@ -54,7 +54,6 @@ test_output.log
 
 # Environment files
 .env
-.env.*
 .env.local
 .env.production
 
