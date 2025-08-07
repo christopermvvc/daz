@@ -207,7 +207,7 @@ type MediaMetadata struct {
 
 // PlaylistItem represents a single item in the playlist
 type PlaylistItem struct {
-	UID       string         `json:"uid"`       // Unique identifier for the playlist item
+	UID       string         `json:"uid"` // Unique identifier for the playlist item
 	MediaID   string         `json:"media_id"`
 	MediaType string         `json:"media_type"`
 	Title     string         `json:"title"`

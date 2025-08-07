@@ -17,34 +17,34 @@ type Store struct {
 
 // GalleryImage represents an image in the gallery
 type GalleryImage struct {
-	ID                int64
-	Username          string
-	URL               string
-	Channel           string
-	PostedAt          time.Time
-	IsActive          bool
-	FailureCount      int
-	FirstFailureAt    *time.Time
-	LastCheckAt       *time.Time
-	NextCheckAt       *time.Time
-	PrunedReason      *string
-	OriginalPoster    *string
-	OriginalPostedAt  *time.Time
-	MostRecentPoster  *string
-	ImageTitle        *string
+	ID               int64
+	Username         string
+	URL              string
+	Channel          string
+	PostedAt         time.Time
+	IsActive         bool
+	FailureCount     int
+	FirstFailureAt   *time.Time
+	LastCheckAt      *time.Time
+	NextCheckAt      *time.Time
+	PrunedReason     *string
+	OriginalPoster   *string
+	OriginalPostedAt *time.Time
+	MostRecentPoster *string
+	ImageTitle       *string
 }
 
 // GalleryStats represents gallery statistics for a user
 type GalleryStats struct {
-	Username      string
-	Channel       string
-	TotalImages   int
-	ActiveImages  int
-	DeadImages    int
-	ImagesShared  int
-	LastPostAt    *time.Time
-	GalleryViews  int
-	IsLocked      bool
+	Username     string
+	Channel      string
+	TotalImages  int
+	ActiveImages int
+	DeadImages   int
+	ImagesShared int
+	LastPostAt   *time.Time
+	GalleryViews int
+	IsLocked     bool
 }
 
 // NewStore creates a new store instance
@@ -67,14 +67,14 @@ func (s *Store) InitializeSchema() error {
 		WHERE table_schema = 'public' 
 		AND table_name IN ('daz_gallery_images', 'daz_gallery_locks', 'daz_gallery_stats')
 	`
-	
+
 	var count int
 	rows, err := s.sqlClient.QueryContext(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to verify schema: %w", err)
 	}
-	defer rows.Close()
-	
+	defer func() { _ = rows.Close() }()
+
 	if rows.Next() {
 		if err := rows.Scan(&count); err != nil {
 			return fmt.Errorf("failed to scan count: %w", err)
@@ -97,14 +97,14 @@ func (s *Store) AddImage(username, url, channel string) error {
 
 	// Use the stored function to handle limit enforcement
 	query := `SELECT add_gallery_image($1, $2, $3, NULL)`
-	
+
 	var imageID int64
 	rows, err := s.sqlClient.QueryContext(ctx, query, username, url, channel)
 	if err != nil {
 		return fmt.Errorf("failed to add image: %w", err)
 	}
-	defer rows.Close()
-	
+	defer func() { _ = rows.Close() }()
+
 	if rows.Next() {
 		if err := rows.Scan(&imageID); err != nil {
 			return fmt.Errorf("failed to scan image ID: %w", err)
@@ -134,7 +134,7 @@ func (s *Store) GetUserImages(username, channel string) ([]*GalleryImage, error)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query images: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var images []*GalleryImage
 	for rows.Next() {
@@ -172,13 +172,13 @@ func (s *Store) GetUserStats(username, channel string) (*GalleryStats, error) {
 		FROM daz_gallery_stats
 		WHERE username = $1 AND channel = $2
 	`
-	
+
 	rows, err := s.sqlClient.QueryContext(ctx, statsQuery, username, channel)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get stats: %w", err)
 	}
-	defer rows.Close()
-	
+	defer func() { _ = rows.Close() }()
+
 	if rows.Next() {
 		if err := rows.Scan(
 			&stats.TotalImages, &stats.ActiveImages, &stats.DeadImages,
@@ -193,13 +193,13 @@ func (s *Store) GetUserStats(username, channel string) (*GalleryStats, error) {
 		SELECT is_locked FROM daz_gallery_locks
 		WHERE username = $1 AND channel = $2
 	`
-	
+
 	rows2, err := s.sqlClient.QueryContext(ctx, lockQuery, username, channel)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get lock status: %w", err)
 	}
-	defer rows2.Close()
-	
+	defer func() { _ = rows2.Close() }()
+
 	if rows2.Next() {
 		if err := rows2.Scan(&stats.IsLocked); err != nil {
 			return nil, fmt.Errorf("failed to scan lock status: %w", err)
@@ -261,7 +261,7 @@ func (s *Store) GetImagesForHealthCheck(limit int) ([]*GalleryImage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get images for health check: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var images []*GalleryImage
 	for rows.Next() {
@@ -282,7 +282,7 @@ func (s *Store) MarkImageHealthCheck(imageID int64, failed bool, errorMsg string
 	defer cancel()
 
 	query := `SELECT mark_image_for_health_check($1, $2, $3)`
-	
+
 	_, err := s.sqlClient.ExecContext(ctx, query, imageID, failed, errorMsg)
 	if err != nil {
 		return fmt.Errorf("failed to mark health check: %w", err)
@@ -297,14 +297,14 @@ func (s *Store) RestoreDeadImage(imageID int64) (bool, error) {
 	defer cancel()
 
 	query := `SELECT restore_dead_image($1)`
-	
+
 	var restored bool
 	rows, err := s.sqlClient.QueryContext(ctx, query, imageID)
 	if err != nil {
 		return false, fmt.Errorf("failed to restore image: %w", err)
 	}
-	defer rows.Close()
-	
+	defer func() { _ = rows.Close() }()
+
 	if rows.Next() {
 		if err := rows.Scan(&restored); err != nil {
 			return false, fmt.Errorf("failed to scan restored status: %w", err)
@@ -330,7 +330,7 @@ func (s *Store) GetAllActiveUsers() ([]struct{ Username, Channel string }, error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get active users: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var users []struct{ Username, Channel string }
 	for rows.Next() {

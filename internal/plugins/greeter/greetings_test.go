@@ -22,7 +22,7 @@ func TestNewGreetingManager(t *testing.T) {
 	if len(gm.greetings) == 0 {
 		t.Error("Greetings should be loaded from embedded file")
 	}
-	
+
 	// Verify we have the expected categories from the embedded greetings
 	expectedCategories := []string{"general", "morning", "afternoon", "evening", "night", "first"}
 	for _, cat := range expectedCategories {

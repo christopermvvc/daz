@@ -95,7 +95,6 @@ func (gm *GreetingManager) parseGreetingsString(content string) error {
 	return nil
 }
 
-
 // GetGreeting returns an appropriate greeting for the user
 func (gm *GreetingManager) GetGreeting(username string, isFirstTime bool) string {
 	// Get current time in Melbourne

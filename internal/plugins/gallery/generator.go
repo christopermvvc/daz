@@ -1,9 +1,11 @@
 package gallery
 
 import (
+	"context"
 	"fmt"
 	"html/template"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -47,7 +49,13 @@ func (g *HTMLGenerator) GenerateAllGalleries() error {
 		logger.Error("gallery", "Failed to generate index page: %v", err)
 	}
 
-	logger.Info("gallery", "HTML generation completed")
+	// Push to GitHub Pages
+	if err := g.pushToGitHub(); err != nil {
+		logger.Error("gallery", "Failed to push to GitHub Pages: %v", err)
+		return err
+	}
+
+	logger.Info("gallery", "HTML generation and GitHub push completed")
 	return nil
 }
 
@@ -347,12 +355,12 @@ func (g *HTMLGenerator) generateGalleryHTML(username, channel string, images []*
 
 	// Prepare template data
 	data := struct {
-		Username         string
-		Channel          string
-		Images           []*galleryImageDisplay
-		Stats            *GalleryStats
+		Username          string
+		Channel           string
+		Images            []*galleryImageDisplay
+		Stats             *GalleryStats
 		LastPostFormatted string
-		GeneratedAt      string
+		GeneratedAt       string
 	}{
 		Username:    username,
 		Channel:     channel,
@@ -369,11 +377,11 @@ func (g *HTMLGenerator) generateGalleryHTML(username, channel string, images []*
 	data.Images = make([]*galleryImageDisplay, len(images))
 	for i, img := range images {
 		data.Images[i] = &galleryImageDisplay{
-			URL:                img.URL,
-			Username:           img.Username,
-			PostedAtFormatted:  img.PostedAt.Format("Jan 2, 15:04"),
-			ImageTitle:         getString(img.ImageTitle),
-			OriginalPoster:     getString(img.OriginalPoster),
+			URL:               img.URL,
+			Username:          img.Username,
+			PostedAtFormatted: img.PostedAt.Format("Jan 2, 15:04"),
+			ImageTitle:        getString(img.ImageTitle),
+			OriginalPoster:    getString(img.OriginalPoster),
 		}
 	}
 
@@ -523,4 +531,46 @@ func getString(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// pushToGitHub commits and pushes gallery HTML to GitHub Pages
+func (g *HTMLGenerator) pushToGitHub() error {
+	// Change to output directory
+	cmd := fmt.Sprintf("cd %s && ", g.config.HTMLOutputPath)
+	
+	// Initialize git repo if not exists
+	cmd += "git init && "
+	
+	// Set git config for this repo
+	cmd += "git config user.name 'Daz Bot' && "
+	cmd += "git config user.email 'daz@example.com' && "
+	
+	// Add remote if not exists
+	cmd += "git remote get-url origin || git remote add origin https://github.com/hildolfr/daz-galleries.git && "
+	
+	// Switch to gh-pages branch
+	cmd += "git checkout -B gh-pages && "
+	
+	// Add all files
+	cmd += "git add -A && "
+	
+	// Commit with timestamp
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	cmd += fmt.Sprintf("git commit -m 'Update galleries: %s' || true && ", timestamp)
+	
+	// Push to GitHub Pages
+	cmd += "git push -u origin gh-pages --force"
+	
+	// Execute the command
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	
+	execCmd := exec.CommandContext(ctx, "bash", "-c", cmd)
+	output, err := execCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to push to GitHub: %w, output: %s", err, string(output))
+	}
+	
+	logger.Debug("gallery", "GitHub push output: %s", string(output))
+	return nil
 }

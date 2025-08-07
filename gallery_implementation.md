@@ -150,22 +150,23 @@ internal/plugins/gallery/
 1. SQL migration applied successfully
 2. Binary built and deployed via systemd
 3. Service is running with gallery plugin active
+4. GitHub Pages integration implemented
+5. Gallery HTML output directory created at `./galleries-output`
 
-### 📝 Remaining Setup
+### 📝 GitHub Pages Setup
 
-1. Create directory for HTML gallery files:
-   ```bash
-   mkdir -p ~/daz-galleries
-   ```
-   Note: This stores the generated HTML files only, not images. Images are displayed from their original URLs.
+The gallery now automatically pushes to GitHub Pages:
+- Repository: `https://github.com/hildolfr/daz-galleries`
+- Branch: `gh-pages`
+- URL: `https://hildolfr.github.io/daz-galleries/`
 
-2. Configure web server (nginx/apache) to serve gallery HTML files
-   
-3. Test commands in chat:
-   - `!gallery` - Get gallery link
-   - `!gallery_lock` - Lock gallery
-   - `!gallery_unlock` - Unlock gallery
-   - `!gallery_check` - Manual health check (admin only)
+### 📝 Commands Available
+
+Test commands in chat:
+- `!gallery` - Get gallery link
+- `!gallery_lock` - Lock gallery  
+- `!gallery_unlock` - Unlock gallery
+- `!gallery_check` - Manual health check (admin only)
 
 ## Technical Decisions
 

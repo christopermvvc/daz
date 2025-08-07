@@ -25,10 +25,10 @@ type Plugin struct {
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 	adminOnly bool
-	
+
 	// Playlist state tracking per channel
 	playlists map[string][]PlaylistItem // channel -> playlist items
-	
+
 	// Batch import tracking
 	batchImports map[string]*BatchImport // channel -> active batch import
 }
@@ -58,18 +58,18 @@ type BatchImportItem struct {
 
 // BatchImport tracks an ongoing batch import operation
 type BatchImport struct {
-	Items       []*BatchImportItem
-	Current     int      // Index of next item to process
-	Total       int      // Total number of items
-	Succeeded   int      // Count of successful items
-	Failed      int      // Count of failed items  
-	Pending     int      // Count of items sent but not yet responded
-	PendingMap  map[string]*BatchImportItem // Map ID to item for tracking
-	StartTime   time.Time
-	User        string
-	Channel     string
-	Timer       *time.Timer
-	Completed   bool     // Flag to prevent duplicate completion messages
+	Items      []*BatchImportItem
+	Current    int                         // Index of next item to process
+	Total      int                         // Total number of items
+	Succeeded  int                         // Count of successful items
+	Failed     int                         // Count of failed items
+	Pending    int                         // Count of items sent but not yet responded
+	PendingMap map[string]*BatchImportItem // Map ID to item for tracking
+	StartTime  time.Time
+	User       string
+	Channel    string
+	Timer      *time.Timer
+	Completed  bool // Flag to prevent duplicate completion messages
 }
 
 func New() framework.Plugin {
@@ -87,7 +87,7 @@ func (p *Plugin) Name() string {
 
 func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.eventBus = bus
-	
+
 	// Parse configuration if provided
 	if len(config) > 0 {
 		var cfg Config
@@ -98,9 +98,9 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 		p.config = &cfg
 		p.adminOnly = cfg.AdminOnly
 	}
-	
+
 	p.ctx, p.cancel = context.WithCancel(context.Background())
-	
+
 	logger.Info(p.name, "Playlist plugin initialized")
 	return nil
 }
@@ -113,13 +113,13 @@ func (p *Plugin) Start() error {
 	}
 	p.running = true
 	p.mu.Unlock()
-	
+
 	// Register command with EventFilter
 	if err := p.registerCommand(); err != nil {
 		logger.Error(p.name, "Failed to register command: %v", err)
 		return err
 	}
-	
+
 	// Subscribe to command execution events
 	// EventFilter sends to command.{PLUGIN_NAME}.execute, not command.{COMMAND_NAME}.execute!
 	err := p.eventBus.Subscribe("command.playlist.execute", p.handleCommand)
@@ -128,7 +128,7 @@ func (p *Plugin) Start() error {
 	} else {
 		logger.Info(p.name, "Successfully subscribed to command.playlist.execute")
 	}
-	
+
 	// Subscribe to playlist events to maintain state
 	err = p.eventBus.Subscribe("cytube.event.playlist", p.handlePlaylistEvent)
 	if err != nil {
@@ -136,19 +136,19 @@ func (p *Plugin) Start() error {
 	} else {
 		logger.Info(p.name, "Successfully subscribed to cytube.event.playlist")
 	}
-	
+
 	// Subscribe to queue success events during batch imports
 	err = p.eventBus.Subscribe("cytube.event.queue", p.handleQueueSuccess)
 	if err != nil {
 		logger.Error(p.name, "Failed to subscribe to cytube.event.queue: %v", err)
 	}
-	
+
 	// Subscribe to queue failure events during batch imports
 	err = p.eventBus.Subscribe("cytube.event.queueFail", p.handleQueueFail)
 	if err != nil {
 		logger.Error(p.name, "Failed to subscribe to cytube.event.queueFail: %v", err)
 	}
-	
+
 	logger.Info(p.name, "Playlist plugin started")
 	return nil
 }
@@ -161,13 +161,13 @@ func (p *Plugin) Stop() error {
 	}
 	p.running = false
 	p.mu.Unlock()
-	
+
 	if p.cancel != nil {
 		p.cancel()
 	}
-	
+
 	p.wg.Wait()
-	
+
 	logger.Info(p.name, "Playlist plugin stopped")
 	return nil
 }
@@ -180,12 +180,12 @@ func (p *Plugin) HandleEvent(event framework.Event) error {
 func (p *Plugin) Status() framework.PluginStatus {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	
+
 	state := "stopped"
 	if p.running {
 		state = "running"
 	}
-	
+
 	return framework.PluginStatus{
 		Name:  p.name,
 		State: state,
@@ -217,42 +217,42 @@ func (p *Plugin) registerCommand() error {
 			},
 		},
 	}
-	
+
 	if err := p.eventBus.Broadcast("command.register", regEvent); err != nil {
 		return fmt.Errorf("failed to broadcast registration: %w", err)
 	}
-	
+
 	logger.Info(p.name, "Registered playlistadd and playlistdelete commands with EventFilter")
 	return nil
 }
 
 func (p *Plugin) handleCommand(event framework.Event) error {
 	logger.Info(p.name, "handleCommand called with event type: %T", event)
-	
+
 	// Check if this is a DataEvent which carries EventData
 	dataEvent, ok := event.(*framework.DataEvent)
 	if !ok {
 		logger.Error(p.name, "Invalid event type for command: %T", event)
 		return fmt.Errorf("invalid event type for command")
 	}
-	
+
 	if dataEvent.Data == nil || dataEvent.Data.PluginRequest == nil {
 		return nil
 	}
-	
+
 	req := dataEvent.Data.PluginRequest
 	if req.Data == nil || req.Data.Command == nil {
 		return nil
 	}
-	
+
 	// Route to appropriate handler based on command
 	cmdName := req.Data.Command.Name
-	
+
 	// Handle asynchronously
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		
+
 		switch cmdName {
 		case "playlistadd":
 			p.handlePlaylistAddCommand(req)
@@ -262,7 +262,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 			logger.Warn(p.name, "Unknown command: %s", cmdName)
 		}
 	}()
-	
+
 	return nil
 }
 
@@ -272,15 +272,15 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 	if !ok {
 		return nil
 	}
-	
+
 	if dataEvent.Data == nil || dataEvent.Data.RawEvent == nil {
 		return nil
 	}
-	
+
 	// Check if it's a PlaylistArrayEvent (full playlist)
 	if playlistEvent, ok := dataEvent.Data.RawEvent.(*framework.PlaylistArrayEvent); ok {
 		channel := playlistEvent.ChannelName
-		
+
 		p.mu.Lock()
 		// Convert framework.PlaylistItem to our internal PlaylistItem
 		items := make([]PlaylistItem, len(playlistEvent.Items))
@@ -297,71 +297,71 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 		}
 		p.playlists[channel] = items
 		p.mu.Unlock()
-		
+
 		logger.Info(p.name, "Updated playlist for channel %s with %d items", channel, len(items))
 	}
-	
+
 	return nil
 }
 
 func (p *Plugin) handlePlaylistAddCommand(req *framework.PluginRequest) {
 	logger.Info(p.name, "handlePlaylistAddCommand called")
-	
+
 	if req.Data == nil || req.Data.Command == nil {
 		logger.Error(p.name, "Missing command data in request")
 		return
 	}
-	
+
 	cmd := req.Data.Command
 	params := cmd.Params
-	
+
 	// Join all args back together first (they were split by spaces in EventFilter)
 	// This is necessary because HTML tags get broken across multiple args
 	fullArgs := strings.Join(cmd.Args, " ")
-	
+
 	logger.Info(p.name, "Processing playlistadd command from %s in channel %s with raw args: %s",
 		params["username"], params["channel"], fullArgs)
-	
+
 	// Check admin permission
-	logger.Info(p.name, "Admin check: adminOnly=%v, is_admin=%s, username=%s", 
+	logger.Info(p.name, "Admin check: adminOnly=%v, is_admin=%s, username=%s",
 		p.adminOnly, params["is_admin"], params["username"])
-	
+
 	if p.adminOnly && params["is_admin"] != "true" {
 		logger.Warn(p.name, "Non-admin user %s attempted to use playlistadd", params["username"])
-		p.sendResponse(params["channel"], params["username"], 
+		p.sendResponse(params["channel"], params["username"],
 			"Sorry, only admins can add items to the playlist.", params["is_pm"] == "true")
 		return
 	}
-	
+
 	// Parse arguments - need at least URL
 	if fullArgs == "" {
 		p.sendResponse(params["channel"], params["username"],
 			"Usage: !playlistadd [title] <url>", params["is_pm"] == "true")
 		return
 	}
-	
+
 	var title, url string
-	
+
 	// Check if there's an HTML anchor tag with href (CyTube wraps URLs in <a> tags)
 	hrefRegex := regexp.MustCompile(`<a[^>]*href="([^"]+)"[^>]*>.*?</a>`)
 	if matches := hrefRegex.FindStringSubmatch(fullArgs); len(matches) > 1 {
 		// Extract URL from href attribute
 		url = matches[1]
-		
+
 		// Extract title: everything before the <a tag
 		beforeLink := strings.Split(fullArgs, "<a")[0]
 		title = strings.TrimSpace(beforeLink)
-		
+
 		if title == "" {
 			title = "Default Title"
 		}
-		
+
 		logger.Info(p.name, "Extracted from HTML - Title: %s, URL: %s", title, url)
 	} else {
 		// No HTML, parse normally
 		// Check if we have a space-separated title and URL
 		parts := strings.Fields(fullArgs)
-		
+
 		if len(parts) == 1 {
 			// Just URL provided
 			url = parts[0]
@@ -379,20 +379,20 @@ func (p *Plugin) handlePlaylistAddCommand(req *framework.PluginRequest) {
 				title = "Default Title"
 			}
 		}
-		
+
 		logger.Info(p.name, "Parsed normally - Title: %s, URL: %s", title, url)
 	}
-	
+
 	// Check if it's a Pastebin URL
 	if strings.Contains(url, "pastebin.com/") && !strings.Contains(url, "/raw/") {
 		logger.Info(p.name, "Detected Pastebin URL, processing batch import")
 		p.handlePastebinImport(params["channel"], params["username"], url, params["is_pm"] == "true")
 		return
 	}
-	
+
 	logger.Info(p.name, "Adding item to playlist - Title: %s, URL: %s, Channel: %s, User: %s",
 		title, url, params["channel"], params["username"])
-	
+
 	// Send request to CyTube to add to playlist
 	if err := p.addToPlaylist(params["channel"], title, url); err != nil {
 		logger.Error(p.name, "Failed to add item to playlist: %v", err)
@@ -401,7 +401,7 @@ func (p *Plugin) handlePlaylistAddCommand(req *framework.PluginRequest) {
 			params["is_pm"] == "true")
 		return
 	}
-	
+
 	// Send success confirmation
 	p.sendResponse(params["channel"], params["username"],
 		fmt.Sprintf("Added '%s' to the playlist!", title),
@@ -412,7 +412,7 @@ func (p *Plugin) addToPlaylist(channel, title, url string) error {
 	// Detect media type from URL
 	mediaType := p.detectMediaType(url)
 	mediaID := p.extractMediaID(url, mediaType)
-	
+
 	// Create the queue request for the core plugin
 	queueRequest := &framework.EventData{
 		PluginRequest: &framework.PluginRequest{
@@ -431,15 +431,15 @@ func (p *Plugin) addToPlaylist(channel, title, url string) error {
 			},
 		},
 	}
-	
+
 	// Send queue request to core plugin
 	if err := p.eventBus.Broadcast("plugin.request", queueRequest); err != nil {
 		return fmt.Errorf("failed to send queue request: %w", err)
 	}
-	
-	logger.Info(p.name, "Sent queue request for '%s' (type: %s, id: %s) in channel %s", 
+
+	logger.Info(p.name, "Sent queue request for '%s' (type: %s, id: %s) in channel %s",
 		title, mediaType, mediaID, channel)
-	
+
 	return nil
 }
 
@@ -448,7 +448,7 @@ func (p *Plugin) addToPlaylistWithID(channel, title, url, trackingID string) err
 	// Detect media type from URL
 	mediaType := p.detectMediaType(url)
 	mediaID := p.extractMediaID(url, mediaType)
-	
+
 	// Create the queue request for the core plugin with tracking ID
 	queueRequest := &framework.EventData{
 		PluginRequest: &framework.PluginRequest{
@@ -468,22 +468,22 @@ func (p *Plugin) addToPlaylistWithID(channel, title, url, trackingID string) err
 			},
 		},
 	}
-	
+
 	// Send queue request to core plugin
 	if err := p.eventBus.Broadcast("plugin.request", queueRequest); err != nil {
 		return fmt.Errorf("failed to send queue request: %w", err)
 	}
-	
-	logger.Info(p.name, "Sent queue request with tracking ID %s for '%s' (type: %s, id: %s) in channel %s", 
+
+	logger.Info(p.name, "Sent queue request with tracking ID %s for '%s' (type: %s, id: %s) in channel %s",
 		trackingID, title, mediaType, mediaID, channel)
-	
+
 	return nil
 }
 
 // detectMediaType attempts to determine the media type from URL
 func (p *Plugin) detectMediaType(url string) string {
 	lowerURL := strings.ToLower(url)
-	
+
 	switch {
 	case strings.Contains(lowerURL, "youtube.com") || strings.Contains(lowerURL, "youtu.be"):
 		return "yt"
@@ -497,8 +497,8 @@ func (p *Plugin) detectMediaType(url string) string {
 		return "sc"
 	case strings.Contains(lowerURL, "docs.google.com") || strings.Contains(lowerURL, "drive.google.com"):
 		return "gd" // Google Drive
-	case strings.HasSuffix(lowerURL, ".mp4") || strings.HasSuffix(lowerURL, ".webm") || 
-		 strings.HasSuffix(lowerURL, ".ogg") || strings.HasSuffix(lowerURL, ".mp3"):
+	case strings.HasSuffix(lowerURL, ".mp4") || strings.HasSuffix(lowerURL, ".webm") ||
+		strings.HasSuffix(lowerURL, ".ogg") || strings.HasSuffix(lowerURL, ".mp3"):
 		return "fi" // Direct file
 	default:
 		// For unknown types, treat as direct file
@@ -555,7 +555,7 @@ func (p *Plugin) extractMediaID(url, mediaType string) string {
 		// For other types, return the URL as-is
 		return url
 	}
-	
+
 	// Fallback to URL if extraction fails
 	return url
 }
@@ -598,38 +598,38 @@ func (p *Plugin) sendResponse(channel, username, message string, isPM bool) {
 
 func (p *Plugin) handlePlaylistDeleteCommand(req *framework.PluginRequest) {
 	logger.Info(p.name, "handlePlaylistDeleteCommand called")
-	
+
 	if req.Data == nil || req.Data.Command == nil {
 		logger.Error(p.name, "Missing command data in request")
 		return
 	}
-	
+
 	cmd := req.Data.Command
 	params := cmd.Params
-	
+
 	// Join all args back together (they were split by spaces in EventFilter)
 	fullArgs := strings.Join(cmd.Args, " ")
-	
+
 	logger.Info(p.name, "Processing playlistdelete command from %s in channel %s with raw args: %s",
 		params["username"], params["channel"], fullArgs)
-	
+
 	// Check admin permission
 	if p.adminOnly && params["is_admin"] != "true" {
 		logger.Warn(p.name, "Non-admin user %s attempted to use playlistdelete", params["username"])
-		p.sendResponse(params["channel"], params["username"], 
+		p.sendResponse(params["channel"], params["username"],
 			"Sorry, only admins can delete items from the playlist.", params["is_pm"] == "true")
 		return
 	}
-	
+
 	// Parse URL from arguments
 	if fullArgs == "" {
 		p.sendResponse(params["channel"], params["username"],
 			"Usage: !playlistdelete <url>", params["is_pm"] == "true")
 		return
 	}
-	
+
 	var url string
-	
+
 	// Check if there's an HTML anchor tag with href (CyTube wraps URLs in <a> tags)
 	hrefRegex := regexp.MustCompile(`<a[^>]*href="([^"]+)"[^>]*>.*?</a>`)
 	if matches := hrefRegex.FindStringSubmatch(fullArgs); len(matches) > 1 {
@@ -638,9 +638,9 @@ func (p *Plugin) handlePlaylistDeleteCommand(req *framework.PluginRequest) {
 		// No HTML, use the raw argument
 		url = strings.TrimSpace(fullArgs)
 	}
-	
+
 	logger.Info(p.name, "Looking for URL %s in playlist for channel %s", url, params["channel"])
-	
+
 	// Find the UID for this URL in our cached playlist
 	uid := p.findUIDByURL(params["channel"], url)
 	if uid == "" {
@@ -649,9 +649,9 @@ func (p *Plugin) handlePlaylistDeleteCommand(req *framework.PluginRequest) {
 			"That URL was not found in the playlist.", params["is_pm"] == "true")
 		return
 	}
-	
+
 	logger.Info(p.name, "Found UID %s for URL %s, sending delete request", uid, url)
-	
+
 	// Send delete request to core plugin
 	if err := p.deleteFromPlaylist(params["channel"], uid); err != nil {
 		logger.Error(p.name, "Failed to delete item from playlist: %v", err)
@@ -660,7 +660,7 @@ func (p *Plugin) handlePlaylistDeleteCommand(req *framework.PluginRequest) {
 			params["is_pm"] == "true")
 		return
 	}
-	
+
 	// Send success confirmation
 	p.sendResponse(params["channel"], params["username"],
 		"Item removed from the playlist!",
@@ -672,7 +672,7 @@ func (p *Plugin) findUIDByURL(channel, url string) string {
 	p.mu.RLock()
 	playlist, exists := p.playlists[channel]
 	p.mu.RUnlock()
-	
+
 	if exists {
 		// Search for exact URL match in cache
 		for _, item := range playlist {
@@ -680,7 +680,7 @@ func (p *Plugin) findUIDByURL(channel, url string) string {
 			if item.MediaType == "fi" && item.MediaID == url {
 				return item.UID
 			}
-			
+
 			// For other media types, construct the URL and compare
 			constructedURL := p.constructURL(item.MediaType, item.MediaID)
 			if constructedURL == url {
@@ -691,16 +691,16 @@ func (p *Plugin) findUIDByURL(channel, url string) string {
 
 	// If not found in cache or cache doesn't exist, query SQL database
 	logger.Info(p.name, "Cache miss for channel %s, querying SQL for UID", channel)
-	
+
 	// Extract media ID and type from URL
 	mediaType := p.detectMediaType(url)
 	mediaID := p.extractMediaID(url, mediaType)
-	
+
 	logger.Info(p.name, "SQL lookup - Channel: %s, MediaID: %s, MediaType: %s", channel, mediaID, mediaType)
-	
+
 	// Generate a correlation ID for the request
 	correlationID := fmt.Sprintf("%d", time.Now().UnixNano())
-	
+
 	// Query the SQL database for the UID
 	queryReq := &framework.EventData{
 		SQLQueryRequest: &framework.SQLQueryRequest{
@@ -716,40 +716,40 @@ func (p *Plugin) findUIDByURL(channel, url string) string {
 			RequestBy: p.name,
 		},
 	}
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	// Create metadata for the request
 	metadata := &framework.EventMetadata{
 		Source:        p.name,
 		CorrelationID: correlationID,
 	}
-	
+
 	responseEvent, err := p.eventBus.Request(ctx, "sql", "plugin.request", queryReq, metadata)
 	if err != nil {
 		logger.Error(p.name, "Failed to query SQL for UID: %v", err)
 		return ""
 	}
-	
+
 	// Log the raw response for debugging
 	if responseEvent != nil {
 		if responseEvent.PluginResponse != nil {
 			logger.Info(p.name, "Got plugin response instead of SQL response")
 		}
 	}
-	
+
 	if responseEvent == nil || responseEvent.SQLQueryResponse == nil {
 		logger.Error(p.name, "Invalid SQL response format - nil SQL response")
 		return ""
 	}
-	
+
 	response := responseEvent.SQLQueryResponse
 	if !response.Success {
 		logger.Error(p.name, "SQL query failed: %s", response.Error)
 		return ""
 	}
-	
+
 	if len(response.Rows) > 0 && len(response.Rows[0]) > 0 {
 		// Parse the UID from the response
 		var uid string
@@ -760,7 +760,7 @@ func (p *Plugin) findUIDByURL(channel, url string) string {
 		logger.Info(p.name, "Found UID %s for URL %s via SQL", uid, url)
 		return uid
 	}
-	
+
 	logger.Warn(p.name, "URL %s not found in SQL database for channel %s", url, channel)
 	return ""
 }
@@ -784,7 +784,6 @@ func (p *Plugin) constructURL(mediaType, mediaID string) string {
 	}
 }
 
-
 func (p *Plugin) deleteFromPlaylist(channel, uid string) error {
 	// Create the delete request for the core plugin
 	deleteRequest := &framework.EventData{
@@ -800,14 +799,14 @@ func (p *Plugin) deleteFromPlaylist(channel, uid string) error {
 			},
 		},
 	}
-	
+
 	// Send delete request to core plugin
 	if err := p.eventBus.Broadcast("plugin.request", deleteRequest); err != nil {
 		return fmt.Errorf("failed to send delete request: %w", err)
 	}
-	
+
 	logger.Info(p.name, "Sent delete request for UID '%s' in channel %s", uid, channel)
-	
+
 	return nil
 }
 
@@ -815,9 +814,9 @@ func (p *Plugin) deleteFromPlaylist(channel, uid string) error {
 func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isPM bool) {
 	// Convert to raw URL
 	rawURL := strings.Replace(pastebinURL, "pastebin.com/", "pastebin.com/raw/", 1)
-	
+
 	logger.Info(p.name, "Fetching Pastebin content from %s", rawURL)
-	
+
 	// Fetch the content
 	resp, err := http.Get(rawURL)
 	if err != nil {
@@ -830,13 +829,13 @@ func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isP
 			logger.Error(p.name, "Failed to close response body: %v", err)
 		}
 	}()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		logger.Error(p.name, "Pastebin returned status %d", resp.StatusCode)
 		p.sendResponse(channel, username, fmt.Sprintf("Failed to fetch Pastebin content (status %d).", resp.StatusCode), isPM)
 		return
 	}
-	
+
 	// Read the content
 	content, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -844,11 +843,11 @@ func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isP
 		p.sendResponse(channel, username, "Failed to read Pastebin content.", isPM)
 		return
 	}
-	
+
 	// Parse URLs from content - handle both newline and comma-separated formats
 	contentStr := string(content)
 	var items []*BatchImportItem
-	
+
 	// First check if content contains commas (likely comma-separated)
 	if strings.Contains(contentStr, ",") {
 		// Split by commas
@@ -891,22 +890,22 @@ func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isP
 			}
 		}
 	}
-	
+
 	if len(items) == 0 {
 		p.sendResponse(channel, username, "No valid URLs found in the Pastebin content.", isPM)
 		return
 	}
-	
+
 	// Check if there's already a batch import in progress for this channel
 	p.mu.Lock()
 	if existing, exists := p.batchImports[channel]; exists {
 		p.mu.Unlock()
-		p.sendResponse(channel, username, 
-			fmt.Sprintf("A batch import is already in progress (%d/%d items). Please wait for it to complete.", 
+		p.sendResponse(channel, username,
+			fmt.Sprintf("A batch import is already in progress (%d/%d items). Please wait for it to complete.",
 				existing.Current, existing.Total), isPM)
 		return
 	}
-	
+
 	// Create new batch import
 	batchImport := &BatchImport{
 		Items:      items,
@@ -922,11 +921,11 @@ func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isP
 	}
 	p.batchImports[channel] = batchImport
 	p.mu.Unlock()
-	
+
 	// Send initial response
-	p.sendResponse(channel, username, 
+	p.sendResponse(channel, username,
 		fmt.Sprintf("Starting batch import of %d URLs. Items will be added every 2 seconds.", len(items)), isPM)
-	
+
 	// Start the batch import process
 	p.wg.Add(1)
 	go p.processBatchImport(batchImport, isPM)
@@ -935,13 +934,13 @@ func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isP
 // processBatchImport handles the actual batch import process
 func (p *Plugin) processBatchImport(batch *BatchImport, isPM bool) {
 	defer p.wg.Done()
-	
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
-	
+
 	// Add first item immediately
 	p.addBatchItem(batch, isPM)
-	
+
 	for {
 		select {
 		case <-ticker.C:
@@ -949,7 +948,7 @@ func (p *Plugin) processBatchImport(batch *BatchImport, isPM bool) {
 				// Batch complete
 				return
 			}
-			
+
 		case <-p.ctx.Done():
 			// Plugin shutting down
 			p.mu.Lock()
@@ -969,7 +968,7 @@ func (p *Plugin) processBatchImport(batch *BatchImport, isPM bool) {
 func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	
+
 	// Check if batch is complete
 	if batch.Current >= batch.Total {
 		// Batch complete - wait for pending items to resolve
@@ -977,7 +976,7 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 			// All items have been processed
 			batch.Completed = true
 			elapsed := time.Since(batch.StartTime)
-			message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d", 
+			message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d",
 				batch.Total, elapsed.Round(time.Second), batch.Succeeded, batch.Failed)
 			p.sendResponse(batch.Channel, batch.User, message, isPM)
 			delete(p.batchImports, batch.Channel)
@@ -988,7 +987,7 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 				batch.Timer = time.AfterFunc(10*time.Second, func() {
 					p.mu.Lock()
 					defer p.mu.Unlock()
-					
+
 					// Check if batch still exists (might have completed normally)
 					if b, exists := p.batchImports[batch.Channel]; exists && b == batch && !batch.Completed {
 						// Mark remaining pending items as failed
@@ -1000,11 +999,11 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 							delete(batch.PendingMap, id)
 							logger.Debug(p.name, "Marking pending item %s as failed due to timeout", id)
 						}
-						
+
 						// Mark as completed and send completion message
 						batch.Completed = true
 						elapsed := time.Since(batch.StartTime)
-						message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d", 
+						message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d",
 							batch.Total, elapsed.Round(time.Second), batch.Succeeded, batch.Failed)
 						if batch.Failed > 0 {
 							message += " (Some items failed or timed out)"
@@ -1019,15 +1018,15 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 		}
 		return false
 	}
-	
+
 	// Get next item
 	item := batch.Items[batch.Current]
 	batch.Current++
-	
+
 	// Mark as pending and track it
 	batch.Pending++
 	batch.PendingMap[item.ID] = item
-	
+
 	// Check if we should send a progress update
 	if batch.Total > 100 {
 		switch batch.Current {
@@ -1042,10 +1041,10 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 				fmt.Sprintf("Batch import 75%% complete (%d/%d items sent).", batch.Current, batch.Total), isPM)
 		}
 	}
-	
+
 	// Add the item to playlist (title will be auto-fetched by CyTube)
 	logger.Info(p.name, "Adding batch item %d/%d (ID: %s): %s", batch.Current, batch.Total, item.ID, item.URL)
-	
+
 	// Use goroutine to avoid blocking the ticker
 	go func(itemID, url string, current, total int) {
 		// Send with the item ID as metadata so we can track responses
@@ -1063,18 +1062,18 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 			p.mu.Unlock()
 		}
 	}(item.ID, item.URL, batch.Current, batch.Total)
-	
+
 	return true
 }
 
 // handleQueueSuccess tracks successful queue additions during batch imports
 func (p *Plugin) handleQueueSuccess(event framework.Event) error {
 	logger.Debug(p.name, "handleQueueSuccess called with event type: %T", event)
-	
+
 	// Extract channel name and media info from the event
 	var channelName string
 	var mediaID string
-	
+
 	// Check for PlaylistEvent first (which embeds CytubeEvent)
 	if playlistEvent, ok := event.(*framework.PlaylistEvent); ok {
 		channelName = playlistEvent.ChannelName
@@ -1082,7 +1081,7 @@ func (p *Plugin) handleQueueSuccess(event framework.Event) error {
 		if len(playlistEvent.Items) > 0 {
 			mediaID = playlistEvent.Items[0].MediaID
 		}
-		logger.Debug(p.name, "PlaylistEvent detected - Channel: %s, MediaID: %s, Action: %s", 
+		logger.Debug(p.name, "PlaylistEvent detected - Channel: %s, MediaID: %s, Action: %s",
 			channelName, mediaID, playlistEvent.Action)
 	} else if genericEvent, ok := event.(*framework.GenericEvent); ok {
 		channelName = genericEvent.ChannelName
@@ -1102,21 +1101,21 @@ func (p *Plugin) handleQueueSuccess(event framework.Event) error {
 	} else if cytubeEvent, ok := event.(*framework.CytubeEvent); ok {
 		channelName = cytubeEvent.ChannelName
 	}
-	
+
 	if channelName == "" {
 		logger.Debug(p.name, "handleQueueSuccess: No channel name found, skipping")
 		return nil // Can't determine channel
 	}
-	
+
 	logger.Debug(p.name, "handleQueueSuccess: Channel=%s, MediaID=%s", channelName, mediaID)
-	
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	
+
 	// Only track for the specific channel with a batch import
 	if batch, exists := p.batchImports[channelName]; exists {
 		logger.Debug(p.name, "Found batch import for channel %s, pending items: %d", channelName, len(batch.PendingMap))
-		
+
 		// Try to find the item by media ID match
 		var foundItem *BatchImportItem
 		for _, item := range batch.PendingMap {
@@ -1127,14 +1126,14 @@ func (p *Plugin) handleQueueSuccess(event framework.Event) error {
 				break
 			}
 		}
-		
+
 		if foundItem != nil {
 			// Found the specific item that succeeded
 			foundItem.Status = "success"
 			batch.Succeeded++
 			batch.Pending--
 			delete(batch.PendingMap, foundItem.ID)
-			logger.Debug(p.name, "Batch import item %s succeeded for channel %s (%d/%d)", 
+			logger.Debug(p.name, "Batch import item %s succeeded for channel %s (%d/%d)",
 				foundItem.ID, channelName, batch.Succeeded, batch.Total)
 		} else if batch.Pending > 0 {
 			// Couldn't match specific item, but we have pending items
@@ -1144,18 +1143,18 @@ func (p *Plugin) handleQueueSuccess(event framework.Event) error {
 				batch.Succeeded++
 				batch.Pending--
 				delete(batch.PendingMap, id)
-				logger.Debug(p.name, "Batch import item succeeded (fallback) for channel %s (%d/%d)", 
+				logger.Debug(p.name, "Batch import item succeeded (fallback) for channel %s (%d/%d)",
 					channelName, batch.Succeeded, batch.Total)
 				break // Only process one
 			}
 		}
-		
+
 		// Check if batch is complete
 		logger.Debug(p.name, "After response - Channel: %s, Current: %d/%d, Pending: %d, Succeeded: %d, Failed: %d",
 			channelName, batch.Current, batch.Total, batch.Pending, batch.Succeeded, batch.Failed)
 		p.checkBatchComplete(batch, channelName)
 	}
-	
+
 	return nil
 }
 
@@ -1164,7 +1163,7 @@ func (p *Plugin) handleQueueFail(event framework.Event) error {
 	// Extract channel name and failure info from the event
 	var channelName string
 	var failureReason string
-	
+
 	// Check for PlaylistEvent first (though queueFail is usually GenericEvent)
 	if playlistEvent, ok := event.(*framework.PlaylistEvent); ok {
 		channelName = playlistEvent.ChannelName
@@ -1186,14 +1185,14 @@ func (p *Plugin) handleQueueFail(event framework.Event) error {
 	} else if cytubeEvent, ok := event.(*framework.CytubeEvent); ok {
 		channelName = cytubeEvent.ChannelName
 	}
-	
+
 	if channelName == "" {
 		return nil // Can't determine channel
 	}
-	
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	
+
 	// Only track for the specific channel with a batch import
 	if batch, exists := p.batchImports[channelName]; exists {
 		if batch.Pending > 0 {
@@ -1205,18 +1204,18 @@ func (p *Plugin) handleQueueFail(event framework.Event) error {
 				batch.Failed++
 				batch.Pending--
 				delete(batch.PendingMap, id)
-				logger.Debug(p.name, "Batch import item %s failed for channel %s (%d/%d): %s", 
+				logger.Debug(p.name, "Batch import item %s failed for channel %s (%d/%d): %s",
 					id, channelName, batch.Failed, batch.Total, failureReason)
 				break // Only process one
 			}
 		}
-		
+
 		// Check if batch is complete
 		logger.Debug(p.name, "After response - Channel: %s, Current: %d/%d, Pending: %d, Succeeded: %d, Failed: %d",
 			channelName, batch.Current, batch.Total, batch.Pending, batch.Succeeded, batch.Failed)
 		p.checkBatchComplete(batch, channelName)
 	}
-	
+
 	return nil
 }
 
@@ -1225,7 +1224,7 @@ func (p *Plugin) checkBatchComplete(batch *BatchImport, channelName string) {
 	// Log the current state for debugging
 	logger.Debug(p.name, "checkBatchComplete - Channel: %s, Current: %d/%d, Pending: %d, Succeeded: %d, Failed: %d",
 		channelName, batch.Current, batch.Total, batch.Pending, batch.Succeeded, batch.Failed)
-	
+
 	// Check if all items have been processed
 	if batch.Current >= batch.Total && batch.Pending == 0 && !batch.Completed {
 		// Cancel timer if it was started
@@ -1233,13 +1232,13 @@ func (p *Plugin) checkBatchComplete(batch *BatchImport, channelName string) {
 			batch.Timer.Stop()
 			batch.Timer = nil
 		}
-		
+
 		// Mark as completed and prepare message
 		batch.Completed = true
 		elapsed := time.Since(batch.StartTime)
-		message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d", 
+		message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d",
 			batch.Total, elapsed.Round(time.Second), batch.Succeeded, batch.Failed)
-		
+
 		if batch.Failed > 0 {
 			// Add details about common failure reasons
 			failureReasons := make(map[string]int)
@@ -1254,7 +1253,7 @@ func (p *Plugin) checkBatchComplete(batch *BatchImport, channelName string) {
 					}
 				}
 			}
-			
+
 			if gdCount, ok := failureReasons["Google Drive restrictions"]; ok && gdCount > 0 {
 				message += fmt.Sprintf(" (%d failed due to Google Drive restrictions)", gdCount)
 			}
@@ -1262,10 +1261,10 @@ func (p *Plugin) checkBatchComplete(batch *BatchImport, channelName string) {
 				message += fmt.Sprintf(" (%d timed out)", timeoutCount)
 			}
 		}
-		
+
 		// Send completion message (assuming not PM for now - would need to track this)
 		p.sendResponse(channelName, batch.User, message, false)
-		
+
 		// Clean up
 		delete(p.batchImports, channelName)
 		logger.Info(p.name, "Batch import completed for channel %s: %d succeeded, %d failed out of %d total",

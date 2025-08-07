@@ -426,7 +426,7 @@ func (p *Plugin) handlePlaylistRequest(event framework.Event) error {
 // handlePluginRequest handles plugin requests for core plugin information
 func (p *Plugin) handlePluginRequest(event framework.Event) error {
 	logger.Debug("Core", "Received plugin.request event")
-	
+
 	dataEvent, ok := event.(*framework.DataEvent)
 	if !ok || dataEvent.Data == nil || dataEvent.Data.PluginRequest == nil {
 		logger.Debug("Core", "Received plugin.request event with no valid request data")
@@ -434,7 +434,7 @@ func (p *Plugin) handlePluginRequest(event framework.Event) error {
 	}
 
 	req := dataEvent.Data.PluginRequest
-	
+
 	logger.Debug("Core", "Plugin request from '%s' to '%s' type '%s'", req.From, req.To, req.Type)
 
 	// Check if this request is targeted at the core plugin
@@ -529,22 +529,22 @@ func (p *Plugin) handleGetConfiguredChannels(req *framework.PluginRequest) error
 // handleQueueMedia handles requests to queue media in CyTube
 func (p *Plugin) handleQueueMedia(req *framework.PluginRequest) error {
 	logger.Info("Core", "handleQueueMedia called from plugin: %s", req.From)
-	
+
 	if req.Data == nil || req.Data.KeyValue == nil {
 		logger.Error("Core", "Missing queue data in request from %s", req.From)
 		return fmt.Errorf("missing queue data")
 	}
-	
+
 	data := req.Data.KeyValue
 	channel := data["channel"]
 	mediaType := data["type"]
 	mediaID := data["id"]
 	pos := data["pos"]
 	temp := data["temp"] == "true"
-	
-	logger.Info("Core", "Queue media request - Channel: %s, Type: %s, ID: %s, Pos: %s, Temp: %v", 
+
+	logger.Info("Core", "Queue media request - Channel: %s, Type: %s, ID: %s, Pos: %s, Temp: %v",
 		channel, mediaType, mediaID, pos, temp)
-	
+
 	// Find the room ID for this channel
 	roomID := ""
 	for _, room := range p.config.Rooms {
@@ -553,29 +553,29 @@ func (p *Plugin) handleQueueMedia(req *framework.PluginRequest) error {
 			break
 		}
 	}
-	
+
 	if roomID == "" {
 		return fmt.Errorf("channel '%s' not found", channel)
 	}
-	
+
 	// Get the connection for this room
 	p.mu.RLock()
 	conn, exists := p.roomManager.connections[roomID]
 	p.mu.RUnlock()
-	
+
 	if !exists || conn == nil {
 		return fmt.Errorf("no connection for room '%s'", roomID)
 	}
-	
+
 	conn.mu.RLock()
 	client := conn.Client
 	connected := conn.Connected
 	conn.mu.RUnlock()
-	
+
 	if !connected || client == nil {
 		return fmt.Errorf("room '%s' is not connected", roomID)
 	}
-	
+
 	// Create the queue payload for CyTube matching the JS client format
 	// From CyTube's ui.js: socket.emit("queue", { id, type, pos, temp, title, duration })
 	queuePayload := map[string]interface{}{
@@ -584,31 +584,31 @@ func (p *Plugin) handleQueueMedia(req *framework.PluginRequest) error {
 		"pos":  pos,
 		"temp": temp,
 	}
-	
+
 	// Add title if provided and not default
 	title := data["title"]
 	if title != "" && title != "Default Title" {
 		queuePayload["title"] = title
 	}
-	
+
 	// For direct files (type "fi"), we pass the full URL as the ID
 	if mediaType == "fi" {
 		queuePayload["id"] = mediaID
 	}
-	
+
 	logger.Info("Core", "Sending queue payload: %+v", queuePayload)
-	
+
 	// Create a generic payload that implements EventPayload
 	genericPayload := &GenericPayload{Data: queuePayload}
-	
+
 	// Send the queue event via WebSocket
 	if err := client.Send("queue", genericPayload); err != nil {
 		logger.Error("Core", "Failed to send queue event: %v", err)
 		return fmt.Errorf("failed to queue media: %w", err)
 	}
-	
+
 	logger.Info("Core", "Successfully sent queue event for %s:%s", mediaType, mediaID)
-	
+
 	// Send success response
 	response := &framework.EventData{
 		PluginResponse: &framework.PluginResponse{
@@ -617,25 +617,25 @@ func (p *Plugin) handleQueueMedia(req *framework.PluginRequest) error {
 			Success: true,
 		},
 	}
-	
+
 	return p.eventBus.Broadcast(fmt.Sprintf("plugin.response.%s", req.From), response)
 }
 
 // handleDeleteMedia handles requests to delete media from CyTube playlist
 func (p *Plugin) handleDeleteMedia(req *framework.PluginRequest) error {
 	logger.Info("Core", "handleDeleteMedia called from plugin: %s", req.From)
-	
+
 	if req.Data == nil || req.Data.KeyValue == nil {
 		logger.Error("Core", "Missing delete data in request from %s", req.From)
 		return fmt.Errorf("missing delete data")
 	}
-	
+
 	data := req.Data.KeyValue
 	channel := data["channel"]
 	uid := data["uid"]
-	
+
 	logger.Info("Core", "Delete media request - Channel: %s, UID: %s", channel, uid)
-	
+
 	// Find the room ID for this channel
 	roomID := ""
 	for _, room := range p.config.Rooms {
@@ -644,29 +644,29 @@ func (p *Plugin) handleDeleteMedia(req *framework.PluginRequest) error {
 			break
 		}
 	}
-	
+
 	if roomID == "" {
 		return fmt.Errorf("channel '%s' not found", channel)
 	}
-	
+
 	// Get the connection for this room
 	p.mu.RLock()
 	conn, exists := p.roomManager.connections[roomID]
 	p.mu.RUnlock()
-	
+
 	if !exists || conn == nil {
 		return fmt.Errorf("no connection for room '%s'", roomID)
 	}
-	
+
 	conn.mu.RLock()
 	client := conn.Client
 	connected := conn.Connected
 	conn.mu.RUnlock()
-	
+
 	if !connected || client == nil {
 		return fmt.Errorf("room '%s' is not connected", roomID)
 	}
-	
+
 	// Create delete payload - CyTube expects just the UID value directly
 	// From util.js: socket.emit("delete", li.data("uid"));
 	// CyTube's delete event expects the UID as a number, not a string
@@ -676,20 +676,20 @@ func (p *Plugin) handleDeleteMedia(req *framework.PluginRequest) error {
 		logger.Error("Core", "Invalid UID format: %s", uid)
 		return fmt.Errorf("invalid UID: %w", err)
 	}
-	
+
 	// Use the IntPayload type to send the UID as a JSON number
 	payload := IntPayload(uidInt)
-	
+
 	logger.Info("Core", "Sending delete event for UID: %d", uidInt)
-	
+
 	// Send the delete event via WebSocket
 	if err := client.Send("delete", payload); err != nil {
 		logger.Error("Core", "Failed to send delete event: %v", err)
 		return fmt.Errorf("failed to delete media: %w", err)
 	}
-	
+
 	logger.Info("Core", "Successfully sent delete event for UID %s", uid)
-	
+
 	// Send success response
 	response := &framework.EventData{
 		PluginResponse: &framework.PluginResponse{
@@ -698,7 +698,7 @@ func (p *Plugin) handleDeleteMedia(req *framework.PluginRequest) error {
 			Success: true,
 		},
 	}
-	
+
 	return p.eventBus.Broadcast(fmt.Sprintf("plugin.response.%s", req.From), response)
 }
 

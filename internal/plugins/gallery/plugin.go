@@ -52,7 +52,7 @@ func New() framework.Plugin {
 			MaxImagesPerUser:    25,
 			HealthCheckInterval: 5 * time.Minute,
 			GenerateHTML:        true,
-			HTMLOutputPath:      "/var/www/daz/galleries",
+			HTMLOutputPath:      "./galleries-output",
 			EnableHealthCheck:   true,
 			AdminOnly:           false,
 		},
@@ -297,7 +297,7 @@ func (p *Plugin) handleGalleryCommand(params map[string]string) {
 
 	// Get gallery URL for the user
 	galleryURL := fmt.Sprintf("https://daz.example.com/galleries/%s/", username)
-	
+
 	// Get gallery stats
 	stats, err := p.store.GetUserStats(username, channel)
 	if err != nil {
@@ -306,9 +306,9 @@ func (p *Plugin) handleGalleryCommand(params map[string]string) {
 		return
 	}
 
-	message := fmt.Sprintf("%s's gallery: %s (%d active images)", 
+	message := fmt.Sprintf("%s's gallery: %s (%d active images)",
 		username, galleryURL, stats.ActiveImages)
-	
+
 	if stats.IsLocked {
 		message += " [LOCKED]"
 	}

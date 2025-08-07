@@ -139,7 +139,7 @@ func (h *HealthChecker) checkImage(img *GalleryImage) {
 		h.markImageFailed(img.ID, fmt.Sprintf("Network error: %v", err))
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Check the status code
 	switch resp.StatusCode {
