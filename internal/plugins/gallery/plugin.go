@@ -295,22 +295,25 @@ func (p *Plugin) handleGalleryCommand(params map[string]string) {
 	channel := params["channel"]
 	isPM := params["is_pm"] == "true"
 
-	// Get gallery URL for the user (GitHub Pages)
-	galleryURL := fmt.Sprintf("https://hildolfr.github.io/daz/%s/", username)
+	// Get the shared gallery URL (GitHub Pages)
+	galleryURL := "https://hildolfr.github.io/daz/"
 
-	// Get gallery stats
+	// Get gallery stats for the user
 	stats, err := p.store.GetUserStats(username, channel)
 	if err != nil {
 		logger.Error(p.name, "Failed to get gallery stats: %v", err)
-		p.sendResponse(channel, username, "Failed to retrieve gallery information.", isPM)
+		// If no stats, user has no gallery yet
+		message := fmt.Sprintf("Gallery: %s (You have no images yet)", galleryURL)
+		p.sendResponse(channel, username, message, isPM)
 		return
 	}
 
-	message := fmt.Sprintf("%s's gallery: %s (%d active images)",
-		username, galleryURL, stats.ActiveImages)
+	// Format the message with user's stats
+	message := fmt.Sprintf("Gallery: %s (%s has %d images)", 
+		galleryURL, username, stats.ActiveImages)
 
 	if stats.IsLocked {
-		message += " [LOCKED]"
+		message += " [Your gallery is LOCKED]"
 	}
 
 	p.sendResponse(channel, username, message, isPM)
