@@ -1,7 +1,8 @@
 package greeter
 
 import (
-	"math/rand"
+	crypto_rand "crypto/rand"
+	"math/big"
 	"sync"
 	"time"
 )
@@ -57,7 +58,8 @@ func (cm *CooldownManager) SetRandomCooldown(channel, user string) {
 	// Generate random cooldown duration between 45 minutes (2700 seconds) and 3 hours (10800 seconds)
 	minSeconds := 45 * 60     // 45 minutes
 	maxSeconds := 3 * 60 * 60 // 3 hours
-	randomSeconds := rand.Intn(maxSeconds-minSeconds+1) + minSeconds
+	n, _ := crypto_rand.Int(crypto_rand.Reader, big.NewInt(int64(maxSeconds-minSeconds+1)))
+	randomSeconds := int(n.Int64()) + minSeconds
 
 	duration := time.Duration(randomSeconds) * time.Second
 	cm.SetCooldown(channel, user, duration)

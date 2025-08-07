@@ -2,10 +2,11 @@ package core
 
 import (
 	"context"
+	crypto_rand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"github.com/hildolfr/daz/internal/logger"
-	"math/rand"
+	"math/big"
 	"sync"
 	"time"
 
@@ -149,8 +150,9 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 			}
 
 			// Add jitter (±25%)
-			jitter := time.Duration(rand.Float64() * 0.5 * float64(waitTime))
-			waitTime = waitTime + jitter - (jitter / 2)
+			n, _ := crypto_rand.Int(crypto_rand.Reader, big.NewInt(int64(waitTime/2)))
+			jitter := time.Duration(n.Int64())
+			waitTime = waitTime + jitter - (time.Duration(waitTime) / 4)
 
 			logger.Info("RoomManager", "Room '%s': Waiting %v before retry %d/%d (exponential backoff with jitter)",
 				roomID, waitTime, attempt+1, conn.Room.ReconnectAttempts)

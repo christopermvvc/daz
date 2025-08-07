@@ -2,9 +2,10 @@ package greeter
 
 import (
 	"bufio"
+	crypto_rand "crypto/rand"
 	_ "embed"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"strings"
 	"time"
 )
@@ -136,7 +137,8 @@ func (gm *GreetingManager) GetGreeting(username string, isFirstTime bool) string
 	for _, category := range categories {
 		if greetings, exists := gm.greetings[category]; exists && len(greetings) > 0 {
 			// Select a random greeting from the category
-			index := rand.Intn(len(greetings))
+			n, _ := crypto_rand.Int(crypto_rand.Reader, big.NewInt(int64(len(greetings))))
+			index := int(n.Int64())
 			greeting := greetings[index]
 			// Replace placeholder with username
 			return strings.ReplaceAll(greeting, "<user>", username)

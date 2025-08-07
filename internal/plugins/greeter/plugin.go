@@ -2,9 +2,10 @@ package greeter
 
 import (
 	"context"
+	crypto_rand "crypto/rand"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"os"
 	"os/exec"
 	"strings"
@@ -103,7 +104,7 @@ func New() framework.Plugin {
 		greetingQueue:    make(chan *greetingRequest, greetingQueueSize),
 		readyChan:        make(chan struct{}),
 		lastGreeting:     make(map[string]*lastGreetingInfo),
-		skipProbability:  0.6 + rand.Float64()*0.2, // 60-80% skip rate
+		skipProbability:  0.6 + getRandomFloat64()*0.2, // 60-80% skip rate
 		channelJoinTimes: make(map[string]time.Time),
 		config: &Config{
 			CooldownMinutes:    30,
@@ -513,7 +514,7 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	logger.Debug(p.name, "Last greeting check passed for %s", username)
 
 	// Apply skip probability (60-80%) as final check
-	skipRoll := rand.Float64()
+	skipRoll := getRandomFloat64()
 	if skipRoll < p.skipProbability {
 		logger.Debug(p.name, "SKIP REASON: Random skip - roll=%.3f < probability=%.3f for user %s", skipRoll, p.skipProbability, username)
 		return nil
@@ -596,7 +597,8 @@ func (p *Plugin) processGreetingQueue() {
 				req.username, req.channel, time.Since(req.joinedAt))
 
 			// Random delay between 15s and 3min
-			delay := minGreetingDelay + time.Duration(rand.Int63n(int64(maxGreetingDelay-minGreetingDelay)))
+			n, _ := crypto_rand.Int(crypto_rand.Reader, big.NewInt(int64(maxGreetingDelay-minGreetingDelay)))
+			delay := minGreetingDelay + time.Duration(n.Int64())
 			logger.Debug(p.name, "Waiting %v before sending greeting to %s", delay, req.username)
 			timer := time.NewTimer(delay)
 			select {
@@ -709,7 +711,7 @@ func (p *Plugin) sendGreeting(req *greetingRequest) {
 
 	// Roll for fortune (25% chance)
 	if p.config.EnableFortune {
-		fortuneRoll := rand.Float64()
+		fortuneRoll := getRandomFloat64()
 		logger.Debug(p.name, "Fortune roll for %s: %.3f (need < %.3f)", req.username, fortuneRoll, p.config.FortuneProbability)
 
 		if fortuneRoll < p.config.FortuneProbability {
@@ -736,6 +738,12 @@ func (p *Plugin) sendGreeting(req *greetingRequest) {
 	} else {
 		logger.Debug(p.name, "Fortune feature disabled")
 	}
+}
+
+// getRandomFloat64 returns a cryptographically secure random float64 in [0, 1)
+func getRandomFloat64() float64 {
+	n, _ := crypto_rand.Int(crypto_rand.Reader, big.NewInt(1<<53))
+	return float64(n.Int64()) / float64(1<<53)
 }
 
 // getGreetingFromEngine requests a greeting from the greeting engine
