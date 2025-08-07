@@ -824,7 +824,11 @@ func (p *Plugin) handlePastebinImport(channel, username, pastebinURL string, isP
 		p.sendResponse(channel, username, "Failed to fetch Pastebin content. Please check the URL.", isPM)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Error(p.name, "Failed to close response body: %v", err)
+		}
+	}()
 	
 	if resp.StatusCode != http.StatusOK {
 		logger.Error(p.name, "Pastebin returned status %d", resp.StatusCode)
@@ -1026,13 +1030,14 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 	
 	// Check if we should send a progress update
 	if batch.Total > 100 {
-		if batch.Current == batch.Total/4 {
+		switch batch.Current {
+		case batch.Total / 4:
 			p.sendResponse(batch.Channel, batch.User,
 				fmt.Sprintf("Batch import 25%% complete (%d/%d items sent).", batch.Current, batch.Total), isPM)
-		} else if batch.Current == batch.Total/2 {
+		case batch.Total / 2:
 			p.sendResponse(batch.Channel, batch.User,
 				fmt.Sprintf("Batch import 50%% complete (%d/%d items sent).", batch.Current, batch.Total), isPM)
-		} else if batch.Current == 3*batch.Total/4 {
+		case 3 * batch.Total / 4:
 			p.sendResponse(batch.Channel, batch.User,
 				fmt.Sprintf("Batch import 75%% complete (%d/%d items sent).", batch.Current, batch.Total), isPM)
 		}
@@ -1064,11 +1069,22 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 
 // handleQueueSuccess tracks successful queue additions during batch imports
 func (p *Plugin) handleQueueSuccess(event framework.Event) error {
+	logger.Debug(p.name, "handleQueueSuccess called with event type: %T", event)
+	
 	// Extract channel name and media info from the event
 	var channelName string
 	var mediaID string
 	
-	if genericEvent, ok := event.(*framework.GenericEvent); ok {
+	// Check for PlaylistEvent first (which embeds CytubeEvent)
+	if playlistEvent, ok := event.(*framework.PlaylistEvent); ok {
+		channelName = playlistEvent.ChannelName
+		// For PlaylistEvent, extract media ID from the first item if available
+		if len(playlistEvent.Items) > 0 {
+			mediaID = playlistEvent.Items[0].MediaID
+		}
+		logger.Debug(p.name, "PlaylistEvent detected - Channel: %s, MediaID: %s, Action: %s", 
+			channelName, mediaID, playlistEvent.Action)
+	} else if genericEvent, ok := event.(*framework.GenericEvent); ok {
 		channelName = genericEvent.ChannelName
 		// Try to extract media ID from the event data
 		if len(genericEvent.RawJSON) > 0 {
@@ -1088,20 +1104,26 @@ func (p *Plugin) handleQueueSuccess(event framework.Event) error {
 	}
 	
 	if channelName == "" {
+		logger.Debug(p.name, "handleQueueSuccess: No channel name found, skipping")
 		return nil // Can't determine channel
 	}
+	
+	logger.Debug(p.name, "handleQueueSuccess: Channel=%s, MediaID=%s", channelName, mediaID)
 	
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	
 	// Only track for the specific channel with a batch import
 	if batch, exists := p.batchImports[channelName]; exists {
+		logger.Debug(p.name, "Found batch import for channel %s, pending items: %d", channelName, len(batch.PendingMap))
+		
 		// Try to find the item by media ID match
 		var foundItem *BatchImportItem
 		for _, item := range batch.PendingMap {
 			// Check if this item's URL contains the media ID
 			if mediaID != "" && strings.Contains(item.URL, mediaID) {
 				foundItem = item
+				logger.Debug(p.name, "Matched item by media ID: %s -> %s", mediaID, item.URL)
 				break
 			}
 		}
@@ -1143,7 +1165,14 @@ func (p *Plugin) handleQueueFail(event framework.Event) error {
 	var channelName string
 	var failureReason string
 	
-	if genericEvent, ok := event.(*framework.GenericEvent); ok {
+	// Check for PlaylistEvent first (though queueFail is usually GenericEvent)
+	if playlistEvent, ok := event.(*framework.PlaylistEvent); ok {
+		channelName = playlistEvent.ChannelName
+		// Extract failure reason from metadata if available
+		if reason, exists := playlistEvent.Metadata["error_message"]; exists {
+			failureReason = reason
+		}
+	} else if genericEvent, ok := event.(*framework.GenericEvent); ok {
 		channelName = genericEvent.ChannelName
 		// Try to extract failure reason from raw JSON
 		if len(genericEvent.RawJSON) > 0 {
