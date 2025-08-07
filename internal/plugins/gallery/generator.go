@@ -545,8 +545,8 @@ func (g *HTMLGenerator) pushToGitHub() error {
 	cmd += "git config user.name 'Daz Bot' && "
 	cmd += "git config user.email 'daz@example.com' && "
 	
-	// Add remote if not exists
-	cmd += "git remote get-url origin || git remote add origin https://github.com/hildolfr/daz-galleries.git && "
+	// Add remote if not exists (same repo as main code)
+	cmd += "git remote get-url origin || git remote add origin https://github.com/hildolfr/daz.git && "
 	
 	// Switch to gh-pages branch
 	cmd += "git checkout -B gh-pages && "

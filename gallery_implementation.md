@@ -156,9 +156,9 @@ internal/plugins/gallery/
 ### 📝 GitHub Pages Setup
 
 The gallery now automatically pushes to GitHub Pages:
-- Repository: `https://github.com/hildolfr/daz-galleries`
+- Repository: `https://github.com/hildolfr/daz` (same as main code)
 - Branch: `gh-pages`
-- URL: `https://hildolfr.github.io/daz-galleries/`
+- URL: `https://hildolfr.github.io/daz/`
 
 ### 📝 Commands Available
 

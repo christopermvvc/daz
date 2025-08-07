@@ -295,8 +295,8 @@ func (p *Plugin) handleGalleryCommand(params map[string]string) {
 	channel := params["channel"]
 	isPM := params["is_pm"] == "true"
 
-	// Get gallery URL for the user
-	galleryURL := fmt.Sprintf("https://daz.example.com/galleries/%s/", username)
+	// Get gallery URL for the user (GitHub Pages)
+	galleryURL := fmt.Sprintf("https://hildolfr.github.io/daz/%s/", username)
 
 	// Get gallery stats
 	stats, err := p.store.GetUserStats(username, channel)
