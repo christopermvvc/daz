@@ -948,6 +948,11 @@ func (p *Plugin) processBatchImport(batch *BatchImport, isPM bool) {
 		case <-p.ctx.Done():
 			// Plugin shutting down
 			p.mu.Lock()
+			// Stop timer if it exists
+			if batch.Timer != nil {
+				batch.Timer.Stop()
+				batch.Timer = nil
+			}
 			delete(p.batchImports, batch.Channel)
 			p.mu.Unlock()
 			return
@@ -973,6 +978,40 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 			}
 			p.sendResponse(batch.Channel, batch.User, message, isPM)
 			delete(p.batchImports, batch.Channel)
+		} else {
+			// Start a timeout timer if not already started
+			if batch.Timer == nil {
+				logger.Info(p.name, "All items sent, waiting 10 seconds for %d pending responses", batch.Pending)
+				batch.Timer = time.AfterFunc(10*time.Second, func() {
+					p.mu.Lock()
+					defer p.mu.Unlock()
+					
+					// Check if batch still exists (might have completed normally)
+					if b, exists := p.batchImports[batch.Channel]; exists && b == batch {
+						// Mark remaining pending items as failed
+						for id, item := range batch.PendingMap {
+							item.Status = "failed"
+							item.Error = "No response received (timeout)"
+							batch.Failed++
+							batch.Pending--
+							delete(batch.PendingMap, id)
+							logger.Debug(p.name, "Marking pending item %s as failed due to timeout", id)
+						}
+						
+						// Send completion message
+						elapsed := time.Since(batch.StartTime)
+						message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d", 
+							batch.Total, elapsed.Round(time.Second), batch.Succeeded, batch.Failed)
+						if batch.Failed > 0 {
+							message += " (Some items failed or timed out)"
+						}
+						p.sendResponse(batch.Channel, batch.User, message, isPM)
+						delete(p.batchImports, batch.Channel)
+						logger.Info(p.name, "Batch import completed with timeout for channel %s: %d succeeded, %d failed out of %d total",
+							batch.Channel, batch.Succeeded, batch.Failed, batch.Total)
+					}
+				})
+			}
 		}
 		return false
 	}
@@ -1090,6 +1129,8 @@ func (p *Plugin) handleQueueSuccess(event framework.Event) error {
 		}
 		
 		// Check if batch is complete
+		logger.Debug(p.name, "After response - Channel: %s, Current: %d/%d, Pending: %d, Succeeded: %d, Failed: %d",
+			channelName, batch.Current, batch.Total, batch.Pending, batch.Succeeded, batch.Failed)
 		p.checkBatchComplete(batch, channelName)
 	}
 	
@@ -1142,6 +1183,8 @@ func (p *Plugin) handleQueueFail(event framework.Event) error {
 		}
 		
 		// Check if batch is complete
+		logger.Debug(p.name, "After response - Channel: %s, Current: %d/%d, Pending: %d, Succeeded: %d, Failed: %d",
+			channelName, batch.Current, batch.Total, batch.Pending, batch.Succeeded, batch.Failed)
 		p.checkBatchComplete(batch, channelName)
 	}
 	
@@ -1150,8 +1193,18 @@ func (p *Plugin) handleQueueFail(event framework.Event) error {
 
 // checkBatchComplete checks if a batch import is complete and sends final message
 func (p *Plugin) checkBatchComplete(batch *BatchImport, channelName string) {
+	// Log the current state for debugging
+	logger.Debug(p.name, "checkBatchComplete - Channel: %s, Current: %d/%d, Pending: %d, Succeeded: %d, Failed: %d",
+		channelName, batch.Current, batch.Total, batch.Pending, batch.Succeeded, batch.Failed)
+	
 	// Check if all items have been processed
 	if batch.Current >= batch.Total && batch.Pending == 0 {
+		// Cancel timer if it was started
+		if batch.Timer != nil {
+			batch.Timer.Stop()
+			batch.Timer = nil
+		}
+		
 		// All items have been processed
 		elapsed := time.Since(batch.StartTime)
 		message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d", 
@@ -1164,6 +1217,8 @@ func (p *Plugin) checkBatchComplete(batch *BatchImport, channelName string) {
 				if item.Status == "failed" && item.Error != "" {
 					if strings.Contains(item.Error, "Google Drive") {
 						failureReasons["Google Drive restrictions"]++
+					} else if strings.Contains(item.Error, "timeout") {
+						failureReasons["Timeout"]++
 					} else {
 						failureReasons["Other errors"]++
 					}
@@ -1172,6 +1227,9 @@ func (p *Plugin) checkBatchComplete(batch *BatchImport, channelName string) {
 			
 			if gdCount, ok := failureReasons["Google Drive restrictions"]; ok && gdCount > 0 {
 				message += fmt.Sprintf(" (%d failed due to Google Drive restrictions)", gdCount)
+			}
+			if timeoutCount, ok := failureReasons["Timeout"]; ok && timeoutCount > 0 {
+				message += fmt.Sprintf(" (%d timed out)", timeoutCount)
 			}
 		}
 		
