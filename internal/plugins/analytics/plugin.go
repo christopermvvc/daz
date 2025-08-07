@@ -100,8 +100,8 @@ func (p *Plugin) Ready() bool {
 	}
 }
 
-// NewPlugin creates a new analytics plugin instance
-// Deprecated: Use New() instead
+// NewPlugin creates a new analytics plugin instance with custom configuration
+// Used for testing and legacy initialization
 func NewPlugin(config *Config) *Plugin {
 	if config == nil {
 		config = &Config{
@@ -171,7 +171,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 }
 
 // Initialize sets up the plugin with the event bus
-// Deprecated: Use Init() instead
+// Backward compatibility, proxies to Init()
 func (p *Plugin) Initialize(eventBus framework.EventBus) error {
 	return p.Init(nil, eventBus)
 }

@@ -100,7 +100,7 @@ func (p *Plugin) Ready() bool {
 	}
 }
 
-// NewPlugin creates a new eventfilter plugin instance (deprecated - use New)
+// NewPlugin creates a new eventfilter plugin instance with custom configuration
 func NewPlugin(config *Config) *Plugin {
 	if config == nil {
 		config = &Config{
@@ -127,7 +127,7 @@ func (p *Plugin) Name() string {
 	return p.name
 }
 
-// Initialize sets up the plugin with the event bus (deprecated - use Init)
+// Initialize sets up the plugin with the event bus (backward compatibility, proxies to Init)
 func (p *Plugin) Initialize(eventBus framework.EventBus) error {
 	return p.Init(nil, eventBus)
 }

@@ -977,9 +977,6 @@ func (p *Plugin) addBatchItem(batch *BatchImport, isPM bool) bool {
 			elapsed := time.Since(batch.StartTime)
 			message := fmt.Sprintf("Batch import complete! Processed %d items in %s. Success: %d, Failed: %d", 
 				batch.Total, elapsed.Round(time.Second), batch.Succeeded, batch.Failed)
-			if batch.Failed > 0 {
-				message += " (Failed items likely due to Google Drive restrictions)"
-			}
 			p.sendResponse(batch.Channel, batch.User, message, isPM)
 			delete(p.batchImports, batch.Channel)
 		} else {

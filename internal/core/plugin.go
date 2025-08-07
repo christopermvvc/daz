@@ -159,7 +159,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	return nil
 }
 
-// Initialize sets up the plugin with the event bus (deprecated, use Init)
+// Initialize sets up the plugin with the event bus (used by main.go for core plugin initialization)
 func (p *Plugin) Initialize(eventBus framework.EventBus) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

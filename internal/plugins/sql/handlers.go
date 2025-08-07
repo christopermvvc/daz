@@ -678,13 +678,13 @@ type BatchLogRequest struct {
 	Logs []LogRequest `json:"logs"`
 }
 
-// BatchQueryRequest represents multiple query requests (deprecated - use framework.SQLBatchRequest)
+// BatchQueryRequest represents multiple query requests (legacy batch type, still actively used)
 type BatchQueryRequest struct {
 	Queries []framework.SQLQueryRequest `json:"queries"`
 	Atomic  bool                        `json:"atomic"`
 }
 
-// BatchExecRequest represents multiple exec requests (deprecated - use framework.SQLBatchRequest)
+// BatchExecRequest represents multiple exec requests (legacy batch type, still actively used)
 type BatchExecRequest struct {
 	Execs  []framework.SQLExecRequest `json:"execs"`
 	Atomic bool                       `json:"atomic"`

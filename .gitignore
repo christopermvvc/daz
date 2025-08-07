@@ -128,6 +128,8 @@ cytube-events-discovered.txt
 *.bench
 coverage.html
 coverage.txt
+coverage.out
+*.test
 
 # Process and runtime files
 *.pid
