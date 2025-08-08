@@ -21,7 +21,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/daz/logs
+ReadWritePaths=/opt/daz/logs /opt/daz/galleries
 
 # Resource limits
 MemoryLimit=512M

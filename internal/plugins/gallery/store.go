@@ -120,17 +120,35 @@ func (s *Store) GetUserImages(username, channel string) ([]*GalleryImage, error)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	query := `
-		SELECT id, username, url, channel, posted_at, is_active,
-			   failure_count, first_failure_at, last_check_at, next_check_at,
-			   pruned_reason, original_poster, original_posted_at, 
-			   most_recent_poster, image_title
-		FROM daz_gallery_images
-		WHERE username = $1 AND channel = $2 AND is_active = true
-		ORDER BY posted_at DESC
-	`
-
-	rows, err := s.sqlClient.QueryContext(ctx, query, username, channel)
+	var query string
+	var rows *framework.QueryRows
+	var err error
+	
+	if channel == "" {
+		// Empty channel means get images from ALL channels for this user
+		query = `
+			SELECT id, username, url, channel, posted_at, is_active,
+				   failure_count, first_failure_at, last_check_at, next_check_at,
+				   pruned_reason, original_poster, original_posted_at, 
+				   most_recent_poster, image_title
+			FROM daz_gallery_images
+			WHERE username = $1 AND is_active = true
+			ORDER BY posted_at DESC
+		`
+		rows, err = s.sqlClient.QueryContext(ctx, query, username)
+	} else {
+		// Specific channel
+		query = `
+			SELECT id, username, url, channel, posted_at, is_active,
+				   failure_count, first_failure_at, last_check_at, next_check_at,
+				   pruned_reason, original_poster, original_posted_at, 
+				   most_recent_poster, image_title
+			FROM daz_gallery_images
+			WHERE username = $1 AND channel = $2 AND is_active = true
+			ORDER BY posted_at DESC
+		`
+		rows, err = s.sqlClient.QueryContext(ctx, query, username, channel)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to query images: %w", err)
 	}
@@ -166,14 +184,30 @@ func (s *Store) GetUserStats(username, channel string) (*GalleryStats, error) {
 	}
 
 	// Get stats from daz_gallery_stats table
-	statsQuery := `
-		SELECT total_images, active_images, COALESCE(dead_images, 0), 
-			   COALESCE(images_shared, 0), last_post_at, gallery_views
-		FROM daz_gallery_stats
-		WHERE username = $1 AND channel = $2
-	`
-
-	rows, err := s.sqlClient.QueryContext(ctx, statsQuery, username, channel)
+	var statsQuery string
+	var rows *framework.QueryRows
+	var err error
+	
+	if channel == "" {
+		// Aggregate stats across all channels for this user
+		statsQuery = `
+			SELECT SUM(total_images), SUM(active_images), SUM(COALESCE(dead_images, 0)), 
+				   SUM(COALESCE(images_shared, 0)), MAX(last_post_at), SUM(gallery_views)
+			FROM daz_gallery_stats
+			WHERE username = $1
+		`
+		rows, err = s.sqlClient.QueryContext(ctx, statsQuery, username)
+	} else {
+		// Get stats for specific channel
+		statsQuery = `
+			SELECT total_images, active_images, COALESCE(dead_images, 0), 
+				   COALESCE(images_shared, 0), last_post_at, gallery_views
+			FROM daz_gallery_stats
+			WHERE username = $1 AND channel = $2
+		`
+		rows, err = s.sqlClient.QueryContext(ctx, statsQuery, username, channel)
+	}
+	
 	if err != nil {
 		return nil, fmt.Errorf("failed to get stats: %w", err)
 	}
@@ -188,13 +222,27 @@ func (s *Store) GetUserStats(username, channel string) (*GalleryStats, error) {
 		}
 	}
 
-	// Get lock status
-	lockQuery := `
-		SELECT is_locked FROM daz_gallery_locks
-		WHERE username = $1 AND channel = $2
-	`
-
-	rows2, err := s.sqlClient.QueryContext(ctx, lockQuery, username, channel)
+	// Get lock status (if any channel is locked, consider user locked)
+	var lockQuery string
+	var rows2 *framework.QueryRows
+	
+	if channel == "" {
+		// Check if ANY of the user's galleries are locked
+		lockQuery = `
+			SELECT EXISTS(
+				SELECT 1 FROM daz_gallery_locks
+				WHERE username = $1 AND is_locked = true
+			)
+		`
+		rows2, err = s.sqlClient.QueryContext(ctx, lockQuery, username)
+	} else {
+		lockQuery = `
+			SELECT is_locked FROM daz_gallery_locks
+			WHERE username = $1 AND channel = $2
+		`
+		rows2, err = s.sqlClient.QueryContext(ctx, lockQuery, username, channel)
+	}
+	
 	if err != nil {
 		return nil, fmt.Errorf("failed to get lock status: %w", err)
 	}
@@ -314,16 +362,17 @@ func (s *Store) RestoreDeadImage(imageID int64) (bool, error) {
 	return restored, nil
 }
 
-// GetAllActiveUsers gets all users with galleries
+// GetAllActiveUsers gets all users with galleries (combined across all channels)
 func (s *Store) GetAllActiveUsers() ([]struct{ Username, Channel string }, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Get unique usernames only, ignoring channel
 	query := `
-		SELECT DISTINCT username, channel 
+		SELECT DISTINCT username 
 		FROM daz_gallery_images 
 		WHERE is_active = true
-		ORDER BY username, channel
+		ORDER BY username
 	`
 
 	rows, err := s.sqlClient.QueryContext(ctx, query)
@@ -334,12 +383,159 @@ func (s *Store) GetAllActiveUsers() ([]struct{ Username, Channel string }, error
 
 	var users []struct{ Username, Channel string }
 	for rows.Next() {
-		var user struct{ Username, Channel string }
-		if err := rows.Scan(&user.Username, &user.Channel); err != nil {
+		var username string
+		if err := rows.Scan(&username); err != nil {
 			return nil, fmt.Errorf("failed to scan user: %w", err)
 		}
-		users = append(users, user)
+		// Return empty channel to indicate "all channels"
+		users = append(users, struct{ Username, Channel string }{
+			Username: username,
+			Channel:  "", // Empty means all channels
+		})
 	}
 
 	return users, nil
+}
+
+// GetPrunedImages retrieves dead/pruned images for graveyard display
+func (s *Store) GetPrunedImages(limit int) ([]*GalleryImage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Get pruned images from last 6 months, ordered by most recent failures
+	query := `
+		SELECT id, username, url, channel, posted_at, is_active,
+		       failure_count, first_failure_at, last_check_at, next_check_at,
+		       pruned_reason, original_poster, original_posted_at, 
+		       most_recent_poster, image_title
+		FROM daz_gallery_images
+		WHERE is_active = false 
+		  AND pruned_reason IS NOT NULL
+		  AND (last_check_at > NOW() - INTERVAL '6 months' OR last_check_at IS NULL)
+		ORDER BY COALESCE(last_check_at, posted_at) DESC
+		LIMIT $1
+	`
+
+	rows, err := s.sqlClient.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query pruned images: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var images []*GalleryImage
+	for rows.Next() {
+		img := &GalleryImage{}
+		err := rows.Scan(
+			&img.ID, &img.Username, &img.URL, &img.Channel, &img.PostedAt,
+			&img.IsActive, &img.FailureCount, &img.FirstFailureAt,
+			&img.LastCheckAt, &img.NextCheckAt, &img.PrunedReason,
+			&img.OriginalPoster, &img.OriginalPostedAt, &img.MostRecentPoster,
+			&img.ImageTitle,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan pruned image: %w", err)
+		}
+		images = append(images, img)
+	}
+
+	return images, nil
+}
+
+// GetDeadImagesForRecovery retrieves dead images that should be rechecked for recovery
+func (s *Store) GetDeadImagesForRecovery(limit int) ([]*GalleryImage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Get dead images that are due for recheck using exponential backoff
+	// Recheck intervals: 3h, 6h, 12h, 24h, 48h (max)
+	query := `
+		SELECT id, username, url, channel, posted_at, is_active,
+		       failure_count, first_failure_at, last_check_at, next_check_at,
+		       pruned_reason, original_poster, original_posted_at, 
+		       most_recent_poster, image_title
+		FROM daz_gallery_images
+		WHERE is_active = false 
+		  AND pruned_reason IS NOT NULL
+		  AND (next_check_at IS NULL OR next_check_at <= NOW())
+		  AND (last_check_at IS NULL OR last_check_at > NOW() - INTERVAL '7 days')
+		ORDER BY COALESCE(next_check_at, last_check_at, posted_at) ASC
+		LIMIT $1
+	`
+
+	rows, err := s.sqlClient.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query dead images for recovery: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var images []*GalleryImage
+	for rows.Next() {
+		img := &GalleryImage{}
+		err := rows.Scan(
+			&img.ID, &img.Username, &img.URL, &img.Channel, &img.PostedAt,
+			&img.IsActive, &img.FailureCount, &img.FirstFailureAt,
+			&img.LastCheckAt, &img.NextCheckAt, &img.PrunedReason,
+			&img.OriginalPoster, &img.OriginalPostedAt, &img.MostRecentPoster,
+			&img.ImageTitle,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan dead image: %w", err)
+		}
+		images = append(images, img)
+	}
+
+	return images, nil
+}
+
+// RecoverDeadImage attempts to recover a dead image that is now accessible
+func (s *Store) RecoverDeadImage(imageID int64) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// First check if image is actually dead
+	var isActive bool
+	checkQuery := `SELECT is_active FROM daz_gallery_images WHERE id = $1`
+	rows, err := s.sqlClient.QueryContext(ctx, checkQuery, imageID)
+	if err != nil {
+		return false, fmt.Errorf("failed to check image status: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	if rows.Next() {
+		if err := rows.Scan(&isActive); err != nil {
+			return false, fmt.Errorf("failed to scan active status: %w", err)
+		}
+	}
+
+	if isActive {
+		// Image is already active, nothing to recover
+		return false, nil
+	}
+
+	// Attempt to recover the image using the stored function
+	recoverQuery := `SELECT restore_dead_image($1)`
+	var recovered bool
+	rows2, err := s.sqlClient.QueryContext(ctx, recoverQuery, imageID)
+	if err != nil {
+		return false, fmt.Errorf("failed to recover image: %w", err)
+	}
+	defer func() { _ = rows2.Close() }()
+
+	if rows2.Next() {
+		if err := rows2.Scan(&recovered); err != nil {
+			return false, fmt.Errorf("failed to scan recovery status: %w", err)
+		}
+	}
+
+	if recovered {
+		logger.Info("gallery", "Successfully recovered dead image %d", imageID)
+	} else {
+		// Update next check time using stored procedure for exponential backoff
+		updateQuery := `SELECT update_dead_image_recovery($1)`
+		if _, err := s.sqlClient.ExecContext(ctx, updateQuery, imageID); err != nil {
+			logger.Error("gallery", "Failed to update next check time for image %d: %v", imageID, err)
+		}
+	}
+
+	return recovered, nil
 }

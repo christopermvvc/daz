@@ -54,10 +54,20 @@ func (h *HealthChecker) CheckPendingImages() error {
 		h.mu.Unlock()
 	}()
 
-	// Get images that need checking
+	// Get active images that need checking
 	images, err := h.store.GetImagesForHealthCheck(50)
 	if err != nil {
 		return fmt.Errorf("failed to get images for health check: %w", err)
+	}
+
+	// Also check some dead images for recovery (with exponential backoff)
+	deadImages, err := h.store.GetDeadImagesForRecovery(10)
+	if err != nil {
+		logger.Error("gallery", "Failed to get dead images for recovery: %v", err)
+		// Continue with regular health checks even if recovery check fails
+	} else if len(deadImages) > 0 {
+		logger.Debug("gallery", "Checking %d dead images for recovery", len(deadImages))
+		images = append(images, deadImages...)
 	}
 
 	if len(images) == 0 {
@@ -179,6 +189,15 @@ func (h *HealthChecker) checkImage(img *GalleryImage) {
 
 // markImageHealthy marks an image as healthy
 func (h *HealthChecker) markImageHealthy(imageID int64) {
+	// First check if this is a dead image that can be recovered
+	if recovered, err := h.store.RecoverDeadImage(imageID); err != nil {
+		logger.Error("gallery", "Failed to check recovery for image %d: %v", imageID, err)
+	} else if recovered {
+		logger.Info("gallery", "Successfully recovered dead image %d", imageID)
+		return
+	}
+	
+	// Otherwise just mark as healthy (reset failure count)
 	if err := h.store.MarkImageHealthCheck(imageID, false, ""); err != nil {
 		logger.Error("gallery", "Failed to mark image %d as healthy: %v", imageID, err)
 	}

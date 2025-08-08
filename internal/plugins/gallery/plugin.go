@@ -29,6 +29,10 @@ type Plugin struct {
 	health    *HealthChecker
 	generator *HTMLGenerator
 
+	// Rate limiting
+	userRateLimit map[string]time.Time
+	rateLimitMu   sync.RWMutex
+
 	// Tracking
 	eventsHandled int64
 	imagesAdded   int64
@@ -52,7 +56,7 @@ func New() framework.Plugin {
 			MaxImagesPerUser:    25,
 			HealthCheckInterval: 5 * time.Minute,
 			GenerateHTML:        true,
-			HTMLOutputPath:      "./galleries-output",
+			HTMLOutputPath:      "/opt/daz/galleries",
 			EnableHealthCheck:   true,
 			AdminOnly:           false,
 		},
@@ -82,6 +86,7 @@ func (p *Plugin) Init(configData json.RawMessage, bus framework.EventBus) error 
 	p.store = NewStore(bus, p.name)
 	p.health = NewHealthChecker(p.store, p.config)
 	p.generator = NewHTMLGenerator(p.store, p.config)
+	p.userRateLimit = make(map[string]time.Time)
 
 	logger.Info(p.name, "Gallery plugin initialized with max %d images per user", p.config.MaxImagesPerUser)
 	return nil
@@ -235,20 +240,43 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 
 	msg := dataEvent.Data.ChatMessage
 
+	// Check rate limit (1 image per user per 30 seconds)
+	p.rateLimitMu.Lock()
+	lastPost, exists := p.userRateLimit[msg.Username]
+	now := time.Now()
+	if exists && now.Sub(lastPost) < 30*time.Second {
+		p.rateLimitMu.Unlock()
+		logger.Debug(p.name, "Rate limit hit for user %s", msg.Username)
+		return nil // Silently ignore, don't announce rate limit
+	}
+	p.rateLimitMu.Unlock()
+
 	// Detect image URLs in the message
 	urls := p.detector.DetectImages(msg.Message)
 	if len(urls) == 0 {
 		return nil
 	}
 
-	// Add each detected image to the gallery
-	for _, url := range urls {
+	// Update rate limit timestamp
+	p.rateLimitMu.Lock()
+	p.userRateLimit[msg.Username] = now
+	// Clean up old entries to prevent memory leak
+	for user, timestamp := range p.userRateLimit {
+		if now.Sub(timestamp) > 5*time.Minute {
+			delete(p.userRateLimit, user)
+		}
+	}
+	p.rateLimitMu.Unlock()
+
+	// Add only the first image (prevent spam of multiple images)
+	if len(urls) > 0 {
+		url := urls[0]
 		if err := p.store.AddImage(msg.Username, url, msg.Channel); err != nil {
 			logger.Error(p.name, "Failed to add image to gallery: %v", err)
-			continue
+		} else {
+			p.imagesAdded++
+			logger.Debug(p.name, "Added image from %s: %s", msg.Username, url)
 		}
-		p.imagesAdded++
-		logger.Debug(p.name, "Added image from %s: %s", msg.Username, url)
 	}
 
 	return nil
@@ -432,9 +460,12 @@ func (p *Plugin) runHTMLGenerator() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
-	// Generate immediately on start
+	// Wait 30 seconds before first generation to offset from health checks
+	time.Sleep(30 * time.Second)
+	
+	// Generate immediately after initial delay
 	if err := p.generator.GenerateAllGalleries(); err != nil {
-		logger.Error(p.name, "Initial HTML generation failed: %v", err)
+		logger.Warn(p.name, "Initial HTML generation had issues: %v", err)
 	}
 
 	for {
@@ -443,7 +474,7 @@ func (p *Plugin) runHTMLGenerator() {
 			return
 		case <-ticker.C:
 			if err := p.generator.GenerateAllGalleries(); err != nil {
-				logger.Error(p.name, "HTML generation failed: %v", err)
+				logger.Warn(p.name, "HTML generation had issues: %v", err)
 			}
 		}
 	}

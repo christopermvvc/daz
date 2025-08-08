@@ -74,9 +74,49 @@ func (d *ImageDetector) cleanURL(rawURL string) string {
 
 // isImageURL checks if a URL points to an image
 func (d *ImageDetector) isImageURL(rawURL string) bool {
+	// URL length limit (prevent DoS)
+	if len(rawURL) > 2048 {
+		return false
+	}
+
 	// Parse the URL
 	u, err := url.Parse(rawURL)
 	if err != nil {
+		return false
+	}
+
+	// Security: Only allow HTTP and HTTPS schemes
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		// Block dangerous schemes like file://, javascript://, data://, etc.
+		return false
+	}
+
+	// Security: Prevent localhost and private network access
+	hostname := strings.ToLower(u.Hostname())
+	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" ||
+		strings.HasPrefix(hostname, "192.168.") ||
+		strings.HasPrefix(hostname, "10.") ||
+		strings.HasPrefix(hostname, "172.16.") ||
+		strings.HasPrefix(hostname, "172.17.") ||
+		strings.HasPrefix(hostname, "172.18.") ||
+		strings.HasPrefix(hostname, "172.19.") ||
+		strings.HasPrefix(hostname, "172.20.") ||
+		strings.HasPrefix(hostname, "172.21.") ||
+		strings.HasPrefix(hostname, "172.22.") ||
+		strings.HasPrefix(hostname, "172.23.") ||
+		strings.HasPrefix(hostname, "172.24.") ||
+		strings.HasPrefix(hostname, "172.25.") ||
+		strings.HasPrefix(hostname, "172.26.") ||
+		strings.HasPrefix(hostname, "172.27.") ||
+		strings.HasPrefix(hostname, "172.28.") ||
+		strings.HasPrefix(hostname, "172.29.") ||
+		strings.HasPrefix(hostname, "172.30.") ||
+		strings.HasPrefix(hostname, "172.31.") ||
+		strings.HasPrefix(hostname, "169.254.") ||
+		strings.HasPrefix(hostname, "fe80:") ||
+		strings.HasPrefix(hostname, "fc00:") ||
+		strings.HasPrefix(hostname, "fd00:") {
 		return false
 	}
 
@@ -100,7 +140,9 @@ func (d *ImageDetector) isImageURL(rawURL string) bool {
 		strings.Contains(host, "lightshot.net") ||
 		strings.Contains(host, "puu.sh") ||
 		strings.Contains(host, "cdn.discordapp.com") ||
-		strings.Contains(host, "media.discordapp.net") {
+		strings.Contains(host, "media.discordapp.net") ||
+		strings.Contains(host, "pinimg.com") ||
+		strings.Contains(host, "ibb.co") {
 		return true
 	}
 
