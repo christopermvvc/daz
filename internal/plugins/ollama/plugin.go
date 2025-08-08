@@ -21,7 +21,7 @@ import (
 const (
 	pluginName             = "ollama"
 	defaultOllamaURL       = "http://localhost:11434"
-	defaultModel           = "Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF"
+	defaultModel           = "huggingface.co/ArliAI/Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF:latest"
 	defaultRateLimitSecs   = 10 // 10 second rate limit per user
 	messageFreshnessWindow = 30 * time.Second
 	maxResponseLength      = 500 // Increased for more complete responses
