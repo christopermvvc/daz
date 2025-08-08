@@ -22,9 +22,9 @@ const (
 	pluginName             = "ollama"
 	defaultOllamaURL       = "http://localhost:11434"
 	defaultModel           = "gemma3:1b"
-	defaultRateLimitSecs   = 60 // 1 minute rate limit per user
+	defaultRateLimitSecs   = 10 // 10 second rate limit per user
 	messageFreshnessWindow = 30 * time.Second
-	maxResponseLength      = 200 // Maximum characters in response
+	maxResponseLength      = 500 // Increased for more complete responses
 )
 
 // Config holds ollama plugin configuration
@@ -119,7 +119,7 @@ func New() framework.Plugin {
 			RateLimitSeconds: defaultRateLimitSecs,
 			Enabled:          true,
 			Temperature:      0.7,
-			MaxTokens:        100,
+			MaxTokens:        2048, // Increased to allow more complete thoughts
 			SystemPrompt:     "You are Dazza, a friendly and concise chat bot. Keep responses short (1-2 sentences max), casual, and conversational. Never use asterisks for actions or emotes. Be aware of the conversation context and respond appropriately to what's being discussed.",
 		},
 		userLists: make(map[string]map[string]bool),
@@ -174,7 +174,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 		p.config.Temperature = 0.7
 	}
 	if p.config.MaxTokens == 0 {
-		p.config.MaxTokens = 100
+		p.config.MaxTokens = 2048 // Increased for better responses
 	}
 	if p.config.SystemPrompt == "" {
 		p.config.SystemPrompt = "You are Dazza, a friendly and concise chat bot. Keep responses short (1-2 sentences max), casual, and conversational. Never use asterisks for actions or emotes. Be aware of the conversation context and respond appropriately to what's being discussed."
@@ -423,10 +423,16 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	}
 
 	// Check rate limit
+	logger.Info(p.name, "Checking rate limit for user %s in channel %s", username, channel)
 	if p.isRateLimited(channel, username) {
-		logger.Debug(p.name, "User %s is rate limited", username)
+		logger.Info(p.name, "User %s is rate limited, skipping response", username)
 		return nil
 	}
+	logger.Info(p.name, "User %s is NOT rate limited, proceeding with response", username)
+
+	// Update rate limit immediately to prevent race conditions
+	logger.Info(p.name, "Updating rate limit for user %s BEFORE processing", username)
+	p.updateRateLimit(channel, username)
 
 	// Generate and send response
 	p.wg.Add(1)
@@ -497,8 +503,12 @@ func (p *Plugin) isRateLimited(channel, username string) bool {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
+	// Use database NOW() to avoid timezone issues
 	query := `
-		SELECT last_response_at FROM daz_ollama_rate_limits 
+		SELECT 
+			last_response_at,
+			EXTRACT(EPOCH FROM (NOW() - last_response_at)) as seconds_since
+		FROM daz_ollama_rate_limits 
 		WHERE channel = $1 AND username = $2
 	`
 
@@ -516,13 +526,20 @@ func (p *Plugin) isRateLimited(channel, username string) bool {
 
 	if rows.Next() {
 		var lastResponseAt time.Time
-		if err := rows.Scan(&lastResponseAt); err == nil {
-			timeSinceLastResponse := time.Since(lastResponseAt)
-			rateLimitDuration := time.Duration(p.config.RateLimitSeconds) * time.Second
-			if timeSinceLastResponse < rateLimitDuration {
+		var secondsSince float64
+		if err := rows.Scan(&lastResponseAt, &secondsSince); err == nil {
+			rateLimitSeconds := float64(p.config.RateLimitSeconds)
+			isBlocked := secondsSince < rateLimitSeconds
+			logger.Info(p.name, "Rate limit check for %s: %.2f seconds since last response, limit is %.0f seconds, blocked=%v", 
+				username, secondsSince, rateLimitSeconds, isBlocked)
+			if isBlocked {
 				return true
 			}
+		} else {
+			logger.Error(p.name, "Failed to scan rate limit data: %v", err)
 		}
+	} else {
+		logger.Info(p.name, "No rate limit record found for %s, allowing message", username)
 	}
 
 	return false
@@ -558,6 +575,9 @@ func (p *Plugin) generateAndSendResponse(channel, username, message, messageHash
 		return
 	}
 
+	// Log the raw response from Ollama
+	logger.Info(p.name, "Ollama response received (length: %d): %s", len(response), response)
+
 	// Trim response to max length
 	if len(response) > maxResponseLength {
 		response = response[:maxResponseLength] + "..."
@@ -566,8 +586,7 @@ func (p *Plugin) generateAndSendResponse(channel, username, message, messageHash
 	// Record the response in the database
 	p.recordResponse(channel, username, messageHash, messageTime, response)
 
-	// Update rate limit
-	p.updateRateLimit(channel, username)
+	// Rate limit already updated before goroutine started
 
 	// Send the response to the channel
 	p.sendChannelMessage(channel, response)
@@ -583,18 +602,22 @@ func (p *Plugin) getChatHistory(channel string, limit int) ([]string, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
+	// Exclude messages from the bot itself and system messages to prevent feedback loops
 	query := `
 		SELECT username, message 
 		FROM daz_core_events 
 		WHERE channel_name = $1 
 			AND event_type = 'cytube.event.chatMsg'
 			AND message IS NOT NULL
+			AND LOWER(username) != LOWER($3)
+			AND LOWER(username) != 'dazza'
+			AND username NOT LIKE '[%'
 		ORDER BY created_at DESC 
 		LIMIT $2
 	`
 
 	helper := framework.NewSQLRequestHelper(p.eventBus, p.name)
-	rows, err := helper.FastQuery(ctx, query, channel, limit)
+	rows, err := helper.FastQuery(ctx, query, channel, limit, p.botName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query chat history: %w", err)
 	}
@@ -631,6 +654,10 @@ func (p *Plugin) callOllamaWithContext(userMessage, username string, chatHistory
 		contextPrompt += "\nNow respond to the following message from " + username + ", taking the above conversation into account:"
 	}
 
+	// Log the full prompt being sent to Ollama
+	logger.Info(p.name, "Sending to Ollama - System Prompt: %s", contextPrompt)
+	logger.Info(p.name, "Sending to Ollama - User Message: %s", userMessage)
+
 	request := OllamaRequest{
 		Model: p.config.Model,
 		Messages: []Message{
@@ -654,6 +681,9 @@ func (p *Plugin) callOllamaWithContext(userMessage, username string, chatHistory
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
+
+	// Log the exact JSON being sent to Ollama
+	logger.Info(p.name, "Sending JSON to Ollama: %s", string(jsonData))
 
 	// Ensure we have a valid URL once before retry loop
 	ollamaURL := p.config.OllamaURL
@@ -700,6 +730,9 @@ func (p *Plugin) callOllamaWithContext(userMessage, username string, chatHistory
 		if decodeErr != nil {
 			return "", fmt.Errorf("failed to decode response: %w", decodeErr)
 		}
+
+		// Log the raw response from Ollama
+		logger.Info(p.name, "Raw Ollama API response: %+v", ollamaResp)
 
 		return ollamaResp.Message.Content, nil
 	}
@@ -733,6 +766,9 @@ func (p *Plugin) callOllama(userMessage string) (string, error) {
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	// Log the exact JSON being sent to Ollama
+	logger.Info(p.name, "Sending JSON to Ollama: %s", string(jsonData))
+
 	// Ensure we have a valid URL once before retry loop
 	ollamaURL := p.config.OllamaURL
 	if ollamaURL == "" {
@@ -778,6 +814,9 @@ func (p *Plugin) callOllama(userMessage string) (string, error) {
 		if decodeErr != nil {
 			return "", fmt.Errorf("failed to decode response: %w", decodeErr)
 		}
+
+		// Log the raw response from Ollama
+		logger.Info(p.name, "Raw Ollama API response: %+v", ollamaResp)
 
 		return ollamaResp.Message.Content, nil
 	}
@@ -815,8 +854,11 @@ func (p *Plugin) updateRateLimit(channel, username string) {
 	`
 
 	helper := framework.NewSQLRequestHelper(p.eventBus, p.name)
-	if _, err := helper.FastExec(ctx, query, channel, username); err != nil {
+	rowsAffected, err := helper.FastExec(ctx, query, channel, username)
+	if err != nil {
 		logger.Error(p.name, "Failed to update rate limit: %v", err)
+	} else {
+		logger.Info(p.name, "Updated rate limit for %s (rows affected: %d)", username, rowsAffected)
 	}
 }
 
