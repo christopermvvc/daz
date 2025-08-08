@@ -379,6 +379,12 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		return nil
 	}
 
+	// Skip messages from the bot itself to prevent self-replies
+	if strings.EqualFold(username, p.botName) || strings.EqualFold(username, "dazza") {
+		logger.Debug(p.name, "Skipping message from bot itself")
+		return nil
+	}
+
 	// Check if user is in the channel's userlist
 	if !p.isUserInChannel(channel, username) {
 		logger.Debug(p.name, "User %s not in channel %s userlist, skipping", username, channel)
