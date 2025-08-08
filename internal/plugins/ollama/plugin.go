@@ -120,7 +120,7 @@ func New() framework.Plugin {
 			Enabled:          true,
 			Temperature:      0.7,
 			MaxTokens:        100,
-			SystemPrompt:     "You are Dazza, a friendly and concise chat bot. Keep responses short (1-2 sentences max), casual, and conversational. Never use asterisks for actions or emotes.",
+			SystemPrompt:     "You are Dazza, a friendly and concise chat bot. Keep responses short (1-2 sentences max), casual, and conversational. Never use asterisks for actions or emotes. Be aware of the conversation context and respond appropriately to what's being discussed.",
 		},
 		userLists: make(map[string]map[string]bool),
 		readyChan: make(chan struct{}),
@@ -177,7 +177,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 		p.config.MaxTokens = 100
 	}
 	if p.config.SystemPrompt == "" {
-		p.config.SystemPrompt = "You are Dazza, a friendly and concise chat bot. Keep responses short (1-2 sentences max), casual, and conversational. Never use asterisks for actions or emotes."
+		p.config.SystemPrompt = "You are Dazza, a friendly and concise chat bot. Keep responses short (1-2 sentences max), casual, and conversational. Never use asterisks for actions or emotes. Be aware of the conversation context and respond appropriately to what's being discussed."
 	}
 	
 	// IMPORTANT: Default to enabled if not explicitly set
@@ -537,8 +537,16 @@ func (p *Plugin) generateAndSendResponse(channel, username, message, messageHash
 	p.totalRequests++
 	p.metricsLock.Unlock()
 
-	// Generate response from Ollama
-	response, err := p.callOllama(message)
+	// Fetch chat history for context (last 30 messages)
+	chatHistory, err := p.getChatHistory(channel, 30)
+	if err != nil {
+		logger.Warn(p.name, "Failed to fetch chat history: %v", err)
+		// Continue without history if fetch fails
+		chatHistory = []string{}
+	}
+
+	// Generate response from Ollama with context
+	response, err := p.callOllamaWithContext(message, username, chatHistory)
 	if err != nil {
 		logger.Error(p.name, "Failed to generate Ollama response for %s: %v", username, err)
 		// Increment failed requests
@@ -570,7 +578,136 @@ func (p *Plugin) generateAndSendResponse(channel, username, message, messageHash
 	p.metricsLock.Unlock()
 }
 
-// callOllama makes a request to the Ollama API with retry logic
+// getChatHistory fetches recent chat messages from the database
+func (p *Plugin) getChatHistory(channel string, limit int) ([]string, error) {
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT username, message 
+		FROM daz_core_events 
+		WHERE channel_name = $1 
+			AND event_type = 'cytube.event.chatMsg'
+			AND message IS NOT NULL
+		ORDER BY created_at DESC 
+		LIMIT $2
+	`
+
+	helper := framework.NewSQLRequestHelper(p.eventBus, p.name)
+	rows, err := helper.FastQuery(ctx, query, channel, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query chat history: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error(p.name, "Failed to close rows: %v", err)
+		}
+	}()
+
+	// Collect messages in reverse order (oldest first)
+	var history []string
+	for rows.Next() {
+		var username, message string
+		if err := rows.Scan(&username, &message); err != nil {
+			logger.Warn(p.name, "Failed to scan chat history row: %v", err)
+			continue
+		}
+		// Format as "username: message" for context
+		history = append([]string{fmt.Sprintf("%s: %s", username, message)}, history...)
+	}
+
+	return history, nil
+}
+
+// callOllamaWithContext makes a request to Ollama with chat history context
+func (p *Plugin) callOllamaWithContext(userMessage, username string, chatHistory []string) (string, error) {
+	// Build context prompt with chat history
+	contextPrompt := p.config.SystemPrompt
+	if len(chatHistory) > 0 {
+		contextPrompt += "\n\nHere's the recent chat history for context:\n"
+		for _, msg := range chatHistory {
+			contextPrompt += msg + "\n"
+		}
+		contextPrompt += "\nNow respond to the following message from " + username + ", taking the above conversation into account:"
+	}
+
+	request := OllamaRequest{
+		Model: p.config.Model,
+		Messages: []Message{
+			{
+				Role:    "system",
+				Content: contextPrompt,
+			},
+			{
+				Role:    "user",
+				Content: userMessage,
+			},
+		},
+		Stream: false,
+		Options: Options{
+			Temperature: p.config.Temperature,
+			NumPredict:  p.config.MaxTokens,
+		},
+	}
+
+	jsonData, err := json.Marshal(request)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Ensure we have a valid URL once before retry loop
+	ollamaURL := p.config.OllamaURL
+	if ollamaURL == "" {
+		ollamaURL = defaultOllamaURL
+	}
+
+	// Retry up to 2 times for transient failures
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			// Brief delay before retry
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		req, err := http.NewRequestWithContext(p.ctx, "POST", ollamaURL+"/api/chat", bytes.NewBuffer(jsonData))
+		if err != nil {
+			return "", fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := p.httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("attempt %d: failed to make request: %w", attempt+1, err)
+			continue
+		}
+
+		// Check status code before reading body
+		statusCode := resp.StatusCode
+
+		// Always read and close body to prevent leaks
+		var ollamaResp OllamaResponse
+		decodeErr := json.NewDecoder(resp.Body).Decode(&ollamaResp)
+		if err := resp.Body.Close(); err != nil {
+			logger.Error(p.name, "Failed to close response body: %v", err)
+		}
+
+		if statusCode != http.StatusOK {
+			lastErr = fmt.Errorf("attempt %d: ollama returned status %d", attempt+1, statusCode)
+			continue
+		}
+
+		if decodeErr != nil {
+			return "", fmt.Errorf("failed to decode response: %w", decodeErr)
+		}
+
+		return ollamaResp.Message.Content, nil
+	}
+
+	return "", lastErr
+}
+
+// callOllama makes a request to the Ollama API with retry logic (legacy, without context)
 func (p *Plugin) callOllama(userMessage string) (string, error) {
 	request := OllamaRequest{
 		Model: p.config.Model,
