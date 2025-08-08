@@ -126,7 +126,7 @@ func New() framework.Plugin {
 		userLists: make(map[string]map[string]bool),
 		readyChan: make(chan struct{}),
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 60 * time.Second, // Increased for larger models
 		},
 	}
 }
