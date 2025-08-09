@@ -158,4 +158,7 @@ dazza-reference/
 # Documentation and fix tracking
 *_FIX.md
 CONNECTION_STATE_FIX.md
-COMMAND_PROCESSING_FIX.mdscripts/daz-override.conf
+COMMAND_PROCESSING_FIX.md
+
+# Systemd override files with potential secrets
+scripts/daz-override.conf
