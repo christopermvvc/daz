@@ -204,6 +204,12 @@ make lint
 make build
 ```
 
+### Test Matrix
+
+- `go test ./... -short`: default offline test run (skips integration tests).
+- `CYTUBE_INTEGRATION=1 go test ./pkg/cytube -run TestDiscoverServer_Integration`: real-server discovery check.
+- `go test ./... -tags=integration`: integration suite that requires PostgreSQL and longer waits.
+
 ### Creating a Plugin
 
 1. Implement the `framework.Plugin` interface

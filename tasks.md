@@ -31,4 +31,4 @@
 - [x] P1: Reconcile `docs/daz-chatbot-architecture.md` logger-rule description with SQL plugin behavior (docs say rules are stored but unused; code subscribes after DB connect).
 - [x] P1: Stabilize or gate time-sensitive eventbus priority tests (reduce sleeps, make deterministic, or guard with `-short`).
 - [ ] P2: Replace placeholder gallery store tests with sqlmock or a dedicated test DB harness.
-- [ ] P2: Add a test matrix section to README/docs clarifying `-short`, build tags, and integration requirements.
+- [x] P2: Add a test matrix section to README/docs clarifying `-short`, build tags, and integration requirements.
