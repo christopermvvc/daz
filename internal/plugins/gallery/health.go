@@ -149,6 +149,24 @@ func (h *HealthChecker) checkImage(img *GalleryImage) {
 		h.markImageFailed(img.ID, fmt.Sprintf("Network error: %v", err))
 		return
 	}
+
+	if resp.StatusCode == http.StatusMethodNotAllowed {
+		_ = resp.Body.Close()
+		getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, img.URL, nil)
+		if err != nil {
+			logger.Error("gallery", "Failed to create GET request for %s: %v", img.URL, err)
+			h.markImageFailed(img.ID, "Invalid URL")
+			return
+		}
+		getReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; DazBot/1.0; +https://github.com/hildolfr/daz)")
+		getReq.Header.Set("Range", "bytes=0-0")
+		resp, err = h.httpClient.Do(getReq)
+		if err != nil {
+			logger.Debug("gallery", "Failed to fetch %s with GET: %v", img.URL, err)
+			h.markImageFailed(img.ID, fmt.Sprintf("Network error: %v", err))
+			return
+		}
+	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// Check the status code
@@ -196,7 +214,7 @@ func (h *HealthChecker) markImageHealthy(imageID int64) {
 		logger.Info("gallery", "Successfully recovered dead image %d", imageID)
 		return
 	}
-	
+
 	// Otherwise just mark as healthy (reset failure count)
 	if err := h.store.MarkImageHealthCheck(imageID, false, ""); err != nil {
 		logger.Error("gallery", "Failed to mark image %d as healthy: %v", imageID, err)

@@ -43,7 +43,7 @@ func (g *HTMLGenerator) GenerateAllGalleries() error {
 	// Prevent concurrent generation to avoid git conflicts
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	
+
 	// Get all users with galleries
 	users, err := g.store.GetAllActiveUsers()
 	if err != nil {
@@ -70,7 +70,6 @@ func (g *HTMLGenerator) GenerateAllGalleries() error {
 	return nil
 }
 
-
 // GenerateSharedGallery generates a single shared gallery page with all users' images
 func (g *HTMLGenerator) GenerateSharedGallery(users []struct{ Username, Channel string }) error {
 	// Create output directory
@@ -90,7 +89,7 @@ func (g *HTMLGenerator) GenerateSharedGallery(users []struct{ Username, Channel 
 			continue
 		}
 
-		if stats.IsLocked {
+		if user.Channel != "" && stats.IsLocked {
 			continue // Skip locked galleries from public view
 		}
 
@@ -138,7 +137,6 @@ func (g *HTMLGenerator) GenerateSharedGallery(users []struct{ Username, Channel 
 	logger.Debug("gallery", "Generated shared gallery with %d users and %d total images", len(allGalleries), totalImages)
 	return nil
 }
-
 
 // galleryImageDisplay is a display-friendly version of GalleryImage
 type galleryImageDisplay struct {
@@ -627,9 +625,9 @@ func (g *HTMLGenerator) generateSharedGalleryHTML(galleries []UserGalleryData, t
             <div class="gallery">
                 {{range .Images}}
                 <div class="image-card" data-url="{{.URL}}" data-type="{{.MediaType}}" data-user="{{.Username}}" data-date="{{.PostedAtFormatted}}">
-                    <button class="copy-btn" onclick="copyURL('{{.URL | js}}')">Copy</button>
+                    <button class="copy-btn" onclick="copyURL(event, '{{.URL | js}}')">Copy</button>
                     <span class="zoom-indicator">🔍 Click to expand</span>
-                    <div class="image-container" onclick="openModal(this.parentElement)">
+                    <div class="image-container" onclick="openModal(event, this.parentElement)">
                         {{if eq .MediaType "video"}}
                         <video src="{{.URL}}" autoplay loop muted playsinline>
                             Your browser does not support the video tag.
@@ -679,15 +677,15 @@ func (g *HTMLGenerator) generateSharedGalleryHTML(galleries []UserGalleryData, t
         {{end}}
         
         <div class="footer">
-            <p>Powered by Daz Bot • Gallery updates every 3 minutes</p>
+            <p>Powered by Daz Bot • Gallery updates every 5 minutes</p>
         </div>
     </div>
     
     <!-- Modal for full-size viewing -->
     <div id="imageModal" class="modal" onclick="handleModalClick(event)">
         <span class="modal-close" onclick="closeModal()">&times;</span>
-        <span class="modal-nav modal-prev" onclick="navigateModal(-1)">‹</span>
-        <span class="modal-nav modal-next" onclick="navigateModal(1)">›</span>
+        <span class="modal-nav modal-prev" onclick="navigateModal(-1, event)">‹</span>
+        <span class="modal-nav modal-next" onclick="navigateModal(1, event)">›</span>
         <div class="modal-content">
             <div id="modalMedia"></div>
             <div class="modal-info" id="modalInfo"></div>
@@ -695,7 +693,7 @@ func (g *HTMLGenerator) generateSharedGalleryHTML(galleries []UserGalleryData, t
     </div>
     
     <script>
-        function copyURL(url) {
+        function copyURL(event, url) {
             navigator.clipboard.writeText(url).then(() => {
                 const btn = event.target;
                 const originalText = btn.textContent;
@@ -726,7 +724,7 @@ func (g *HTMLGenerator) generateSharedGalleryHTML(galleries []UserGalleryData, t
         let currentCards = [];
         let currentIndex = 0;
         
-        function openModal(card) {
+        function openModal(event, card) {
             event.stopPropagation();
             const modal = document.getElementById('imageModal');
             const allCards = Array.from(card.parentElement.parentElement.querySelectorAll('.image-card'));
@@ -768,8 +766,10 @@ func (g *HTMLGenerator) generateSharedGalleryHTML(galleries []UserGalleryData, t
             }
         }
         
-        function navigateModal(direction) {
-            event.stopPropagation();
+        function navigateModal(direction, event) {
+            if (event) {
+                event.stopPropagation();
+            }
             currentIndex += direction;
             
             if (currentIndex < 0) {
@@ -825,20 +825,20 @@ func (g *HTMLGenerator) generateSharedGalleryHTML(galleries []UserGalleryData, t
 		TotalImages: totalImages,
 		UpdateTime:  time.Now().Format("2006-01-02 15:04:05"),
 	}
-	
+
 	// Add pruned images to template data
 	for _, img := range prunedImages {
 		deadSince := img.PostedAt.Format("2006-01-02 15:04")
 		if img.LastCheckAt != nil {
 			deadSince = img.LastCheckAt.Format("2006-01-02 15:04")
 		}
-		
+
 		// Mark as gravestone if dead for over 48 hours
 		isGravestone := false
 		if img.LastCheckAt != nil && time.Since(*img.LastCheckAt) > 48*time.Hour {
 			isGravestone = true
 		}
-		
+
 		data.PrunedImages = append(data.PrunedImages, PrunedImageDisplay{
 			Username:     img.Username,
 			URL:          img.URL,
@@ -887,15 +887,39 @@ func (g *HTMLGenerator) generateSharedGalleryHTML(galleries []UserGalleryData, t
 	return result.String()
 }
 
+func (g *HTMLGenerator) isSafeOutputPath() bool {
+	outputPath := filepath.Clean(g.config.HTMLOutputPath)
+	if outputPath == "" || outputPath == "." || outputPath == string(filepath.Separator) {
+		return false
+	}
+	return true
+}
+
+func (g *HTMLGenerator) isSafeGitDir() bool {
+	if !g.isSafeOutputPath() {
+		return false
+	}
+	gitDir := filepath.Join(filepath.Clean(g.config.HTMLOutputPath), ".git")
+	if _, err := os.Stat(gitDir); err != nil {
+		return false
+	}
+	return true
+}
+
 // resetGitState resets git repository to clean state after failure
 func (g *HTMLGenerator) resetGitState() {
+	if !g.isSafeGitDir() {
+		logger.Warn("gallery", "Skipping git reset/clean for unsafe output path: %s", g.config.HTMLOutputPath)
+		return
+	}
+
 	// Try to reset to clean state
 	cmd := exec.Command("git", "reset", "--hard", "HEAD")
 	cmd.Dir = g.config.HTMLOutputPath
 	if err := cmd.Run(); err != nil {
 		logger.Error("gallery", "Failed to reset git state: %v", err)
 	}
-	
+
 	// Clean untracked files
 	cmd = exec.Command("git", "clean", "-fd")
 	cmd.Dir = g.config.HTMLOutputPath
@@ -917,8 +941,13 @@ func (g *HTMLGenerator) pushToGitHub() error {
 			g.resetGitState()
 		}
 	}()
-	
+
+	if !g.isSafeOutputPath() {
+		return fmt.Errorf("unsafe html output path: %s", g.config.HTMLOutputPath)
+	}
+
 	// Track if we need recovery on normal errors
+
 	var needsRecovery bool
 	defer func() {
 		if needsRecovery {
@@ -929,7 +958,7 @@ func (g *HTMLGenerator) pushToGitHub() error {
 
 	// Get GitHub token once
 	githubToken := os.Getenv("GITHUB_TOKEN")
-	
+
 	// Helper function to run git commands
 	runGitCmd := func(args ...string) error {
 		cmd := exec.CommandContext(ctx, "git", args...)
@@ -941,28 +970,28 @@ func (g *HTMLGenerator) pushToGitHub() error {
 		}
 		return nil
 	}
-	
+
 	// Helper for authenticated push only
 	runAuthPush := func() error {
 		if githubToken == "" {
 			return fmt.Errorf("no GitHub token configured")
 		}
-		
+
 		// Use token directly in URL for authentication
 		authURL := fmt.Sprintf("https://x-access-token:%s@github.com/hildolfr/daz.git", githubToken)
 		cmd := exec.CommandContext(ctx, "git", "push", authURL, "gh-pages", "--force")
 		cmd.Dir = g.config.HTMLOutputPath
-		
+
 		// Suppress credential prompts
-		cmd.Env = append(os.Environ(), 
+		cmd.Env = append(os.Environ(),
 			"GIT_TERMINAL_PROMPT=0")
-		
+
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			// Don't include token in error message
 			return fmt.Errorf("push failed: %w", err)
 		}
-		
+
 		logger.Debug("gallery", "Push output: %s", string(output))
 		return nil
 	}
@@ -974,7 +1003,7 @@ func (g *HTMLGenerator) pushToGitHub() error {
 		if err := runGitCmd("init"); err != nil {
 			return fmt.Errorf("failed to init git repo: %w", err)
 		}
-		
+
 		// Set git config for this repo (only needed on first init)
 		if err := runGitCmd("config", "user.name", "hildolfr"); err != nil {
 			return fmt.Errorf("failed to set git user: %w", err)
@@ -1031,4 +1060,3 @@ func (g *HTMLGenerator) pushToGitHub() error {
 	logger.Debug("gallery", "Successfully pushed to GitHub Pages")
 	return nil
 }
-

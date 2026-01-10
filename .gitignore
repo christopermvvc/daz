@@ -36,6 +36,8 @@ CLAUDE.md
 *.pem
 *.cert
 *.crt
+dazza_deploy_key
+dazza_deploy_key.pub
 sensitive-data-audit.md
 *-audit.md
 

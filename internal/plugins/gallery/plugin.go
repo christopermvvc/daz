@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
@@ -78,12 +79,17 @@ func (p *Plugin) Init(configData json.RawMessage, bus framework.EventBus) error 
 		}
 	}
 
+	if p.config.MaxImagesPerUser <= 0 {
+		logger.Warn(p.name, "Invalid max_images_per_user %d, defaulting to 25", p.config.MaxImagesPerUser)
+		p.config.MaxImagesPerUser = 25
+	}
+
 	p.eventBus = bus
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
 	// Initialize components
 	p.detector = NewImageDetector()
-	p.store = NewStore(bus, p.name)
+	p.store = NewStore(bus, p.name, p.config.MaxImagesPerUser)
 	p.health = NewHealthChecker(p.store, p.config)
 	p.generator = NewHTMLGenerator(p.store, p.config)
 	p.userRateLimit = make(map[string]time.Time)
@@ -160,8 +166,9 @@ func (p *Plugin) Stop() error {
 
 // HandleEvent handles incoming events
 func (p *Plugin) HandleEvent(event framework.Event) error {
-	p.eventsHandled++
+	atomic.AddInt64(&p.eventsHandled, 1)
 	return nil
+
 }
 
 // Status returns the plugin status
@@ -177,7 +184,7 @@ func (p *Plugin) Status() framework.PluginStatus {
 	return framework.PluginStatus{
 		Name:          p.name,
 		State:         state,
-		EventsHandled: p.eventsHandled,
+		EventsHandled: atomic.LoadInt64(&p.eventsHandled),
 		Uptime:        time.Since(p.startTime),
 	}
 }
@@ -274,7 +281,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		if err := p.store.AddImage(msg.Username, url, msg.Channel); err != nil {
 			logger.Error(p.name, "Failed to add image to gallery: %v", err)
 		} else {
-			p.imagesAdded++
+			atomic.AddInt64(&p.imagesAdded, 1)
 			logger.Debug(p.name, "Added image from %s: %s", msg.Username, url)
 		}
 	}
@@ -337,7 +344,7 @@ func (p *Plugin) handleGalleryCommand(params map[string]string) {
 	}
 
 	// Format the message with user's stats
-	message := fmt.Sprintf("Gallery: %s (%s has %d images)", 
+	message := fmt.Sprintf("Gallery: %s (%s has %d images)",
 		galleryURL, username, stats.ActiveImages)
 
 	if stats.IsLocked {
@@ -462,7 +469,7 @@ func (p *Plugin) runHTMLGenerator() {
 
 	// Wait 30 seconds before first generation to offset from health checks
 	time.Sleep(30 * time.Second)
-	
+
 	// Generate immediately after initial delay
 	if err := p.generator.GenerateAllGalleries(); err != nil {
 		logger.Warn(p.name, "Initial HTML generation had issues: %v", err)

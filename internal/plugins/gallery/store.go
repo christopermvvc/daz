@@ -13,6 +13,7 @@ import (
 type Store struct {
 	sqlClient *framework.SQLClient
 	name      string
+	maxImages int
 }
 
 // GalleryImage represents an image in the gallery
@@ -48,10 +49,14 @@ type GalleryStats struct {
 }
 
 // NewStore creates a new store instance
-func NewStore(eventBus framework.EventBus, pluginName string) *Store {
+func NewStore(eventBus framework.EventBus, pluginName string, maxImages int) *Store {
+	if maxImages <= 0 {
+		maxImages = 25
+	}
 	return &Store{
 		sqlClient: framework.NewSQLClient(eventBus, pluginName),
 		name:      pluginName,
+		maxImages: maxImages,
 	}
 }
 
@@ -96,10 +101,10 @@ func (s *Store) AddImage(username, url, channel string) error {
 	defer cancel()
 
 	// Use the stored function to handle limit enforcement
-	query := `SELECT add_gallery_image($1, $2, $3, NULL)`
+	query := `SELECT add_gallery_image($1, $2, $3, NULL, $4)`
 
 	var imageID int64
-	rows, err := s.sqlClient.QueryContext(ctx, query, username, url, channel)
+	rows, err := s.sqlClient.QueryContext(ctx, query, username, url, channel, s.maxImages)
 	if err != nil {
 		return fmt.Errorf("failed to add image: %w", err)
 	}
@@ -123,18 +128,23 @@ func (s *Store) GetUserImages(username, channel string) ([]*GalleryImage, error)
 	var query string
 	var rows *framework.QueryRows
 	var err error
-	
+
 	if channel == "" {
 		// Empty channel means get images from ALL channels for this user
 		query = `
-			SELECT id, username, url, channel, posted_at, is_active,
-				   failure_count, first_failure_at, last_check_at, next_check_at,
-				   pruned_reason, original_poster, original_posted_at, 
-				   most_recent_poster, image_title
-			FROM daz_gallery_images
-			WHERE username = $1 AND is_active = true
-			ORDER BY posted_at DESC
+			SELECT gi.id, gi.username, gi.url, gi.channel, gi.posted_at, gi.is_active,
+			       gi.failure_count, gi.first_failure_at, gi.last_check_at, gi.next_check_at,
+			       gi.pruned_reason, gi.original_poster, gi.original_posted_at,
+			       gi.most_recent_poster, gi.image_title
+			FROM daz_gallery_images gi
+			LEFT JOIN daz_gallery_locks gl
+			  ON gi.username = gl.username AND gi.channel = gl.channel
+			WHERE gi.username = $1
+			  AND gi.is_active = true
+			  AND (gl.is_locked IS NULL OR gl.is_locked = false)
+			ORDER BY gi.posted_at DESC
 		`
+
 		rows, err = s.sqlClient.QueryContext(ctx, query, username)
 	} else {
 		// Specific channel
@@ -187,7 +197,7 @@ func (s *Store) GetUserStats(username, channel string) (*GalleryStats, error) {
 	var statsQuery string
 	var rows *framework.QueryRows
 	var err error
-	
+
 	if channel == "" {
 		// Aggregate stats across all channels for this user
 		statsQuery = `
@@ -207,7 +217,7 @@ func (s *Store) GetUserStats(username, channel string) (*GalleryStats, error) {
 		`
 		rows, err = s.sqlClient.QueryContext(ctx, statsQuery, username, channel)
 	}
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get stats: %w", err)
 	}
@@ -225,7 +235,7 @@ func (s *Store) GetUserStats(username, channel string) (*GalleryStats, error) {
 	// Get lock status (if any channel is locked, consider user locked)
 	var lockQuery string
 	var rows2 *framework.QueryRows
-	
+
 	if channel == "" {
 		// Check if ANY of the user's galleries are locked
 		lockQuery = `
@@ -242,7 +252,7 @@ func (s *Store) GetUserStats(username, channel string) (*GalleryStats, error) {
 		`
 		rows2, err = s.sqlClient.QueryContext(ctx, lockQuery, username, channel)
 	}
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get lock status: %w", err)
 	}
@@ -344,10 +354,10 @@ func (s *Store) RestoreDeadImage(imageID int64) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	query := `SELECT restore_dead_image($1)`
+	query := `SELECT restore_dead_image($1, $2)`
 
 	var restored bool
-	rows, err := s.sqlClient.QueryContext(ctx, query, imageID)
+	rows, err := s.sqlClient.QueryContext(ctx, query, imageID, s.maxImages)
 	if err != nil {
 		return false, fmt.Errorf("failed to restore image: %w", err)
 	}
@@ -513,9 +523,9 @@ func (s *Store) RecoverDeadImage(imageID int64) (bool, error) {
 	}
 
 	// Attempt to recover the image using the stored function
-	recoverQuery := `SELECT restore_dead_image($1)`
+	recoverQuery := `SELECT restore_dead_image($1, $2)`
 	var recovered bool
-	rows2, err := s.sqlClient.QueryContext(ctx, recoverQuery, imageID)
+	rows2, err := s.sqlClient.QueryContext(ctx, recoverQuery, imageID, s.maxImages)
 	if err != nil {
 		return false, fmt.Errorf("failed to recover image: %w", err)
 	}

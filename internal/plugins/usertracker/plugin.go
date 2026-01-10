@@ -338,11 +338,11 @@ func (p *Plugin) createTables() error {
 	);
 	
 	CREATE INDEX IF NOT EXISTS idx_usertracker_active_sessions 
-		ON daz_usertracker_sessions(channel, username) 
+		ON daz_user_tracker_sessions(channel, username) 
 		WHERE is_active = TRUE;
 	
 	CREATE INDEX IF NOT EXISTS idx_usertracker_last_activity 
-		ON daz_usertracker_sessions(channel, username, last_activity);
+		ON daz_user_tracker_sessions(channel, username, last_activity);
 	`
 
 	// User history table for long-term tracking
@@ -356,7 +356,7 @@ func (p *Plugin) createTables() error {
 		metadata JSONB
 	);
 
-	CREATE INDEX IF NOT EXISTS idx_usertracker_history_user ON daz_usertracker_history(channel, username, timestamp);
+	CREATE INDEX IF NOT EXISTS idx_usertracker_history_user ON daz_user_tracker_history(channel, username, timestamp);
 	`
 
 	// Execute table creation

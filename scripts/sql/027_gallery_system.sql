@@ -95,7 +95,8 @@ CREATE OR REPLACE FUNCTION add_gallery_image(
     p_username VARCHAR(255),
     p_url TEXT,
     p_channel VARCHAR(255),
-    p_title TEXT DEFAULT NULL
+    p_title TEXT DEFAULT NULL,
+    p_max_images INTEGER DEFAULT 25
 ) RETURNS BIGINT AS $$
 DECLARE
     v_image_id BIGINT;
@@ -109,7 +110,7 @@ BEGIN
       AND is_active = TRUE;
     
     -- If at limit, prune oldest image
-    IF v_current_count >= 25 THEN
+    IF v_current_count >= p_max_images THEN
         UPDATE daz_gallery_images
         SET is_active = FALSE,
             pruned_reason = 'Gallery limit (25 images) reached',
@@ -249,7 +250,8 @@ $$ LANGUAGE plpgsql;
 
 -- Function to restore dead image if space available
 CREATE OR REPLACE FUNCTION restore_dead_image(
-    p_image_id BIGINT
+    p_image_id BIGINT,
+    p_max_images INTEGER DEFAULT 25
 ) RETURNS BOOLEAN AS $$
 DECLARE
     v_username VARCHAR(255);
@@ -269,7 +271,7 @@ BEGIN
       AND is_active = TRUE;
     
     -- Only restore if under limit
-    IF v_current_count < 25 THEN
+    IF v_current_count < p_max_images THEN
         UPDATE daz_gallery_images
         SET is_active = TRUE,
             failure_count = 0,
