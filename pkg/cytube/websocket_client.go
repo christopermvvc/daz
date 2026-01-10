@@ -45,7 +45,19 @@ func NewWebSocketClient(channel string, roomID string, eventChan chan<- framewor
 	}
 
 	logger.Debug("WebSocketClient", "Discovered server URL for channel %s: %s", channel, serverURL)
+	return newWebSocketClient(serverURL, channel, roomID, eventChan)
+}
 
+// NewWebSocketClientWithServerURL creates a new client using a known server URL.
+func NewWebSocketClientWithServerURL(serverURL string, channel string, roomID string, eventChan chan<- framework.Event) (*WebSocketClient, error) {
+	if serverURL == "" {
+		return nil, fmt.Errorf("server URL is required")
+	}
+
+	return newWebSocketClient(serverURL, channel, roomID, eventChan)
+}
+
+func newWebSocketClient(serverURL string, channel string, roomID string, eventChan chan<- framework.Event) (*WebSocketClient, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	client := &WebSocketClient{

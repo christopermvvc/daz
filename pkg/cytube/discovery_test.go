@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -138,6 +139,9 @@ func TestDiscoverServer_Integration(t *testing.T) {
 	// Should be skipped in CI/CD environments
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
+	}
+	if _, ok := os.LookupEnv("CYTUBE_INTEGRATION"); !ok {
+		t.Skip("set CYTUBE_INTEGRATION=1 to run integration test")
 	}
 
 	// Test with a known channel

@@ -12,21 +12,15 @@ import (
 )
 
 func TestNewWebSocketClient(t *testing.T) {
-	// Mock server for discovery
+	// Local server URL for testing
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/socketconfig/test-channel.json" {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"servers":[{"url":"http://test.example.com","secure":false}]}`))
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-		}
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer ts.Close()
 
 	eventChan := make(chan framework.Event, 100)
 
-	// Test with valid channel (should succeed since it hits real server)
-	client, err := NewWebSocketClient("test-channel", "test-room", eventChan)
+	client, err := NewWebSocketClientWithServerURL(ts.URL, "test-channel", "test-room", eventChan)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
