@@ -118,7 +118,7 @@ Provides database persistence and handles logging requests from other plugins.
   "table": "daz_chat_log"
 }
 ```
-Note: These rules are stored but not actively used for subscriptions in the current implementation.
+Note: These rules are compiled during init and used to subscribe to matching events after the database connection is ready.
 
 ### EventFilter Plugin
 
