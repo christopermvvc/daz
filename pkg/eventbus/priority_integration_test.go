@@ -11,6 +11,10 @@ import (
 // TestEventBusPriorityDequeue verifies that events are dequeued in priority order
 // Note: This doesn't guarantee processing order due to concurrent handlers
 func TestEventBusPriorityDequeue(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping timing-sensitive priority dequeue test in short mode")
+	}
+
 	// Create event bus
 	eb := NewEventBus(&Config{})
 
