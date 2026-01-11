@@ -368,9 +368,8 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	chatData := dataEvent.Data.ChatMessage
 
 	// Ignore messages older than 10 seconds to prevent processing historical messages
-	// MessageTime is in milliseconds
 	if chatData.MessageTime > 0 {
-		messageAge := time.Now().UnixMilli() - chatData.MessageTime
+		messageAge := messageAgeMillis(chatData.MessageTime)
 		if messageAge > 10000 { // 10 seconds in milliseconds
 			logger.Debug("EventFilter", "Ignoring old message from %s (age: %dms)",
 				chatData.Username, messageAge)
@@ -595,20 +594,17 @@ func getDefaultRoutingRules() []RoutingRule {
 
 // loadAdminUsers loads admin users from the admin_users.json file
 func (p *Plugin) loadAdminUsers() {
-	p.adminUsers = make(map[string]bool)
-
 	// Try to load from admin_users.json
 	data, err := os.ReadFile("admin_users.json")
 	if err != nil {
 		// If file doesn't exist, fall back to config
 		if os.IsNotExist(err) {
 			logger.Info("EventFilter", "admin_users.json not found, using config admin_users")
-			for _, user := range p.config.AdminUsers {
-				p.adminUsers[strings.ToLower(user)] = true
-			}
+			p.addConfiguredAdmins()
 			return
 		}
 		logger.Warn("EventFilter", "Failed to read admin_users.json: %v", err)
+		p.addConfiguredAdmins()
 		return
 	}
 
@@ -618,6 +614,7 @@ func (p *Plugin) loadAdminUsers() {
 	}
 	if err := json.Unmarshal(data, &adminConfig); err != nil {
 		logger.Error("EventFilter", "Failed to parse admin_users.json: %v", err)
+		p.addConfiguredAdmins()
 		return
 	}
 
@@ -627,6 +624,30 @@ func (p *Plugin) loadAdminUsers() {
 	}
 
 	logger.Info("EventFilter", "Loaded %d admin users from admin_users.json", len(p.adminUsers))
+}
+
+func (p *Plugin) addConfiguredAdmins() {
+	for _, user := range p.config.AdminUsers {
+		p.adminUsers[strings.ToLower(user)] = true
+	}
+}
+
+func normalizeMessageTimeMillis(messageTime int64) int64 {
+	if messageTime == 0 {
+		return 0
+	}
+	if messageTime < 1_000_000_000_000 {
+		return messageTime * 1000
+	}
+	return messageTime
+}
+
+func messageAgeMillis(messageTime int64) int64 {
+	normalized := normalizeMessageTimeMillis(messageTime)
+	if normalized == 0 {
+		return 0
+	}
+	return time.Now().UnixMilli() - normalized
 }
 
 // isAdmin checks if a user is an admin
@@ -653,9 +674,9 @@ func (p *Plugin) handlePMMessage(event framework.Event) error {
 
 	// Ignore messages older than 10 seconds
 	if pmData.MessageTime > 0 {
-		messageAge := time.Now().Unix() - pmData.MessageTime
-		if messageAge > 10 {
-			logger.Debug("EventFilter", "Ignoring old PM from %s (age: %ds)",
+		messageAge := messageAgeMillis(pmData.MessageTime)
+		if messageAge > 10000 {
+			logger.Debug("EventFilter", "Ignoring old PM from %s (age: %dms)",
 				pmData.FromUser, messageAge)
 			return nil
 		}
@@ -672,7 +693,7 @@ func (p *Plugin) handlePMMessage(event framework.Event) error {
 			Message:     pmData.Message,
 			UserRank:    0, // PMs don't include rank, assume 0
 			Channel:     pmData.Channel,
-			MessageTime: pmData.MessageTime * 1000, // Convert to milliseconds
+			MessageTime: normalizeMessageTimeMillis(pmData.MessageTime),
 		}
 
 		// Handle the command with PM flag
