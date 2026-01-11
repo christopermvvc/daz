@@ -69,3 +69,6 @@
 - [x] P1: Analytics stats response lacks command routing context (`internal/plugins/analytics/plugin.go`).
 - [x] P2: Gallery HTML generator sleeps before checking shutdown context (`internal/plugins/gallery/plugin.go`).
 - [x] P1: Ollama forces enabled state in init, ignoring config (`internal/plugins/ollama/plugin.go`).
+
+## Issue Inventory (Prioritized - Latest Rescan)
+- [ ] P1: Event discovery registers `pgx` driver inside `Run`, risking duplicate registration panic on repeated invocations (`cmd/daz/event_discovery.go`).
