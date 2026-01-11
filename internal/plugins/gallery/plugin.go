@@ -398,7 +398,7 @@ func (p *Plugin) handleCheckCommand(params map[string]string) {
 
 	// Trigger health check asynchronously
 	go func() {
-		if err := p.health.CheckAllImages(); err != nil {
+		if err := p.health.CheckAllImages(p.ctx); err != nil {
 			logger.Error(p.name, "Manual health check failed: %v", err)
 		}
 	}()
@@ -453,7 +453,7 @@ func (p *Plugin) runHealthChecker() {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
-			if err := p.health.CheckPendingImages(); err != nil {
+			if err := p.health.CheckPendingImages(p.ctx); err != nil {
 				logger.Error(p.name, "Health check failed: %v", err)
 			}
 		}
@@ -477,7 +477,7 @@ func (p *Plugin) runHTMLGenerator() {
 	}
 
 	// Generate immediately after initial delay
-	if err := p.generator.GenerateAllGalleries(); err != nil {
+	if err := p.generator.GenerateAllGalleries(p.ctx); err != nil {
 		logger.Warn(p.name, "Initial HTML generation had issues: %v", err)
 	}
 
@@ -486,7 +486,7 @@ func (p *Plugin) runHTMLGenerator() {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
-			if err := p.generator.GenerateAllGalleries(); err != nil {
+			if err := p.generator.GenerateAllGalleries(p.ctx); err != nil {
 				logger.Warn(p.name, "HTML generation had issues: %v", err)
 			}
 		}

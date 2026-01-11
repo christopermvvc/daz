@@ -87,6 +87,9 @@ func (d *ImageDetector) isImageURL(rawURL string) bool {
 	if err != nil {
 		return false
 	}
+	if u.User != nil {
+		return false
+	}
 
 	// Security: Only allow HTTP and HTTPS schemes
 	scheme := strings.ToLower(u.Scheme)
@@ -97,6 +100,7 @@ func (d *ImageDetector) isImageURL(rawURL string) bool {
 
 	// Security: Prevent localhost and private network access
 	hostname := strings.ToLower(u.Hostname())
+	hostname = strings.TrimSuffix(hostname, ".")
 	if ip := net.ParseIP(hostname); ip != nil {
 		if isPrivateIP(ip) {
 			return false

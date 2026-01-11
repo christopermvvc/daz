@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -53,9 +54,10 @@ type EventBus struct {
 	metricsMu     sync.RWMutex
 
 	// Shutdown management
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	handlerWg sync.WaitGroup
 }
 
 // eventMessage wraps an event with metadata
@@ -304,6 +306,8 @@ func (eb *EventBus) Stop() error {
 	// Wait for routers to finish
 	eb.wg.Wait()
 
+	eb.handlerWg.Wait()
+
 	logger.Info("EventBus", "Event bus stopped")
 	return nil
 }
@@ -398,8 +402,15 @@ func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
 		// Dispatch to each matching subscriber
 		for _, sub := range matching {
 			eb.dispatchSem <- struct{}{}
+			eb.handlerWg.Add(1)
 			go func(s subscriberInfo, m *eventMessage) {
-				defer func() { <-eb.dispatchSem }()
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Error("EventBus", "Handler panic for %s: %v\n%s", eventType, r, debug.Stack())
+					}
+					<-eb.dispatchSem
+					eb.handlerWg.Done()
+				}()
 				timer := prometheus.NewTimer(metrics.EventProcessingDuration.WithLabelValues(eventType))
 				defer timer.ObserveDuration()
 

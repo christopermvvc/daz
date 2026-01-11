@@ -34,6 +34,9 @@ func NewHealthChecker(store *Store, config *Config) *HealthChecker {
 				if len(via) >= 3 {
 					return fmt.Errorf("too many redirects")
 				}
+				if !isSafeImageURL(req.URL.String()) {
+					return fmt.Errorf("unsafe redirect URL")
+				}
 				return nil
 			},
 		},
@@ -41,7 +44,16 @@ func NewHealthChecker(store *Store, config *Config) *HealthChecker {
 }
 
 // CheckPendingImages checks images that are due for health checking
-func (h *HealthChecker) CheckPendingImages() error {
+func (h *HealthChecker) CheckPendingImages(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	h.mu.Lock()
 	if h.checking {
 		h.mu.Unlock()
@@ -90,15 +102,29 @@ func (h *HealthChecker) CheckPendingImages() error {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			for img := range imageChan {
-				h.checkImage(img)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case img, ok := <-imageChan:
+					if !ok {
+						return
+					}
+					h.checkImage(ctx, img)
+				}
 			}
 		}(i)
 	}
 
 	// Queue all images
 	for _, img := range images {
-		imageChan <- img
+		select {
+		case <-ctx.Done():
+			close(imageChan)
+			wg.Wait()
+			return ctx.Err()
+		case imageChan <- img:
+		}
 	}
 	close(imageChan)
 
@@ -110,7 +136,15 @@ func (h *HealthChecker) CheckPendingImages() error {
 }
 
 // CheckAllImages forces a health check on all active images
-func (h *HealthChecker) CheckAllImages() error {
+func (h *HealthChecker) CheckAllImages(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	// This is called for manual health checks
 	// We'll just trigger a regular check with a higher limit
 	images, err := h.store.GetImagesForHealthCheck(500)
@@ -121,7 +155,12 @@ func (h *HealthChecker) CheckAllImages() error {
 	logger.Info("gallery", "Manual health check started for %d images", len(images))
 
 	for _, img := range images {
-		h.checkImage(img)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		h.checkImage(ctx, img)
 	}
 
 	logger.Info("gallery", "Manual health check completed")
@@ -133,6 +172,9 @@ func isSafeImageURL(rawURL string) bool {
 	if err != nil {
 		return false
 	}
+	if u.User != nil {
+		return false
+	}
 
 	scheme := strings.ToLower(u.Scheme)
 	if scheme != "http" && scheme != "https" {
@@ -140,6 +182,7 @@ func isSafeImageURL(rawURL string) bool {
 	}
 
 	hostname := strings.ToLower(u.Hostname())
+	hostname = strings.TrimSuffix(hostname, ".")
 	if hostname == "" || hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" ||
 		strings.HasSuffix(hostname, ".local") {
 		return false
@@ -159,8 +202,13 @@ func isSafeImageURL(rawURL string) bool {
 }
 
 // checkImage performs a health check on a single image
-func (h *HealthChecker) checkImage(img *GalleryImage) {
+func (h *HealthChecker) checkImage(ctx context.Context, img *GalleryImage) {
 	logger.Debug("gallery", "Checking health of image %d: %s", img.ID, img.URL)
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
 
 	if !isSafeImageURL(img.URL) {
 		logger.Warn("gallery", "Skipping unsafe image URL for %d: %s", img.ID, img.URL)
@@ -169,7 +217,7 @@ func (h *HealthChecker) checkImage(img *GalleryImage) {
 	}
 
 	// Create a HEAD request to check if the image is accessible
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "HEAD", img.URL, nil)

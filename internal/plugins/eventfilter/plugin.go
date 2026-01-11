@@ -785,14 +785,21 @@ func (p *Plugin) loadAdminUsers() {
 	}
 
 	// Populate admin users map
+	p.mu.Lock()
+	p.adminUsers = make(map[string]bool)
 	for _, user := range adminConfig.AdminUsers {
 		p.adminUsers[strings.ToLower(user)] = true
 	}
+	adminCount := len(p.adminUsers)
+	p.mu.Unlock()
 
-	logger.Info("EventFilter", "Loaded %d admin users from admin_users.json", len(p.adminUsers))
+	logger.Info("EventFilter", "Loaded %d admin users from admin_users.json", adminCount)
 }
 
 func (p *Plugin) addConfiguredAdmins() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.adminUsers = make(map[string]bool)
 	for _, user := range p.config.AdminUsers {
 		p.adminUsers[strings.ToLower(user)] = true
 	}

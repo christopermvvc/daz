@@ -239,6 +239,12 @@ func (rm *RoomManager) processRoomEvents(roomID string) {
 		return
 	}
 
+	defer func() {
+		conn.mu.Lock()
+		conn.eventLoopStarted = false
+		conn.mu.Unlock()
+	}()
+
 	for {
 		select {
 		case <-rm.ctx.Done():

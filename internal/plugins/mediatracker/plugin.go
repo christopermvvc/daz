@@ -604,10 +604,48 @@ func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error 
 		}
 
 	case "move":
-		// Move item from position to newPosition
-		// This is complex - need to handle in a transaction-like manner
-		// For now, log it as unimplemented
-		logger.Warn("MediaTracker", "Queue move operation not fully implemented yet")
+		fromPosition := queueData.Position
+		toPosition := queueData.NewPosition
+		if fromPosition == toPosition {
+			return nil
+		}
+		if fromPosition < 0 || toPosition < 0 {
+			logger.Warn("MediaTracker", "Invalid queue move positions: %d -> %d", fromPosition, toPosition)
+			return nil
+		}
+
+		builder := framework.NewBatchOperationBuilder()
+		builder.AddExec(
+			"UPDATE daz_mediatracker_queue SET position = -1 WHERE channel = $1 AND position = $2",
+			channel,
+			fromPosition,
+		)
+
+		if toPosition > fromPosition {
+			builder.AddExec(
+				"UPDATE daz_mediatracker_queue SET position = position - 1 WHERE channel = $1 AND position > $2 AND position <= $3",
+				channel,
+				fromPosition,
+				toPosition,
+			)
+		} else {
+			builder.AddExec(
+				"UPDATE daz_mediatracker_queue SET position = position + 1 WHERE channel = $1 AND position >= $2 AND position < $3",
+				channel,
+				toPosition,
+				fromPosition,
+			)
+		}
+
+		builder.AddExec(
+			"UPDATE daz_mediatracker_queue SET position = $1 WHERE channel = $2 AND position = -1",
+			toPosition,
+			channel,
+		)
+
+		if _, err := p.sqlClient.BatchExecAtomic(builder.Build()); err != nil {
+			return fmt.Errorf("failed to move queue item: %w", err)
+		}
 
 	default:
 		logger.Warn("MediaTracker", "Unknown queue action: %s", queueData.Action)

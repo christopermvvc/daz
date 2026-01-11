@@ -89,3 +89,25 @@
 - [x] P2: EventFilter should periodically prune cooldowns via ticker (`internal/plugins/eventfilter/plugin.go`).
 - [x] P2: EventFilter should enforce command length limits before parsing (`internal/plugins/eventfilter/plugin.go`).
 - [x] P2: EventFilter should cap args count and sanitize control chars before logging (`internal/plugins/eventfilter/plugin.go`).
+
+## Prioritized Stability Task List
+
+### P0 – Gallery Safety & Data Integrity
+- [x] Validate HTML output path is safe and absolute; enforce marker file for git operations in `internal/plugins/gallery/generator.go`.
+- [x] Harden gallery health checker against unsafe URLs and SSRF in `internal/plugins/gallery/health.go` and `internal/plugins/gallery/detector.go`.
+- [x] Ensure health checks skip unsafe URLs before HTTP requests; log and mark images appropriately.
+
+### P1 – Gallery Worker Lifecycle
+- [x] Ensure gallery background workers respect context cancellation and don’t overlap on rapid ticks in `internal/plugins/gallery/plugin.go`.
+- [x] Add guardrails for long-running HTML generation to stop on shutdown in `internal/plugins/gallery/generator.go`.
+
+### P1 – EventBus Handler Safety
+- [x] Add panic recovery around subscriber goroutines in `pkg/eventbus/eventbus.go`.
+- [x] Review EventBus shutdown sequence for safe drain/close ordering to avoid dropped handlers or response races.
+
+### P1 – EventFilter/Core Stability
+- [x] Verify eventfilter cooldown pruning, admin loading, and command routing correctness in `internal/plugins/eventfilter/plugin.go`.
+- [x] Confirm core room manager reconnection doesn’t spawn duplicate handlers or leave stale channels in `internal/core/room_manager.go`.
+
+### P2 – Functional Gap (Not Stability)
+- [x] Implement queue “move” in MediaTracker (`internal/plugins/mediatracker/plugin.go`) if needed.

@@ -39,10 +39,25 @@ func NewHTMLGenerator(store *Store, config *Config) *HTMLGenerator {
 }
 
 // GenerateAllGalleries generates a single shared HTML gallery for all users
-func (g *HTMLGenerator) GenerateAllGalleries() error {
+func (g *HTMLGenerator) GenerateAllGalleries(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	// Prevent concurrent generation to avoid git conflicts
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 
 	// Get all users with galleries
 	users, err := g.store.GetAllActiveUsers()
@@ -53,13 +68,19 @@ func (g *HTMLGenerator) GenerateAllGalleries() error {
 	logger.Info("gallery", "Generating shared gallery HTML for %d users", len(users))
 
 	// Generate the single shared gallery page
-	if err := g.GenerateSharedGallery(users); err != nil {
+	if err := g.GenerateSharedGallery(ctx, users); err != nil {
 		logger.Error("gallery", "Failed to generate shared gallery: %v", err)
 		return err
 	}
 
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	// Push to GitHub Pages (non-fatal if it fails)
-	if err := g.pushToGitHub(); err != nil {
+	if err := g.pushToGitHub(ctx); err != nil {
 		logger.Warn("gallery", "Failed to push to GitHub Pages (continuing anyway): %v", err)
 		// Don't return error - HTML was still generated successfully
 	} else {
@@ -71,7 +92,16 @@ func (g *HTMLGenerator) GenerateAllGalleries() error {
 }
 
 // GenerateSharedGallery generates a single shared gallery page with all users' images
-func (g *HTMLGenerator) GenerateSharedGallery(users []struct{ Username, Channel string }) error {
+func (g *HTMLGenerator) GenerateSharedGallery(ctx context.Context, users []struct{ Username, Channel string }) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	if !g.isSafeOutputPath() {
 		return fmt.Errorf("unsafe html output path: %s", g.config.HTMLOutputPath)
 	}
@@ -87,6 +117,11 @@ func (g *HTMLGenerator) GenerateSharedGallery(users []struct{ Username, Channel 
 	var totalImages int
 
 	for _, user := range users {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		// Skip locked galleries
 		stats, err := g.store.GetUserStats(user.Username, user.Channel)
 		if err != nil {
@@ -123,6 +158,12 @@ func (g *HTMLGenerator) GenerateSharedGallery(users []struct{ Username, Channel 
 		return allGalleries[i].Images[0].PostedAt.After(allGalleries[j].Images[0].PostedAt)
 	})
 
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	// Get pruned images for graveyard section
 	prunedImages, err := g.store.GetPrunedImages(100) // Show up to 100 dead images
 	if err != nil {
@@ -132,6 +173,12 @@ func (g *HTMLGenerator) GenerateSharedGallery(users []struct{ Username, Channel 
 
 	// Generate the shared gallery HTML
 	htmlContent := g.generateSharedGalleryHTML(allGalleries, totalImages, prunedImages)
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 
 	// Write to file
 	outputFile := filepath.Join(g.config.HTMLOutputPath, "index.html")
@@ -978,8 +1025,11 @@ func (g *HTMLGenerator) resetGitState() {
 }
 
 // pushToGitHub commits and pushes gallery HTML to GitHub Pages
-func (g *HTMLGenerator) pushToGitHub() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	// Recovery function to reset git state on failure
