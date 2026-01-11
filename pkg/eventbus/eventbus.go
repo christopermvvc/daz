@@ -3,13 +3,14 @@ package eventbus
 import (
 	"context"
 	"fmt"
-	"github.com/hildolfr/daz/internal/logger"
 	"path"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/logger"
 	"github.com/hildolfr/daz/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -30,6 +31,9 @@ type EventBus struct {
 
 	// Buffer size configuration
 	bufferSizes map[string]int
+
+	// Limit concurrent handler execution
+	dispatchSem chan struct{}
 
 	// Track active routers to prevent duplicates
 	activeRouters map[string]bool
@@ -100,6 +104,11 @@ func NewEventBus(config *Config) *EventBus {
 		}
 	}
 
+	workerCount := runtime.GOMAXPROCS(0) * 4
+	if workerCount < 4 {
+		workerCount = 4
+	}
+
 	eb := &EventBus{
 		queues:             make(map[string]*messageQueue),
 		subscribers:        make(map[string][]subscriberInfo),
@@ -109,6 +118,7 @@ func NewEventBus(config *Config) *EventBus {
 		activeRouters:      make(map[string]bool),
 		pendingRequests:    make(map[string]chan *pluginResponse),
 		droppedEvents:      make(map[string]int64),
+		dispatchSem:        make(chan struct{}, workerCount),
 		ctx:                ctx,
 		cancel:             cancel,
 	}
@@ -387,8 +397,9 @@ func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
 
 		// Dispatch to each matching subscriber
 		for _, sub := range matching {
-			// Non-blocking dispatch
+			eb.dispatchSem <- struct{}{}
 			go func(s subscriberInfo, m *eventMessage) {
+				defer func() { <-eb.dispatchSem }()
 				timer := prometheus.NewTimer(metrics.EventProcessingDuration.WithLabelValues(eventType))
 				defer timer.ObserveDuration()
 
