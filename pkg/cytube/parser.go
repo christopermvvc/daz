@@ -3,10 +3,10 @@ package cytube
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/logger"
 )
 
 type Parser struct {
@@ -286,7 +286,7 @@ func (p *Parser) parsePlaylist(base framework.CytubeEvent, data json.RawMessage)
 			if len(item.Media.Meta) > 0 {
 				if err := json.Unmarshal(item.Media.Meta, &rawMetadata); err != nil {
 					// Log error but continue processing
-					log.Printf("[CyTube Parser] Failed to parse metadata for item %s: %v", item.Media.ID, err)
+					logger.Warn("Cytube Parser", "Failed to parse metadata for item %s: %v", item.Media.ID, err)
 				} else if rawMetadata != nil {
 					// Convert raw metadata to MediaMetadata
 					mediaMetadata = p.convertToMediaMetadata(rawMetadata)
@@ -793,7 +793,7 @@ func (p *Parser) parseQueueEvent(base framework.CytubeEvent, data json.RawMessag
 	var queue PlaylistPayload
 	if err := json.Unmarshal(data, &queue); err != nil {
 		// If that fails, log and return generic event
-		log.Printf("[CyTube Parser] Failed to parse queue event as PlaylistPayload: %v", err)
+		logger.Warn("Cytube Parser", "Failed to parse queue event as PlaylistPayload: %v", err)
 		return p.parseGenericEvent(base, "queue", data)
 	}
 
@@ -836,7 +836,7 @@ func (p *Parser) parseDeleteEvent(base framework.CytubeEvent, data json.RawMessa
 	}
 
 	if err := json.Unmarshal(data, &deleteData); err != nil {
-		log.Printf("[CyTube Parser] Failed to parse delete event: %v", err)
+		logger.Warn("Cytube Parser", "Failed to parse delete event: %v", err)
 		return p.parseGenericEvent(base, "delete", data)
 	}
 
@@ -864,7 +864,7 @@ func (p *Parser) parseMoveVideoEvent(base framework.CytubeEvent, data json.RawMe
 	}
 
 	if err := json.Unmarshal(data, &moveData); err != nil {
-		log.Printf("[CyTube Parser] Failed to parse moveVideo event: %v", err)
+		logger.Warn("Cytube Parser", "Failed to parse moveVideo event: %v", err)
 		return p.parseGenericEvent(base, "moveVideo", data)
 	}
 
@@ -899,7 +899,7 @@ func (p *Parser) parseQueueFailEvent(base framework.CytubeEvent, data json.RawMe
 			base.Metadata["error_message"] = msg
 			return &base, nil
 		}
-		log.Printf("[CyTube Parser] Failed to parse queueFail event: %v", err)
+		logger.Warn("Cytube Parser", "Failed to parse queueFail event: %v", err)
 		return p.parseGenericEvent(base, "queueFail", data)
 	}
 

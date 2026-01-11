@@ -3,10 +3,10 @@ package framework
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
+	"github.com/hildolfr/daz/internal/logger"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -247,7 +247,7 @@ func (h *RequestHelper) requestWithRetry(
 
 			// Track retry
 			requestMetrics.RequestsRetried.WithLabelValues(target, eventType, config.MetricName).Inc()
-			log.Printf("[RequestHelper] Retrying request to %s (attempt %d/%d)", target, attempt+1, config.MaxRetries+1)
+			logger.Info("RequestHelper", "Retrying request to %s (attempt %d/%d)", target, attempt+1, config.MaxRetries+1)
 
 			// Apply backoff
 			retryDelay = time.Duration(float64(retryDelay) * config.BackoffRate)
@@ -260,19 +260,19 @@ func (h *RequestHelper) requestWithRetry(
 
 			// Check if error is retryable
 			if !h.isRetryableError(err) {
-				log.Printf("[RequestHelper] Non-retryable error for %s: %v", target, err)
+				logger.Warn("RequestHelper", "Non-retryable error for %s: %v", target, err)
 				requestMetrics.RequestsFailed.WithLabelValues(target, eventType, config.MetricName).Inc()
 				return nil, fmt.Errorf("request failed: %w", err)
 			}
 
-			log.Printf("[RequestHelper] Retryable error for %s: %v", target, err)
+			logger.Warn("RequestHelper", "Retryable error for %s: %v", target, err)
 			continue
 		}
 
 		// Success
 		requestMetrics.RequestsSucceeded.WithLabelValues(target, eventType, config.MetricName).Inc()
 		if attempt > 0 {
-			log.Printf("[RequestHelper] Request to %s succeeded after %d retries", target, attempt)
+			logger.Info("RequestHelper", "Request to %s succeeded after %d retries", target, attempt)
 		}
 		return response, nil
 	}

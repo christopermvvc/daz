@@ -33,7 +33,7 @@
 - [x] P2: Add a test matrix section to README/docs clarifying `-short`, build tags, and integration requirements.
 
 ## Issue Inventory (Prioritized)
-- [ ] P1: Replace `log.Printf` usage in core/runtime paths with `internal/logger` (e.g., `pkg/cytube/parser.go`, `internal/framework/request_helper.go`).
+- [x] P1: Replace `log.Printf` usage in core/runtime paths with `internal/logger` (e.g., `pkg/cytube/parser.go`, `internal/framework/request_helper.go`).
 - [ ] P1: Decide on logging approach for SQL logger middleware, which currently uses `log.Printf` in runtime paths (`internal/plugins/sql/logger_middleware.go`).
 - [ ] P2: Replace `log.Printf` on config file close errors with `internal/logger` or suppress in `internal/config/config.go`.
 - [ ] P2: Audit vendored Cytube `util.js` TODOs for relevance (`cytube_src/util.js`, `examples/cytube_src/util.js`).
