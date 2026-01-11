@@ -3,7 +3,10 @@ package gallery
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -125,9 +128,45 @@ func (h *HealthChecker) CheckAllImages() error {
 	return nil
 }
 
+func isSafeImageURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+
+	hostname := strings.ToLower(u.Hostname())
+	if hostname == "" || hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" ||
+		strings.HasSuffix(hostname, ".local") {
+		return false
+	}
+
+	if ip := net.ParseIP(hostname); ip != nil {
+		if isPrivateIP(ip) {
+			return false
+		}
+	}
+
+	if resolvesToPrivateIP(hostname) {
+		return false
+	}
+
+	return true
+}
+
 // checkImage performs a health check on a single image
 func (h *HealthChecker) checkImage(img *GalleryImage) {
 	logger.Debug("gallery", "Checking health of image %d: %s", img.ID, img.URL)
+
+	if !isSafeImageURL(img.URL) {
+		logger.Warn("gallery", "Skipping unsafe image URL for %d: %s", img.ID, img.URL)
+		h.markImageFailed(img.ID, "Unsafe URL")
+		return
+	}
 
 	// Create a HEAD request to check if the image is accessible
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

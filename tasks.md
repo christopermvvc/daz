@@ -83,3 +83,4 @@
 - [x] P2: Command parsing does not support quoted arguments; multi-word params must be manually joined (`internal/plugins/eventfilter/plugin.go`).
 - [x] P2: EventFilter cooldown map should prune old entries to avoid growth (`internal/plugins/eventfilter/plugin.go`).
 - [x] P2: Gallery hostname checks should resolve DNS to block private IPs (SSRF hardening) (`internal/plugins/gallery/detector.go`).
+- [x] P2: Gallery health checks should skip unsafe URLs before HTTP probes (`internal/plugins/gallery/health.go`).
