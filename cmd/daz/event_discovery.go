@@ -8,12 +8,15 @@ import (
 	"log"
 	"os"
 	"sort"
+	"sync"
 	"text/tabwriter"
 	"time"
 
 	"github.com/hildolfr/daz/internal/config"
 	"github.com/jackc/pgx/v5/stdlib"
 )
+
+var registerPGXOnce sync.Once
 
 // logDeferredError is a helper function to log errors from deferred calls
 func logDeferredError(err error, context string) {
@@ -51,8 +54,9 @@ func (c *EventDiscoveryCommand) Run() error {
 		cfg.Core.Database.Password,
 		cfg.Core.Database.Database)
 
-	// Register pgx driver
-	sql.Register("pgx", stdlib.GetDefaultDriver())
+	registerPGXOnce.Do(func() {
+		sql.Register("pgx", stdlib.GetDefaultDriver())
+	})
 
 	c.db, err = sql.Open("pgx", connStr)
 	if err != nil {

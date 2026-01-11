@@ -1,8 +1,9 @@
 package framework
 
 import (
-	"fmt"
 	"time"
+
+	"github.com/hildolfr/daz/internal/logger"
 )
 
 // Priority level constants for event handling
@@ -103,12 +104,10 @@ func (m *EventMetadata) WithTimeout(timeout time.Duration) *EventMetadata {
 // If an invalid priority is provided, it will be clamped to the valid range.
 func (m *EventMetadata) WithPriority(priority int) *EventMetadata {
 	if priority < PriorityNormal {
-		// Log warning but don't fail - maintain backward compatibility
-		fmt.Printf("Warning: Invalid priority %d, using PriorityNormal\n", priority)
+		logger.Warn("EventMetadata", "Invalid priority %d, using PriorityNormal", priority)
 		m.Priority = PriorityNormal
 	} else if priority > PriorityCritical {
-		// Log warning but don't fail - maintain backward compatibility
-		fmt.Printf("Warning: Invalid priority %d, using PriorityCritical\n", priority)
+		logger.Warn("EventMetadata", "Invalid priority %d, using PriorityCritical", priority)
 		m.Priority = PriorityCritical
 	} else {
 		m.Priority = priority

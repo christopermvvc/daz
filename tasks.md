@@ -71,4 +71,5 @@
 - [x] P1: Ollama forces enabled state in init, ignoring config (`internal/plugins/ollama/plugin.go`).
 
 ## Issue Inventory (Prioritized - Latest Rescan)
-- [ ] P1: Event discovery registers `pgx` driver inside `Run`, risking duplicate registration panic on repeated invocations (`cmd/daz/event_discovery.go`).
+- [x] P1: Event discovery registers `pgx` driver inside `Run`, risking duplicate registration panic on repeated invocations (`cmd/daz/event_discovery.go`).
+- [x] P2: Event metadata priority warnings should use `internal/logger` instead of `fmt.Printf` (`internal/framework/event_metadata.go`).
