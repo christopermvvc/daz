@@ -89,6 +89,9 @@ func LoadFromFile(path string) (*Config, error) {
 		if err != nil && !os.IsNotExist(err) {
 			return nil, fmt.Errorf("failed to open config file: %w", err)
 		}
+		if os.IsNotExist(err) {
+			logger.Warn("Config", "Config file not found (%s); using defaults", path)
+		}
 		if err == nil {
 			defer func() {
 				if err := file.Close(); err != nil {
