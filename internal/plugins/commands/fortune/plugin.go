@@ -75,10 +75,15 @@ func (p *Plugin) Start() error {
 			},
 		},
 	}
-	_ = p.eventBus.Broadcast("command.register", registerEvent)
+	if err := p.eventBus.Broadcast("command.register", registerEvent); err != nil {
+		logger.Error(p.name, "Failed to register command: %v", err)
+		return fmt.Errorf("failed to register command: %w", err)
+	}
 
 	// Subscribe to command execution events
-	_ = p.eventBus.Subscribe("command.fortune.execute", p.handleFortuneCommand)
+	if err := p.eventBus.Subscribe("command.fortune.execute", p.handleFortuneCommand); err != nil {
+		return fmt.Errorf("failed to subscribe to command: %w", err)
+	}
 
 	return nil
 }

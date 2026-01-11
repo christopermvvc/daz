@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/logger"
 )
 
 type Plugin struct {
@@ -69,7 +70,10 @@ func (p *Plugin) Start() error {
 			},
 		},
 	}
-	_ = p.eventBus.Broadcast("command.register", registerEvent)
+	if err := p.eventBus.Broadcast("command.register", registerEvent); err != nil {
+		logger.Error(p.name, "Failed to register command: %v", err)
+		return fmt.Errorf("failed to register command: %w", err)
+	}
 
 	if err := p.eventBus.Subscribe("command.weather.execute", p.handleWeatherCommand); err != nil {
 		return fmt.Errorf("failed to subscribe to weather command: %w", err)
@@ -271,21 +275,30 @@ func (p *Plugin) formatWeatherResponse(data map[string]interface{}) string {
 		return ""
 	}
 
-	currentCond := current[0].(map[string]interface{})
+	currentCond, ok := current[0].(map[string]interface{})
+	if !ok {
+		return ""
+	}
 
 	// Extract location
 	nearestArea, _ := data["nearest_area"].([]interface{})
 	location := "Unknown Location"
 	if len(nearestArea) > 0 {
-		area := nearestArea[0].(map[string]interface{})
-		if areaName, ok := area["areaName"].([]interface{}); ok && len(areaName) > 0 {
-			if name, ok := areaName[0].(map[string]interface{})["value"].(string); ok {
-				location = name
+		area, ok := nearestArea[0].(map[string]interface{})
+		if ok {
+			if areaName, ok := area["areaName"].([]interface{}); ok && len(areaName) > 0 {
+				if nameEntry, ok := areaName[0].(map[string]interface{}); ok {
+					if name, ok := nameEntry["value"].(string); ok {
+						location = name
+					}
+				}
 			}
-		}
-		if country, ok := area["country"].([]interface{}); ok && len(country) > 0 {
-			if countryName, ok := country[0].(map[string]interface{})["value"].(string); ok {
-				location += ", " + countryName
+			if country, ok := area["country"].([]interface{}); ok && len(country) > 0 {
+				if countryEntry, ok := country[0].(map[string]interface{}); ok {
+					if countryName, ok := countryEntry["value"].(string); ok {
+						location += ", " + countryName
+					}
+				}
 			}
 		}
 	}
@@ -299,8 +312,8 @@ func (p *Plugin) formatWeatherResponse(data map[string]interface{}) string {
 	}
 
 	// Extract temperatures
-	tempC := currentCond["temp_C"].(string)
-	tempF := currentCond["temp_F"].(string)
+	tempC, _ := currentCond["temp_C"].(string)
+	tempF, _ := currentCond["temp_F"].(string)
 
 	// Get weather emoji
 	emoji := p.getWeatherEmoji(weatherDesc)
@@ -311,26 +324,31 @@ func (p *Plugin) formatWeatherResponse(data map[string]interface{}) string {
 
 	// Add forecast for tomorrow
 	if weather, ok := data["weather"].([]interface{}); ok && len(weather) > 1 {
-		tomorrow := weather[1].(map[string]interface{})
-		maxTempC := tomorrow["maxtempC"].(string)
-		maxTempF := tomorrow["maxtempF"].(string)
-		minTempC := tomorrow["mintempC"].(string)
-		minTempF := tomorrow["mintempF"].(string)
+		tomorrow, ok := weather[1].(map[string]interface{})
+		if ok {
+			maxTempC, _ := tomorrow["maxtempC"].(string)
+			maxTempF, _ := tomorrow["maxtempF"].(string)
+			minTempC, _ := tomorrow["mintempC"].(string)
+			minTempF, _ := tomorrow["mintempF"].(string)
 
-		tomorrowDesc := ""
-		if hourly, ok := tomorrow["hourly"].([]interface{}); ok && len(hourly) > 0 {
-			midday := hourly[len(hourly)/2].(map[string]interface{})
-			if desc, ok := midday["weatherDesc"].([]interface{}); ok && len(desc) > 0 {
-				if val, ok := desc[0].(map[string]interface{})["value"].(string); ok {
-					tomorrowDesc = val
+			tomorrowDesc := ""
+			if hourly, ok := tomorrow["hourly"].([]interface{}); ok && len(hourly) > 0 {
+				if midday, ok := hourly[len(hourly)/2].(map[string]interface{}); ok {
+					if desc, ok := midday["weatherDesc"].([]interface{}); ok && len(desc) > 0 {
+						if valEntry, ok := desc[0].(map[string]interface{}); ok {
+							if val, ok := valEntry["value"].(string); ok {
+								tomorrowDesc = val
+							}
+						}
+					}
 				}
 			}
+
+			tomorrowEmoji := p.getWeatherEmoji(tomorrowDesc)
+
+			response += fmt.Sprintf("%s Tomorrow: %s • %s-%s°C/%s-%s°F",
+				tomorrowEmoji, tomorrowDesc, minTempC, maxTempC, minTempF, maxTempF)
 		}
-
-		tomorrowEmoji := p.getWeatherEmoji(tomorrowDesc)
-
-		response += fmt.Sprintf("%s Tomorrow: %s • %s-%s°C/%s-%s°F",
-			tomorrowEmoji, tomorrowDesc, minTempC, maxTempC, minTempF, maxTempF)
 	}
 
 	return response
