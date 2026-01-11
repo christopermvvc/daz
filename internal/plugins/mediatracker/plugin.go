@@ -32,7 +32,8 @@ type Plugin struct {
 	currentMedia *MediaState
 
 	// Plugin status tracking
-	status framework.PluginStatus
+	status    framework.PluginStatus
+	startTime time.Time
 
 	// Deduplication tracking per channel
 	lastPlaylistInfo map[string]*playlistInfo
@@ -235,7 +236,8 @@ func (p *Plugin) Start() error {
 
 	p.running = true
 	p.status.State = "running"
-	p.status.Uptime = time.Since(time.Now())
+	p.status.Uptime = 0
+	p.startTime = time.Now()
 
 	// Register commands with the eventfilter plugin
 	p.registerCommands()
@@ -281,8 +283,8 @@ func (p *Plugin) Status() framework.PluginStatus {
 	defer p.mu.RUnlock()
 
 	status := p.status
-	if p.running {
-		status.Uptime = time.Since(time.Now().Add(-status.Uptime))
+	if p.running && !p.startTime.IsZero() {
+		status.Uptime = time.Since(p.startTime)
 	}
 	return status
 }
@@ -425,15 +427,9 @@ func (p *Plugin) handleMediaChange(event framework.Event) error {
 		return nil
 	}
 
-	// End the previous media play if any
-	if p.currentMedia != nil {
-		if err := p.endMediaPlay(p.currentMedia, now, channel); err != nil {
-			logger.Error("MediaTracker", "Error ending previous media: %v", err)
-		}
-	}
-
-	// Start tracking new media
+	var previousMedia *MediaState
 	p.mu.Lock()
+	previousMedia = p.currentMedia
 	p.currentMedia = &MediaState{
 		ID:        media.VideoID,
 		Type:      media.VideoType,
@@ -442,6 +438,13 @@ func (p *Plugin) handleMediaChange(event framework.Event) error {
 		StartedAt: now,
 	}
 	p.mu.Unlock()
+
+	// End the previous media play if any
+	if previousMedia != nil {
+		if err := p.endMediaPlay(previousMedia, now, channel); err != nil {
+			logger.Error("MediaTracker", "Error ending previous media: %v", err)
+		}
+	}
 
 	// Add to library (will update play count if already exists)
 	if err := p.addToLibrary(
