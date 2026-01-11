@@ -555,6 +555,10 @@ func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.Even
 
 // SendWithMetadata sends an event directly to a plugin with metadata
 func (eb *EventBus) SendWithMetadata(target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
+	if metadata == nil {
+		metadata = &framework.EventMetadata{}
+	}
+
 	// Update metadata with target
 	metadata.Target = target
 
@@ -564,6 +568,10 @@ func (eb *EventBus) SendWithMetadata(target string, eventType string, data *fram
 
 // Request performs a synchronous request to a plugin
 func (eb *EventBus) Request(ctx context.Context, target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) (*framework.EventData, error) {
+	if metadata == nil {
+		metadata = &framework.EventMetadata{}
+	}
+
 	// Use existing correlation ID if present, otherwise generate new one
 	correlationID := metadata.CorrelationID
 	if correlationID == "" {

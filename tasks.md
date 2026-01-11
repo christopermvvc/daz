@@ -40,7 +40,7 @@
   - Notes: Both TODOs appear in vendored Cytube sources (`highlightsMe` match semantics and emote UI refactor). No direct impact on daz runtime; keep for upstream sync.
 
 ## Issue Inventory (Prioritized - Fresh Scan)
-- [ ] P0: EventBus nil metadata dereference risk in `SendWithMetadata` and `Request` (`pkg/eventbus/eventbus.go`).
+- [x] P0: EventBus nil metadata dereference risk in `SendWithMetadata` and `Request` (`pkg/eventbus/eventbus.go`).
 - [ ] P0: EventBus response channel cleanup may race with `DeliverResponse`, risking send-on-closed panic (`pkg/eventbus/eventbus.go`).
 - [ ] P1: EventBus spawns a goroutine per subscriber per event; could exhaust resources under load (`pkg/eventbus/eventbus.go`).
 - [ ] P1: EventBus queue growth ignores configured buffer sizes and can be unbounded (`pkg/eventbus/eventbus.go`, `pkg/eventbus/priority_queue.go`).
