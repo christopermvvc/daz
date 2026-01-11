@@ -82,6 +82,7 @@ func New() framework.Plugin {
 		cooldowns:       make(map[string]time.Time),
 		registryLoaded:  false,
 		readyChan:       make(chan struct{}),
+		adminUsers:      make(map[string]bool),
 	}
 }
 
@@ -119,6 +120,7 @@ func NewPlugin(config *Config) *Plugin {
 		cooldowns:       make(map[string]time.Time),
 		registryLoaded:  false,
 		readyChan:       make(chan struct{}),
+		adminUsers:      make(map[string]bool),
 	}
 }
 

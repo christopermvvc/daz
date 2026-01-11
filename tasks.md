@@ -59,7 +59,7 @@
 - [x] P2: Missing config file path is silently ignored; typos run with defaults (`internal/config/config.go`).
 
 ## Issue Inventory (Prioritized - Feature/Command Scan)
-- [ ] P0: EventFilter admin user map is not initialized before loading (`internal/plugins/eventfilter/plugin.go`).
+- [x] P0: EventFilter admin user map is not initialized before loading (`internal/plugins/eventfilter/plugin.go`).
 - [ ] P1: Command plugins ignore event bus registration/subscription failures (`internal/plugins/commands/fortune/plugin.go`, `internal/plugins/commands/random/plugin.go`, `internal/plugins/commands/weather/plugin.go`).
 - [ ] P1: Weather command uses unchecked type assertions on external JSON (`internal/plugins/commands/weather/plugin.go`).
 - [ ] P1: Seen/Greeter commands assume `req.Data.Command` is non-nil (`internal/plugins/commands/seen/plugin.go`, `internal/plugins/greeter/plugin.go`).
