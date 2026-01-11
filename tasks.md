@@ -55,5 +55,5 @@
 - [x] P0: Gallery generator `resetGitState` can wipe unintended repos if misconfigured output path points at a real repo (`internal/plugins/gallery/generator.go`).
 - [x] P1: EventFilter admin file read failure leaves no admins and blocks admin-only commands (`internal/plugins/eventfilter/plugin.go`).
 - [x] P1: Greeter PM send ignores event bus errors, risking silent message loss (`internal/plugins/greeter/plugin.go`).
-- [ ] P1: `scripts/run-console.sh` `.env` parsing is unsafe for quoted values/spaces (`scripts/run-console.sh`).
+- [x] P1: `scripts/run-console.sh` `.env` parsing is unsafe for quoted values/spaces (`scripts/run-console.sh`).
 - [ ] P2: Missing config file path is silently ignored; typos run with defaults (`internal/config/config.go`).

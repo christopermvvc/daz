@@ -48,7 +48,9 @@ get_file_size_kb() {
 
 # Source environment variables if .env file exists
 if [ -f .env ]; then
-    export $(cat .env | grep -v '^#' | xargs)
+    set -a
+    . ./.env
+    set +a
 fi
 
 # Validate required environment variables
