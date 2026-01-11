@@ -871,6 +871,9 @@ func (p *Plugin) handleGreeterCommand(event framework.Event) error {
 	}
 
 	req := dataEvent.Data.PluginRequest
+	if req.Data == nil || req.Data.Command == nil {
+		return nil
+	}
 	cmd := req.Data.Command
 
 	// Extract command context

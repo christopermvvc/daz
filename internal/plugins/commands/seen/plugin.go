@@ -137,6 +137,9 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	if dataEvent.Data == nil || dataEvent.Data.PluginRequest == nil {
 		return nil
 	}
+	if dataEvent.Data.PluginRequest.Data == nil || dataEvent.Data.PluginRequest.Data.Command == nil {
+		return nil
+	}
 
 	p.wg.Add(1)
 	go func() {
