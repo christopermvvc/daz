@@ -44,7 +44,7 @@
 - [x] P0: EventBus response channel cleanup may race with `DeliverResponse`, risking send-on-closed panic (`pkg/eventbus/eventbus.go`).
 - [ ] P1: EventBus spawns a goroutine per subscriber per event; could exhaust resources under load (`pkg/eventbus/eventbus.go`).
 - [ ] P1: EventBus queue growth ignores configured buffer sizes and can be unbounded (`pkg/eventbus/eventbus.go`, `pkg/eventbus/priority_queue.go`).
-- [ ] P0: `processRoomEvents` reads from `EventChan` without handling close, risking nil event panics (`internal/core/room_manager.go`).
+- [x] P0: `processRoomEvents` reads from `EventChan` without handling close, risking nil event panics (`internal/core/room_manager.go`).
 - [ ] P1: Reconnect path starts a new `processRoomEvents` goroutine on each connect (possible duplicate handlers) (`internal/core/room_manager.go`).
 - [ ] P1: Config validation requires credentials even though anonymous joins are supported (`internal/config/config.go`, `internal/core/room_manager.go`).
 - [ ] P0: WebSocket client debug logging may include login payloads (credentials) when debug enabled (`pkg/cytube/websocket_client.go`).

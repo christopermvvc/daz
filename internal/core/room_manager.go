@@ -239,7 +239,12 @@ func (rm *RoomManager) processRoomEvents(roomID string) {
 		select {
 		case <-rm.ctx.Done():
 			return
-		case event := <-conn.EventChan:
+		case event, ok := <-conn.EventChan:
+			if !ok {
+				logger.Warn("RoomManager", "Room '%s': Event channel closed", roomID)
+				return
+			}
+
 			// Events from Cytube should already have channel name set
 			// For events that don't, we wrap them in a CytubeEvent
 			if cytubeEvent, ok := event.(*framework.CytubeEvent); ok {
