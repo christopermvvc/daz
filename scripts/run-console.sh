@@ -1,6 +1,13 @@
 #!/bin/bash
 # Run Daz in console with output logging to file
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+DATA_DIR="$PROJECT_ROOT/data"
+LOG_DIR="$DATA_DIR/logs"
+LOG_ARCHIVE_DIR="$LOG_DIR/previous_runs"
+TMP_DIR="$DATA_DIR/tmp"
+
 # Log rotation configuration
 MAX_LOG_AGE_DAYS=7
 MAX_TOTAL_SIZE_MB=25
@@ -8,8 +15,8 @@ MAX_LOG_SIZE_KB=256
 
 # Function to delete logs older than MAX_LOG_AGE_DAYS
 cleanup_old_logs() {
-    find logs/ -name "daz_*.log" -type f -mtime +$MAX_LOG_AGE_DAYS -delete 2>/dev/null
-    find logs/previous_runs/ -name "daz_*.log" -type f -mtime +$MAX_LOG_AGE_DAYS -delete 2>/dev/null
+    find "$LOG_DIR" -name "daz_*.log" -type f -mtime +$MAX_LOG_AGE_DAYS -delete 2>/dev/null
+    find "$LOG_ARCHIVE_DIR" -name "daz_*.log" -type f -mtime +$MAX_LOG_AGE_DAYS -delete 2>/dev/null
 }
 
 # Function to enforce total size limit
@@ -17,15 +24,14 @@ cleanup_by_size() {
     local max_size_bytes=$((MAX_TOTAL_SIZE_MB * 1024 * 1024))
     
     while true; do
-        # Calculate total size of all log files in both logs/ and logs/previous_runs/
-        local total_size=$(find logs/ logs/previous_runs/ -name "daz_*.log" -type f -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || echo 0)
+        local total_size=$(find "$LOG_DIR" "$LOG_ARCHIVE_DIR" -name "daz_*.log" -type f -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || echo 0)
         
         if [ "$total_size" -le "$max_size_bytes" ]; then
             break
         fi
         
         # Find and delete the oldest log file (prioritize previous_runs)
-        local oldest_log=$(find logs/previous_runs/ logs/ -name "daz_*.log" -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | head -1 | cut -d' ' -f2-)
+        local oldest_log=$(find "$LOG_ARCHIVE_DIR" "$LOG_DIR" -name "daz_*.log" -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | head -1 | cut -d' ' -f2-)
         if [ -n "$oldest_log" ]; then
             rm -f "$oldest_log"
             echo "Removed old log to maintain size limit: $oldest_log"
@@ -69,17 +75,15 @@ if [ -z "$DAZ_CYTUBE_CHANNEL" ]; then
     exit 1
 fi
 
-# Create logs directory structure if it doesn't exist
-mkdir -p logs
-mkdir -p logs/previous_runs
+mkdir -p "$LOG_DIR" "$LOG_ARCHIVE_DIR" "$TMP_DIR"
 
 # Function to move all existing logs to previous_runs on fresh start
 move_logs_to_previous_runs() {
-    local log_count=$(find logs/ -maxdepth 1 -name "daz_*.log" -type f 2>/dev/null | wc -l)
+    local log_count=$(find "$LOG_DIR" -maxdepth 1 -name "daz_*.log" -type f 2>/dev/null | wc -l)
     
     if [ "$log_count" -gt 0 ]; then
-        echo "Moving $log_count previous log(s) to logs/previous_runs/"
-        find logs/ -maxdepth 1 -name "daz_*.log" -type f -exec mv {} logs/previous_runs/ \; 2>/dev/null
+        echo "Moving $log_count previous log(s) to $LOG_ARCHIVE_DIR"
+        find "$LOG_DIR" -maxdepth 1 -name "daz_*.log" -type f -exec mv {} "$LOG_ARCHIVE_DIR" \; 2>/dev/null
     fi
 }
 
@@ -98,7 +102,7 @@ if [ ! -f "bin/daz" ]; then
 fi
 
 # Generate log filename with timestamp
-LOG_FILE="logs/daz_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="$LOG_DIR/daz_$(date +%Y%m%d_%H%M%S).log"
 
 echo "Starting Daz..."
 echo "Logging output to: $LOG_FILE"
@@ -119,7 +123,7 @@ rotate_log_if_needed() {
     
     if [ "$size_kb" -ge "$MAX_LOG_SIZE_KB" ]; then
         # Generate new log filename
-        local new_log="logs/daz_$(date +%Y%m%d_%H%M%S).log"
+        local new_log="$LOG_DIR/daz_$(date +%Y%m%d_%H%M%S).log"
         echo "" >> "$current_log"
         echo "--- Log rotated due to size limit (${size_kb}KB >= ${MAX_LOG_SIZE_KB}KB) ---" >> "$current_log"
         echo "--- Continuing in $new_log ---" >> "$current_log"
@@ -131,7 +135,7 @@ rotate_log_if_needed() {
 }
 
 # Create a named pipe for log rotation
-PIPE_FILE="/tmp/daz_log_pipe_$$"
+PIPE_FILE="$TMP_DIR/daz_log_pipe_$$"
 mkfifo "$PIPE_FILE"
 
 # Clean up pipe on exit

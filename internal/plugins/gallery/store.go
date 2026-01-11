@@ -3,6 +3,9 @@ package gallery
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
@@ -65,34 +68,378 @@ func (s *Store) InitializeSchema() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Note: Schema is created by SQL migration file 027_gallery_system.sql
-	// Just verify the tables exist
+	tablesReady, err := s.galleryTablesReady(ctx)
+	if err != nil {
+		return err
+	}
+
+	functionsReady, err := s.galleryFunctionsReady(ctx)
+	if err != nil {
+		return err
+	}
+
+	if !tablesReady || !functionsReady {
+		logger.Warn(s.name, "Gallery schema incomplete. Applying migrations...")
+		if err := s.applyGalleryMigrations(ctx); err != nil {
+			return err
+		}
+
+		tablesReady, err = s.galleryTablesReady(ctx)
+		if err != nil {
+			return err
+		}
+		functionsReady, err = s.galleryFunctionsReady(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
+	if !tablesReady || !functionsReady {
+		return fmt.Errorf("gallery schema not initialized")
+	}
+
+	logger.Debug(s.name, "Gallery database schema verified")
+	return nil
+}
+
+func (s *Store) galleryTablesReady(ctx context.Context) (bool, error) {
 	query := `
-		SELECT COUNT(*) FROM information_schema.tables 
-		WHERE table_schema = 'public' 
+		SELECT COUNT(*) FROM information_schema.tables
+		WHERE table_schema = 'public'
 		AND table_name IN ('daz_gallery_images', 'daz_gallery_locks', 'daz_gallery_stats')
 	`
 
 	var count int
 	rows, err := s.sqlClient.QueryContext(ctx, query)
 	if err != nil {
-		return fmt.Errorf("failed to verify schema: %w", err)
+		return false, fmt.Errorf("failed to verify gallery tables: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	if rows.Next() {
 		if err := rows.Scan(&count); err != nil {
-			return fmt.Errorf("failed to scan count: %w", err)
+			return false, fmt.Errorf("failed to scan gallery table count: %w", err)
 		}
 	}
 
-	if count < 3 {
-		logger.Warn(s.name, "Gallery tables not found. Please run SQL migration 027_gallery_system.sql")
-		return fmt.Errorf("gallery tables not initialized")
+	return count >= 3, nil
+}
+
+func (s *Store) galleryFunctionsReady(ctx context.Context) (bool, error) {
+	requiredFunctions := []string{
+		"add_gallery_image",
+		"get_images_for_health_check",
+		"mark_image_for_health_check",
+		"restore_dead_image",
+		"update_dead_image_recovery",
 	}
 
-	logger.Debug(s.name, "Gallery database schema verified")
+	for _, name := range requiredFunctions {
+		exists, err := s.galleryFunctionExists(ctx, name)
+		if err != nil {
+			return false, err
+		}
+		if !exists {
+			return false, nil
+		}
+	}
+
+	constraintReady, err := s.galleryUniqueConstraintReady(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !constraintReady {
+		return false, nil
+	}
+
+	definitionReady, err := s.galleryFunctionDefinitionReady(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !definitionReady {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func (s *Store) galleryFunctionExists(ctx context.Context, name string) (bool, error) {
+	query := `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_proc p
+			JOIN pg_namespace n ON n.oid = p.pronamespace
+			WHERE n.nspname = 'public'
+			AND p.proname = $1
+		)
+	`
+
+	var exists bool
+	rows, err := s.sqlClient.QueryContext(ctx, query, name)
+	if err != nil {
+		return false, fmt.Errorf("failed to query function %s: %w", name, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	if rows.Next() {
+		if err := rows.Scan(&exists); err != nil {
+			return false, fmt.Errorf("failed to scan function %s: %w", name, err)
+		}
+	}
+
+	return exists, nil
+}
+
+func (s *Store) galleryUniqueConstraintReady(ctx context.Context) (bool, error) {
+	query := `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_constraint c
+			JOIN pg_class t ON t.oid = c.conrelid
+			WHERE t.relname = 'daz_gallery_images'
+			AND c.conname = 'daz_gallery_images_username_url_key'
+		)
+	`
+
+	var exists bool
+	rows, err := s.sqlClient.QueryContext(ctx, query)
+	if err != nil {
+		return false, fmt.Errorf("failed to query gallery constraint: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	if rows.Next() {
+		if err := rows.Scan(&exists); err != nil {
+			return false, fmt.Errorf("failed to scan gallery constraint: %w", err)
+		}
+	}
+
+	return exists, nil
+}
+
+func (s *Store) galleryFunctionDefinitionReady(ctx context.Context) (bool, error) {
+	query := `
+		SELECT pg_get_functiondef(p.oid)
+		FROM pg_proc p
+		JOIN pg_namespace n ON n.oid = p.pronamespace
+		WHERE n.nspname = 'public'
+		AND p.proname = 'add_gallery_image'
+		AND p.pronargs = 5
+		AND p.proargtypes::text = '1043 25 1043 25 23'
+		LIMIT 1
+	`
+
+	var definition string
+	rows, err := s.sqlClient.QueryContext(ctx, query)
+	if err != nil {
+		return false, fmt.Errorf("failed to query function definition: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	if rows.Next() {
+		if err := rows.Scan(&definition); err != nil {
+			return false, fmt.Errorf("failed to scan function definition: %w", err)
+		}
+	}
+
+	if definition == "" {
+		return false, nil
+	}
+
+	return strings.Contains(definition, "ON CONFLICT (username, url)"), nil
+}
+
+func (s *Store) gallerySchemaReady(ctx context.Context) (bool, error) {
+	tablesReady, err := s.galleryTablesReady(ctx)
+	if err != nil {
+		return false, err
+	}
+	functionsReady, err := s.galleryFunctionsReady(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	return tablesReady && functionsReady, nil
+}
+
+func (s *Store) applyGalleryMigrations(ctx context.Context) error {
+	migrationFiles := []string{
+		"scripts/sql/027_gallery_system.sql",
+		"scripts/sql/028_fix_gallery_race_condition.sql",
+		"scripts/sql/029_graveyard_recovery_procedure.sql",
+		"scripts/sql/030_fix_gallery_duplicates.sql",
+	}
+
+	for _, migrationFile := range migrationFiles {
+		migrationSQL, err := s.loadMigrationSQL(migrationFile)
+		if err != nil {
+			return err
+		}
+		if migrationSQL == "" {
+			continue
+		}
+
+		if _, err := s.sqlClient.ExecContext(ctx, migrationSQL); err != nil {
+			ready, readyErr := s.gallerySchemaReady(ctx)
+			if readyErr != nil {
+				return fmt.Errorf("failed to apply migration %s: %w", migrationFile, err)
+			}
+			if !ready {
+				return fmt.Errorf("failed to apply migration %s: %w", migrationFile, err)
+			}
+
+			logger.Warn(s.name, "Gallery migration %s failed but schema is present: %v", migrationFile, err)
+		}
+	}
+
 	return nil
+}
+
+func (s *Store) loadMigrationSQL(relativePath string) (string, error) {
+	path, err := s.resolveMigrationPath(relativePath)
+	if err != nil {
+		return "", err
+	}
+
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read migration %s: %w", path, err)
+	}
+
+	return string(contents), nil
+}
+
+func (s *Store) resolveMigrationPath(relativePath string) (string, error) {
+	candidates := []string{relativePath}
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(cwd, relativePath))
+	}
+	if execPath, err := os.Executable(); err == nil {
+		execDir := filepath.Dir(execPath)
+		candidates = append(candidates,
+			filepath.Join(execDir, relativePath),
+			filepath.Join(execDir, "..", relativePath),
+		)
+	}
+
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			return filepath.Clean(candidate), nil
+		}
+	}
+
+	return "", fmt.Errorf("migration file not found: %s", relativePath)
+}
+
+func (s *Store) ensureGallerySchema(ctx context.Context) error {
+	migrationCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	return s.applyGalleryMigrations(migrationCtx)
+}
+
+func (s *Store) shouldRetryMigration(err error, functionName string) bool {
+	if err == nil {
+		return false
+	}
+
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "no unique or exclusion constraint matching the ON CONFLICT specification") {
+		return true
+	}
+	if !strings.Contains(errMsg, "does not exist") {
+		return false
+	}
+	if functionName == "" {
+		return true
+	}
+
+	return strings.Contains(errMsg, functionName)
+}
+
+func (s *Store) queryWithSchemaRetry(ctx context.Context, query string, functionName string, args ...interface{}) (*framework.QueryRows, error) {
+	rows, err := s.sqlClient.QueryContext(ctx, query, args...)
+	if err == nil {
+		return rows, nil
+	}
+	if !s.shouldRetryMigration(err, functionName) {
+		return nil, err
+	}
+	if err := s.ensureGallerySchema(ctx); err != nil {
+		return nil, err
+	}
+
+	return s.sqlClient.QueryContext(ctx, query, args...)
+}
+
+func (s *Store) execWithSchemaRetry(ctx context.Context, query string, functionName string, args ...interface{}) error {
+	_, err := s.sqlClient.ExecContext(ctx, query, args...)
+	if err == nil {
+		return nil
+	}
+	if !s.shouldRetryMigration(err, functionName) {
+		return err
+	}
+	if err := s.ensureGallerySchema(ctx); err != nil {
+		return err
+	}
+
+	_, err = s.sqlClient.ExecContext(ctx, query, args...)
+	return err
+}
+
+func (s *Store) isGalleryLocked(ctx context.Context, username, channel string) (bool, error) {
+	query := `
+		SELECT EXISTS(
+			SELECT 1 FROM daz_gallery_locks
+			WHERE username = $1 AND channel = $2 AND is_locked = true
+		)
+	`
+
+	var locked bool
+	rows, err := s.sqlClient.QueryContext(ctx, query, username, channel)
+	if err != nil {
+		return false, fmt.Errorf("failed to check gallery lock: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	if rows.Next() {
+		if err := rows.Scan(&locked); err != nil {
+			return false, fmt.Errorf("failed to scan gallery lock: %w", err)
+		}
+	}
+
+	return locked, nil
+}
+
+func (s *Store) isImageLocked(ctx context.Context, imageID int64) (bool, error) {
+	query := `
+		SELECT EXISTS(
+			SELECT 1
+			FROM daz_gallery_images gi
+			JOIN daz_gallery_locks gl
+				ON gl.username = gi.username AND gl.channel = gi.channel
+			WHERE gi.id = $1 AND gl.is_locked = true
+		)
+	`
+
+	var locked bool
+	rows, err := s.sqlClient.QueryContext(ctx, query, imageID)
+	if err != nil {
+		return false, fmt.Errorf("failed to check image lock: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	if rows.Next() {
+		if err := rows.Scan(&locked); err != nil {
+			return false, fmt.Errorf("failed to scan image lock: %w", err)
+		}
+	}
+
+	return locked, nil
 }
 
 // AddImage adds an image to a user's gallery
@@ -100,11 +447,19 @@ func (s *Store) AddImage(username, url, channel string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Use the stored function to handle limit enforcement
+	locked, err := s.isGalleryLocked(ctx, username, channel)
+	if err != nil {
+		return err
+	}
+	if locked {
+		logger.Debug(s.name, "Gallery locked for user %s in channel %s; skipping add", username, channel)
+		return nil
+	}
+
 	query := `SELECT add_gallery_image($1, $2, $3, NULL, $4)`
 
 	var imageID int64
-	rows, err := s.sqlClient.QueryContext(ctx, query, username, url, channel, s.maxImages)
+	rows, err := s.queryWithSchemaRetry(ctx, query, "add_gallery_image", username, url, channel, s.maxImages)
 	if err != nil {
 		return fmt.Errorf("failed to add image: %w", err)
 	}
@@ -137,11 +492,8 @@ func (s *Store) GetUserImages(username, channel string) ([]*GalleryImage, error)
 			       gi.pruned_reason, gi.original_poster, gi.original_posted_at,
 			       gi.most_recent_poster, gi.image_title
 			FROM daz_gallery_images gi
-			LEFT JOIN daz_gallery_locks gl
-			  ON gi.username = gl.username AND gi.channel = gl.channel
 			WHERE gi.username = $1
 			  AND gi.is_active = true
-			  AND (gl.is_locked IS NULL OR gl.is_locked = false)
 			ORDER BY gi.posted_at DESC
 		`
 
@@ -315,7 +667,7 @@ func (s *Store) GetImagesForHealthCheck(limit int) ([]*GalleryImage, error) {
 
 	query := `SELECT * FROM get_images_for_health_check($1)`
 
-	rows, err := s.sqlClient.QueryContext(ctx, query, limit)
+	rows, err := s.queryWithSchemaRetry(ctx, query, "get_images_for_health_check", limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get images for health check: %w", err)
 	}
@@ -339,9 +691,18 @@ func (s *Store) MarkImageHealthCheck(imageID int64, failed bool, errorMsg string
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	locked, err := s.isImageLocked(ctx, imageID)
+	if err != nil {
+		return err
+	}
+	if locked {
+		logger.Debug(s.name, "Gallery locked for image %d; skipping health update", imageID)
+		return nil
+	}
+
 	query := `SELECT mark_image_for_health_check($1, $2, $3)`
 
-	_, err := s.sqlClient.ExecContext(ctx, query, imageID, failed, errorMsg)
+	err = s.execWithSchemaRetry(ctx, query, "mark_image_for_health_check", imageID, failed, errorMsg)
 	if err != nil {
 		return fmt.Errorf("failed to mark health check: %w", err)
 	}
@@ -357,7 +718,7 @@ func (s *Store) RestoreDeadImage(imageID int64) (bool, error) {
 	query := `SELECT restore_dead_image($1, $2)`
 
 	var restored bool
-	rows, err := s.sqlClient.QueryContext(ctx, query, imageID, s.maxImages)
+	rows, err := s.queryWithSchemaRetry(ctx, query, "restore_dead_image", imageID, s.maxImages)
 	if err != nil {
 		return false, fmt.Errorf("failed to restore image: %w", err)
 	}
@@ -525,7 +886,7 @@ func (s *Store) RecoverDeadImage(imageID int64) (bool, error) {
 	// Attempt to recover the image using the stored function
 	recoverQuery := `SELECT restore_dead_image($1, $2)`
 	var recovered bool
-	rows2, err := s.sqlClient.QueryContext(ctx, recoverQuery, imageID, s.maxImages)
+	rows2, err := s.queryWithSchemaRetry(ctx, recoverQuery, "restore_dead_image", imageID, s.maxImages)
 	if err != nil {
 		return false, fmt.Errorf("failed to recover image: %w", err)
 	}
@@ -542,7 +903,7 @@ func (s *Store) RecoverDeadImage(imageID int64) (bool, error) {
 	} else {
 		// Update next check time using stored procedure for exponential backoff
 		updateQuery := `SELECT update_dead_image_recovery($1)`
-		if _, err := s.sqlClient.ExecContext(ctx, updateQuery, imageID); err != nil {
+		if err := s.execWithSchemaRetry(ctx, updateQuery, "update_dead_image_recovery", imageID); err != nil {
 			logger.Error("gallery", "Failed to update next check time for image %d: %v", imageID, err)
 		}
 	}

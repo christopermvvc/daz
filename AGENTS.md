@@ -132,7 +132,7 @@
 - Create a detailed commit and push after every single revision or code change.
 
 ## Git Credentials
-- Deploy key: `/home/user/Documents/daz/dazza_deploy_key` (private) and `/home/user/Documents/daz/dazza_deploy_key.pub` (public).
+- Deploy key: `./dazza_deploy_key` (private) and `./dazza_deploy_key.pub` (public).
 - Git username: `hildolfr`.
 - Git email: `svhildolfr@gmail.com`.
 

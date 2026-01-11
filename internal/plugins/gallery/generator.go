@@ -32,6 +32,20 @@ type UserGalleryData struct {
 
 // NewHTMLGenerator creates a new HTML generator
 func NewHTMLGenerator(store *Store, config *Config) *HTMLGenerator {
+	outputPath := filepath.Clean(config.HTMLOutputPath)
+	if outputPath == "" || outputPath == "." {
+		outputPath = filepath.Join(".", "data", "galleries")
+	}
+	if !filepath.IsAbs(outputPath) {
+		absPath, err := filepath.Abs(outputPath)
+		if err != nil {
+			logger.Warn("gallery", "Failed to resolve html output path %s: %v", outputPath, err)
+		} else {
+			outputPath = absPath
+		}
+	}
+	config.HTMLOutputPath = outputPath
+
 	return &HTMLGenerator{
 		store:  store,
 		config: config,
@@ -1073,10 +1087,52 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 		return nil
 	}
 
-	// Helper for authenticated push only
+	resolveDeployKey := func() (string, error) {
+		candidates := []string{
+			"dazza_deploy_key",
+		}
+		cwd, err := os.Getwd()
+		if err == nil {
+			candidates = append([]string{filepath.Join(cwd, "dazza_deploy_key")}, candidates...)
+		}
+		executablePath, err := os.Executable()
+		if err == nil {
+			execDir := filepath.Dir(executablePath)
+			candidates = append(candidates, filepath.Join(execDir, "dazza_deploy_key"))
+		}
+
+		for _, candidate := range candidates {
+			if candidate == "" {
+				continue
+			}
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, nil
+			}
+		}
+
+		return "", fmt.Errorf("deploy key not found")
+	}
+
 	runAuthPush := func() error {
 		if githubToken == "" {
-			return fmt.Errorf("no GitHub token configured")
+			deployKey, err := resolveDeployKey()
+			if err != nil {
+				return fmt.Errorf("no GitHub token configured")
+			}
+			cmd := exec.CommandContext(ctx, "git", "push", "origin", "gh-pages", "--force")
+			cmd.Dir = g.config.HTMLOutputPath
+			cmd.Env = append(os.Environ(),
+				"GIT_TERMINAL_PROMPT=0",
+				"GIT_SSH_COMMAND=ssh -i "+deployKey+" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new",
+			)
+
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("push failed: %w", err)
+			}
+
+			logger.Debug("gallery", "Push output: %s", string(output))
+			return nil
 		}
 
 		// Use token directly in URL for authentication
@@ -1084,13 +1140,11 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 		cmd := exec.CommandContext(ctx, "git", "push", authURL, "gh-pages", "--force")
 		cmd.Dir = g.config.HTMLOutputPath
 
-		// Suppress credential prompts
 		cmd.Env = append(os.Environ(),
 			"GIT_TERMINAL_PROMPT=0")
 
 		output, err := cmd.CombinedOutput()
 		if err != nil {
-			// Don't include token in error message
 			return fmt.Errorf("push failed: %w", err)
 		}
 
@@ -1115,8 +1169,10 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 		}
 	}
 
-	// Use clean URL without token
 	remoteURL := "https://github.com/hildolfr/daz.git"
+	if githubToken == "" {
+		remoteURL = "git@github.com:hildolfr/daz.git"
+	}
 
 	// Check if remote exists
 	if err := runGitCmd("remote", "get-url", "origin"); err != nil {

@@ -14,13 +14,30 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuration
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+DATA_DIR="$PROJECT_ROOT/data"
+LOG_DIR="$DATA_DIR/logs"
+TMP_DIR="$DATA_DIR/tmp"
+
 DB_NAME="${DAZ_DB_NAME:-daz}"
 DB_USER="${DAZ_DB_USER:-***REMOVED***}"
 DB_PASSWORD="${DAZ_DB_PASSWORD:?Error: DAZ_DB_PASSWORD environment variable is required}"
 CYTUBE_USERNAME="${DAZ_CYTUBE_USERNAME:?Error: DAZ_CYTUBE_USERNAME environment variable is required}"
 CYTUBE_PASSWORD="${DAZ_CYTUBE_PASSWORD:?Error: DAZ_CYTUBE_PASSWORD environment variable is required}"
-LOG_FILE="/tmp/daz-with-retry.log"
-PID_FILE="/tmp/daz-with-retry.pid"
+
+MAX_LOG_AGE_DAYS=7
+MAX_TOTAL_SIZE_MB=25
+MAX_LOG_SIZE_KB=256
+
+mkdir -p "$LOG_DIR" "$TMP_DIR"
+
+LOG_FILE="$LOG_DIR/daz-with-retry_$(date +%Y%m%d_%H%M%S).log"
+PID_FILE="$TMP_DIR/daz-with-retry.pid"
+CONFIG_FILE="$(mktemp "$TMP_DIR/daz-with-retry-config.XXXXXX.json")"
+
+cleanup_old_logs
+cleanup_by_size
 
 # Function to print colored output
 print_status() {
@@ -33,6 +50,56 @@ print_error() {
 
 print_info() {
     echo -e "${YELLOW}[INFO]${NC} $1"
+}
+
+cleanup_old_logs() {
+    find "$LOG_DIR" -name "daz-with-retry_*.log" -type f -mtime +$MAX_LOG_AGE_DAYS -delete 2>/dev/null
+}
+
+cleanup_by_size() {
+    local max_size_bytes=$((MAX_TOTAL_SIZE_MB * 1024 * 1024))
+
+    while true; do
+        local total_size=$(find "$LOG_DIR" -name "daz-with-retry_*.log" -type f -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || echo 0)
+
+        if [ "$total_size" -le "$max_size_bytes" ]; then
+            break
+        fi
+
+        local oldest_log=$(find "$LOG_DIR" -name "daz-with-retry_*.log" -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | head -1 | cut -d' ' -f2-)
+        if [ -n "$oldest_log" ]; then
+            rm -f "$oldest_log"
+            print_info "Removed old log to maintain size limit: $oldest_log"
+        else
+            break
+        fi
+    done
+}
+
+get_file_size_kb() {
+    local file="$1"
+    if [ -f "$file" ]; then
+        local size_bytes=$(stat -c%s "$file" 2>/dev/null || echo 0)
+        echo $((size_bytes / 1024))
+    else
+        echo 0
+    fi
+}
+
+rotate_log_if_needed() {
+    local current_log="$1"
+    local size_kb=$(get_file_size_kb "$current_log")
+
+    if [ "$size_kb" -ge "$MAX_LOG_SIZE_KB" ]; then
+        local new_log="$LOG_DIR/daz-with-retry_$(date +%Y%m%d_%H%M%S).log"
+        echo "" >> "$current_log"
+        echo "--- Log rotated due to size limit (${size_kb}KB >= ${MAX_LOG_SIZE_KB}KB) ---" >> "$current_log"
+        echo "--- Continuing in $new_log ---" >> "$current_log"
+        echo "--- Continued from $current_log ---" > "$new_log"
+        echo "$new_log"
+    else
+        echo "$current_log"
+    fi
 }
 
 # Function to check if daz is running
@@ -68,7 +135,7 @@ fi
 
 # Create configuration
 print_status "Creating configuration with retry enabled..."
-cat > /tmp/daz-with-retry-config.json << EOF
+cat > "$CONFIG_FILE" << EOF
 {
   "core": {
     "rooms": [
@@ -178,7 +245,29 @@ export DAZ_DB_PASSWORD="$DB_PASSWORD"
 export DAZ_DB_HOST="localhost"
 export DAZ_DB_PORT="5432"
 
-./bin/daz -config /tmp/daz-with-retry-config.json > "$LOG_FILE" 2>&1 &
+PIPE_FILE="$TMP_DIR/daz-with-retry_pipe_$$"
+mkfifo "$PIPE_FILE"
+trap "rm -f $PIPE_FILE $CONFIG_FILE" EXIT INT TERM
+
+(
+    current_log="$LOG_FILE"
+    while IFS= read -r line; do
+        echo "$line" | tee -a "$current_log"
+
+        if [ $((RANDOM % 100)) -eq 0 ]; then
+            new_log=$(rotate_log_if_needed "$current_log")
+            if [ "$new_log" != "$current_log" ]; then
+                print_info "Rotating log file to: $new_log"
+                current_log="$new_log"
+                cleanup_by_size
+            fi
+        fi
+    done < "$PIPE_FILE"
+) &
+
+LOG_WRITER_PID=$!
+
+./bin/daz -config "$CONFIG_FILE" > "$PIPE_FILE" 2>&1 &
 DAZ_PID=$!
 echo $DAZ_PID > "$PID_FILE"
 
@@ -194,7 +283,7 @@ fi
 
 print_status "✅ Daz is running (PID: $DAZ_PID)"
 print_info "Log file: $LOG_FILE"
-print_info "Configuration: /tmp/daz-with-retry-config.json"
+print_info "Configuration: $CONFIG_FILE"
 
 # Check if retry plugin started
 if grep -q "Retry.*Started" "$LOG_FILE"; then

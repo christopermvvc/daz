@@ -17,16 +17,18 @@ import (
 type HealthChecker struct {
 	store      *Store
 	config     *Config
+	onUpdate   func()
 	httpClient *http.Client
 	mu         sync.Mutex
 	checking   bool
 }
 
 // NewHealthChecker creates a new health checker
-func NewHealthChecker(store *Store, config *Config) *HealthChecker {
+func NewHealthChecker(store *Store, config *Config, onUpdate func()) *HealthChecker {
 	return &HealthChecker{
-		store:  store,
-		config: config,
+		store:    store,
+		config:   config,
+		onUpdate: onUpdate,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -302,9 +304,12 @@ func (h *HealthChecker) markImageHealthy(imageID int64) {
 		return
 	}
 
-	// Otherwise just mark as healthy (reset failure count)
 	if err := h.store.MarkImageHealthCheck(imageID, false, ""); err != nil {
 		logger.Error("gallery", "Failed to mark image %d as healthy: %v", imageID, err)
+		return
+	}
+	if h.onUpdate != nil {
+		h.onUpdate()
 	}
 }
 
@@ -312,5 +317,9 @@ func (h *HealthChecker) markImageHealthy(imageID int64) {
 func (h *HealthChecker) markImageFailed(imageID int64, reason string) {
 	if err := h.store.MarkImageHealthCheck(imageID, true, reason); err != nil {
 		logger.Error("gallery", "Failed to mark image %d as failed: %v", imageID, err)
+		return
+	}
+	if h.onUpdate != nil {
+		h.onUpdate()
 	}
 }

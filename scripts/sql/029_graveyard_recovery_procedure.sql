@@ -41,3 +41,5 @@ $$ LANGUAGE plpgsql;
 CREATE INDEX IF NOT EXISTS idx_gallery_recovery_check 
 ON daz_gallery_images(is_active, next_check_at)
 WHERE is_active = FALSE AND pruned_reason IS NOT NULL;
+
+GRANT EXECUTE ON FUNCTION update_dead_image_recovery(BIGINT) TO daz_user;

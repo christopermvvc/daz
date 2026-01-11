@@ -2,13 +2,41 @@
 -- Users should not be able to add the same URL multiple times across any channel
 -- But different users can have the same URL
 
--- First, drop the existing constraints
-ALTER TABLE daz_gallery_images DROP CONSTRAINT IF EXISTS daz_gallery_images_url_channel_key;
-ALTER TABLE daz_gallery_images DROP CONSTRAINT IF EXISTS unique_user_channel_image;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'daz_gallery_images'
+    ) THEN
+        IF EXISTS (
+            SELECT 1 FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            WHERE t.relname = 'daz_gallery_images'
+              AND c.conname = 'daz_gallery_images_url_channel_key'
+        ) THEN
+            ALTER TABLE daz_gallery_images DROP CONSTRAINT daz_gallery_images_url_channel_key;
+        END IF;
 
--- Add new constraint: unique per username+url (regardless of channel)
-ALTER TABLE daz_gallery_images 
-ADD CONSTRAINT daz_gallery_images_username_url_key UNIQUE (username, url);
+        IF EXISTS (
+            SELECT 1 FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            WHERE t.relname = 'daz_gallery_images'
+              AND c.conname = 'unique_user_channel_image'
+        ) THEN
+            ALTER TABLE daz_gallery_images DROP CONSTRAINT unique_user_channel_image;
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            WHERE t.relname = 'daz_gallery_images'
+              AND c.conname = 'daz_gallery_images_username_url_key'
+        ) THEN
+            ALTER TABLE daz_gallery_images
+            ADD CONSTRAINT daz_gallery_images_username_url_key UNIQUE (username, url);
+        END IF;
+    END IF;
+END $$;
 
 -- Update the add_gallery_image function to check for duplicates across all channels
 CREATE OR REPLACE FUNCTION add_gallery_image(

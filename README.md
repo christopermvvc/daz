@@ -233,18 +233,18 @@ func (p *MyPlugin) Init(eventBus framework.EventBus, config json.RawMessage) err
 
 ## 🚀 Deployment
 
-### Systemd Service
+### User Service
 
 ```bash
-# Copy the service file
-sudo cp scripts/daz.service /etc/systemd/system/
+# Create a user service file
+mkdir -p ~/.config/systemd/user
 
 # Enable and start the service
-sudo systemctl enable daz
-sudo systemctl start daz
+systemctl --user enable daz
+systemctl --user start daz
 
 # Check status
-sudo systemctl status daz
+systemctl --user status daz
 ```
 
 ### Manual Deployment

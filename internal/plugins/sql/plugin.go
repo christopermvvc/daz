@@ -345,6 +345,7 @@ func (p *Plugin) initializeSchema(ctx context.Context) error {
 			timestamp TIMESTAMP NOT NULL,
 			username VARCHAR(100),
 			message TEXT,
+			message_time BIGINT,
 			video_id VARCHAR(255),
 			video_type VARCHAR(50),
 			title TEXT,
@@ -355,6 +356,7 @@ func (p *Plugin) initializeSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_events_timestamp ON daz_core_events (timestamp)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_channel_type ON daz_core_events (channel_name, event_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_username ON daz_core_events (username)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_events_chatmsg_unique ON daz_core_events (channel_name, message_time, username) WHERE event_type = 'cytube.event.chatMsg'`,
 
 		`CREATE TABLE IF NOT EXISTS daz_chat_log (
 			id BIGSERIAL PRIMARY KEY,
@@ -413,6 +415,8 @@ func (p *Plugin) initializeSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_pm_timestamp ON daz_private_messages (timestamp)`,
 
 		// Migrations to add missing columns
+		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS message_time BIGINT`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_events_chatmsg_unique ON daz_core_events (channel_name, message_time, username) WHERE event_type = 'cytube.event.chatMsg'`,
 		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS video_id VARCHAR(255)`,
 		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS video_type VARCHAR(50)`,
 		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS title TEXT`,
@@ -501,6 +505,18 @@ func (p *Plugin) logEventData(rule LoggerRule, event *framework.DataEvent) error
 	values = append(values, fields.EventType, fields.Timestamp)
 	placeholders = append(placeholders, "$1", "$2")
 	i := 3
+
+	if rule.Table == "daz_core_events" {
+		rawData, err := p.marshalRawData(event.Data)
+		if err != nil {
+			return err
+		}
+
+		columns = append(columns, "raw_data")
+		values = append(values, rawData)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i))
+		i++
+	}
 
 	// Add non-empty fields
 	if fields.Username != "" {
@@ -606,6 +622,18 @@ func (p *Plugin) logEventData(rule LoggerRule, event *framework.DataEvent) error
 
 	metrics.DatabaseQueries.WithLabelValues("insert").Inc()
 	return nil
+}
+
+func (p *Plugin) marshalRawData(data *framework.EventData) ([]byte, error) {
+	if data == nil {
+		return nil, fmt.Errorf("missing event data")
+	}
+
+	if data.RawEvent != nil {
+		return json.Marshal(data.RawEvent)
+	}
+
+	return json.Marshal(data)
 }
 
 func (p *Plugin) extractFieldsForRule(rule LoggerRule, data *framework.EventData) *LogFields {

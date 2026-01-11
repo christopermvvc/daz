@@ -3,6 +3,7 @@ package gallery
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,30 +121,51 @@ func TestAddImageIncludesMaxImages(t *testing.T) {
 		if query == nil {
 			t.Fatal("expected SQLQueryRequest")
 		}
-		if query.Query != "SELECT add_gallery_image($1, $2, $3, NULL, $4)" {
-			t.Fatalf("unexpected query: %s", query.Query)
-		}
-		if len(query.Params) != 4 {
-			t.Fatalf("expected 4 params, got %d", len(query.Params))
-		}
-		if query.Params[3].Value != maxImages {
-			t.Fatalf("expected maxImages %d, got %v", maxImages, query.Params[3].Value)
+
+		if strings.Contains(query.Query, "FROM daz_gallery_locks") {
+			lockedBytes, err := json.Marshal(false)
+			if err != nil {
+				return nil, err
+			}
+
+			return &framework.EventData{
+				SQLQueryResponse: &framework.SQLQueryResponse{
+					ID:            query.ID,
+					CorrelationID: query.CorrelationID,
+					Success:       true,
+					Columns:       []string{"exists"},
+					Rows:          [][]json.RawMessage{{lockedBytes}},
+				},
+			}, nil
 		}
 
-		idBytes, err := json.Marshal(int64(42))
-		if err != nil {
-			return nil, err
+		if query.Query == "SELECT add_gallery_image($1, $2, $3, NULL, $4)" {
+			if len(query.Params) != 4 {
+				t.Fatalf("expected 4 params, got %d", len(query.Params))
+			}
+			if query.Params[3].Value != maxImages {
+				t.Fatalf("expected maxImages %d, got %v", maxImages, query.Params[3].Value)
+			}
+
+			idBytes, err := json.Marshal(int64(42))
+			if err != nil {
+				return nil, err
+			}
+
+			return &framework.EventData{
+				SQLQueryResponse: &framework.SQLQueryResponse{
+					ID:            query.ID,
+					CorrelationID: query.CorrelationID,
+					Success:       true,
+					Columns:       []string{"add_gallery_image"},
+					Rows:          [][]json.RawMessage{{idBytes}},
+				},
+			}, nil
 		}
 
-		return &framework.EventData{
-			SQLQueryResponse: &framework.SQLQueryResponse{
-				ID:            query.ID,
-				CorrelationID: query.CorrelationID,
-				Success:       true,
-				Columns:       []string{"add_gallery_image"},
-				Rows:          [][]json.RawMessage{{idBytes}},
-			},
-		}, nil
+		t.Fatalf("unexpected query: %s", query.Query)
+
+		return nil, nil
 	}
 
 	if err := store.AddImage("tester", "https://example.com/image.jpg", "room"); err != nil {

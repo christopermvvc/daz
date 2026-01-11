@@ -251,6 +251,6 @@ When returning to this project with a new context window:
 
 ## References
 
-- Dazza gallery implementation: `/home/seg/Documents/dazza/src/`
-- Daz plugin examples: `/home/seg/Documents/daz/daz/internal/plugins/`
+- Dazza gallery implementation: `../dazza/src/` (if available alongside this repo)
+- Daz plugin examples: `./internal/plugins/`
 - EventBus documentation: `docs/api.md`

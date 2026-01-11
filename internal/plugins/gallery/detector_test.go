@@ -45,7 +45,7 @@ func TestImageDetector_SecurityValidation(t *testing.T) {
 		},
 		{
 			name:     "RejectNonHTTP",
-			message:  "file:///etc/passwd.jpg",
+			message:  "file://./data/secret.jpg",
 			expected: 0,
 			desc:     "Should reject non-HTTP schemes",
 		},
@@ -73,7 +73,7 @@ func TestImageDetector_SecurityValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			images := detector.DetectImages(tt.message)
 			if len(images) != tt.expected {
-				t.Errorf("%s: expected %d images, got %d - %s", 
+				t.Errorf("%s: expected %d images, got %d - %s",
 					tt.name, tt.expected, len(images), tt.desc)
 			}
 		})

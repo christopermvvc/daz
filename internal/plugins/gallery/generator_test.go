@@ -10,7 +10,7 @@ func TestHTMLGenerator_XSSProtection(t *testing.T) {
 	// Create a mock store and generator
 	store := &Store{}
 	config := &Config{
-		HTMLOutputPath: "/tmp/test-gallery",
+		HTMLOutputPath: t.TempDir(),
 	}
 	generator := NewHTMLGenerator(store, config)
 
@@ -51,7 +51,7 @@ func TestHTMLGenerator_JSEscaping(t *testing.T) {
 	// Create a mock store and generator
 	store := &Store{}
 	config := &Config{
-		HTMLOutputPath: "/tmp/test-gallery",
+		HTMLOutputPath: t.TempDir(),
 	}
 	generator := NewHTMLGenerator(store, config)
 
@@ -86,7 +86,7 @@ func TestHTMLGenerator_SafeImageTitle(t *testing.T) {
 	// Create a mock store and generator
 	store := &Store{}
 	config := &Config{
-		HTMLOutputPath: "/tmp/test-gallery",
+		HTMLOutputPath: t.TempDir(),
 	}
 	generator := NewHTMLGenerator(store, config)
 

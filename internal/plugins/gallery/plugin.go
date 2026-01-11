@@ -37,6 +37,7 @@ type Plugin struct {
 	// Tracking
 	eventsHandled int64
 	imagesAdded   int64
+	htmlDirty     atomic.Bool
 }
 
 // Config holds plugin configuration
@@ -57,7 +58,7 @@ func New() framework.Plugin {
 			MaxImagesPerUser:    25,
 			HealthCheckInterval: 5 * time.Minute,
 			GenerateHTML:        true,
-			HTMLOutputPath:      "/opt/daz/galleries",
+			HTMLOutputPath:      "./data/galleries",
 			EnableHealthCheck:   true,
 			AdminOnly:           false,
 		},
@@ -90,8 +91,9 @@ func (p *Plugin) Init(configData json.RawMessage, bus framework.EventBus) error 
 	// Initialize components
 	p.detector = NewImageDetector()
 	p.store = NewStore(bus, p.name, p.config.MaxImagesPerUser)
-	p.health = NewHealthChecker(p.store, p.config)
+	p.health = NewHealthChecker(p.store, p.config, p.markHTMLDirty)
 	p.generator = NewHTMLGenerator(p.store, p.config)
+
 	p.userRateLimit = make(map[string]time.Time)
 
 	logger.Info(p.name, "Gallery plugin initialized with max %d images per user", p.config.MaxImagesPerUser)
@@ -282,11 +284,17 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 			logger.Error(p.name, "Failed to add image to gallery: %v", err)
 		} else {
 			atomic.AddInt64(&p.imagesAdded, 1)
+			p.markHTMLDirty()
 			logger.Debug(p.name, "Added image from %s: %s", msg.Username, url)
 		}
+
 	}
 
 	return nil
+}
+
+func (p *Plugin) markHTMLDirty() {
+	p.htmlDirty.Store(true)
 }
 
 func (p *Plugin) handleCommand(event framework.Event) error {
@@ -366,7 +374,9 @@ func (p *Plugin) handleLockCommand(params map[string]string) {
 		return
 	}
 
+	p.markHTMLDirty()
 	p.sendResponse(channel, username, "Your gallery has been locked.", isPM)
+
 }
 
 func (p *Plugin) handleUnlockCommand(params map[string]string) {
@@ -381,7 +391,9 @@ func (p *Plugin) handleUnlockCommand(params map[string]string) {
 		return
 	}
 
+	p.markHTMLDirty()
 	p.sendResponse(channel, username, "Your gallery has been unlocked.", isPM)
+
 }
 
 func (p *Plugin) handleCheckCommand(params map[string]string) {
@@ -463,11 +475,9 @@ func (p *Plugin) runHealthChecker() {
 func (p *Plugin) runHTMLGenerator() {
 	defer p.wg.Done()
 
-	// Generate HTML every 5 minutes
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
-	// Wait 30 seconds before first generation to offset from health checks
 	initialTimer := time.NewTimer(30 * time.Second)
 	select {
 	case <-initialTimer.C:
@@ -476,9 +486,10 @@ func (p *Plugin) runHTMLGenerator() {
 		return
 	}
 
-	// Generate immediately after initial delay
-	if err := p.generator.GenerateAllGalleries(p.ctx); err != nil {
-		logger.Warn(p.name, "Initial HTML generation had issues: %v", err)
+	if p.htmlDirty.Swap(false) {
+		if err := p.generator.GenerateAllGalleries(p.ctx); err != nil {
+			logger.Warn(p.name, "Initial HTML generation had issues: %v", err)
+		}
 	}
 
 	for {
@@ -486,6 +497,9 @@ func (p *Plugin) runHTMLGenerator() {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
+			if !p.htmlDirty.Swap(false) {
+				continue
+			}
 			if err := p.generator.GenerateAllGalleries(p.ctx); err != nil {
 				logger.Warn(p.name, "HTML generation had issues: %v", err)
 			}
