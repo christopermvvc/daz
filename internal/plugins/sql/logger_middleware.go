@@ -2,13 +2,13 @@ package sql
 
 import (
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/logger"
 )
 
 // LoggerMiddleware handles selective event logging based on rules
@@ -292,7 +292,7 @@ func (lm *LoggerMiddleware) ProcessEvent(event framework.Event) error {
 		// Apply transform
 		fields, err := transform(event, rule)
 		if err != nil {
-			log.Printf("[SQL Logger] Transform error for %s: %v", eventType, err)
+			logger.Warn("SQL Logger", "Transform error for %s: %v", eventType, err)
 			continue
 		}
 
@@ -307,7 +307,7 @@ func (lm *LoggerMiddleware) ProcessEvent(event framework.Event) error {
 			lm.addToBatch(rule.Table, entry)
 		} else {
 			if err := lm.writeEntry(entry); err != nil {
-				log.Printf("[SQL Logger] Failed to write entry: %v", err)
+				logger.Error("SQL Logger", "Failed to write entry: %v", err)
 			}
 		}
 	}
@@ -325,7 +325,7 @@ func (lm *LoggerMiddleware) getTransform(name string) TransformFunc {
 		return transform
 	}
 
-	log.Printf("[SQL Logger] Transform '%s' not found, using generic", name)
+	logger.Warn("SQL Logger", "Transform '%s' not found, using generic", name)
 	return lm.transforms["generic_transform"]
 }
 
@@ -355,7 +355,7 @@ func (lm *LoggerMiddleware) flushTable(table string) {
 
 	// Build batch insert query
 	if err := lm.writeBatch(table, entries); err != nil {
-		log.Printf("[SQL Logger] Failed to write batch for %s: %v", table, err)
+		logger.Error("SQL Logger", "Failed to write batch for %s: %v", table, err)
 	}
 }
 
@@ -408,7 +408,7 @@ func (lm *LoggerMiddleware) writeBatch(table string, entries []LogEntry) error {
 	// Send exec request
 	_ = lm.plugin.eventBus.Broadcast("sql.exec.request", data)
 
-	log.Printf("[SQL Logger] Flushed %d entries to %s", len(entries), table)
+	logger.Info("SQL Logger", "Flushed %d entries to %s", len(entries), table)
 	return nil
 }
 
@@ -416,7 +416,7 @@ func (lm *LoggerMiddleware) writeBatch(table string, entries []LogEntry) error {
 func (lm *LoggerMiddleware) buildInsertQuery(table string, fields LogFieldMap) (string, []framework.SQLParam) {
 	// Validate table name to prevent SQL injection
 	if !isValidTableName(table) {
-		log.Printf("[SQL Logger] Invalid table name: %s", table)
+		logger.Warn("SQL Logger", "Invalid table name: %s", table)
 		return "", nil
 	}
 
@@ -448,7 +448,7 @@ func (lm *LoggerMiddleware) buildBatchInsertQuery(table string, entries []LogEnt
 
 	// Validate table name to prevent SQL injection
 	if !isValidTableName(table) {
-		log.Printf("[SQL Logger] Invalid table name: %s", table)
+		logger.Warn("SQL Logger", "Invalid table name: %s", table)
 		return "", nil
 	}
 
