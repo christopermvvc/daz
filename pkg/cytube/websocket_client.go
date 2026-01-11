@@ -470,7 +470,9 @@ func (c *WebSocketClient) Send(eventType string, data EventPayload) error {
 	}
 
 	// Only log important messages, not all traffic
-	if eventType == "requestPlaylist" || eventType == "login" || eventType == "pm" || eventType == "queue" || eventType == "delete" {
+	if eventType == "login" {
+		logger.Debug("WebSocketClient", "Sending login command with redacted payload")
+	} else if eventType == "requestPlaylist" || eventType == "pm" || eventType == "queue" || eventType == "delete" {
 		logger.Debug("WebSocketClient", "Sending %s command with data: %s", eventType, string(dataJSON))
 	}
 
