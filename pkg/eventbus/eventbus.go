@@ -601,7 +601,7 @@ func (eb *EventBus) Request(ctx context.Context, target string, eventType string
 		delete(eb.pendingRequests, correlationID)
 		eb.syncMu.Unlock()
 
-		// Close channel safely (check if not already closed)
+		// Drain any pending response to avoid goroutine leaks.
 		select {
 		case <-respCh:
 			// Channel had pending data, drain it
@@ -609,7 +609,6 @@ func (eb *EventBus) Request(ctx context.Context, target string, eventType string
 		default:
 			// Channel is empty
 		}
-		close(respCh)
 	}
 	defer cleanup()
 
