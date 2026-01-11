@@ -14,16 +14,15 @@
 
 ### Requires network, DB, or longer runtime
 - `internal/plugins/retry/integration_test.go` (build tag `integration`, requires Postgres and long sleeps).
-- `pkg/cytube/discovery_test.go` -> `TestDiscoverServer_Integration` hits real Cytube server (skips with `-short`).
-- `pkg/cytube/websocket_client_test.go` -> `TestNewWebSocketClient` calls `DiscoverServer` (real network) with no `-short` guard.
-- `pkg/eventbus/priority_integration_test.go` is time/scheduling sensitive (can be flaky under load).
+- `pkg/cytube/discovery_test.go` -> `TestDiscoverServer_Integration` hits the real Cytube server (requires `CYTUBE_INTEGRATION=1`, skips with `-short`).
+- `pkg/eventbus/priority_integration_test.go` is time/scheduling sensitive (skips with `-short`).
 
 ### Benchmarks
 - `pkg/eventbus/priority_queue_bench_test.go` (benchmarks only).
 
 ### Recommended default command (offline)
 - `go test ./... -short`
-- Note: `TestNewWebSocketClient` still hits the network without changes.
+- Integration tests require explicit env/build tags.
 
 ## Prioritized Remediation Tasks
 - [x] P0: Make WebSocket client creation testable without live discovery (add injectable discovery or `NewWebSocketClientWithServerURL` and update `TestNewWebSocketClient`).
@@ -32,3 +31,9 @@
 - [x] P1: Stabilize or gate time-sensitive eventbus priority tests (reduce sleeps, make deterministic, or guard with `-short`).
 - [x] P2: Replace placeholder gallery store tests with sqlmock or a dedicated test DB harness.
 - [x] P2: Add a test matrix section to README/docs clarifying `-short`, build tags, and integration requirements.
+
+## Issue Inventory (Unprioritized)
+- [ ] Replace `log.Printf` usage in core/runtime paths with `internal/logger` (e.g., `pkg/cytube/parser.go`, `internal/framework/request_helper.go`).
+- [ ] Decide on logging approach for SQL logger middleware, which currently uses `log.Printf` in runtime paths (`internal/plugins/sql/logger_middleware.go`).
+- [ ] Replace `log.Printf` on config file close errors with `internal/logger` or suppress in `internal/config/config.go`.
+- [ ] Audit vendored Cytube `util.js` TODOs for relevance (`cytube_src/util.js`, `examples/cytube_src/util.js`).
