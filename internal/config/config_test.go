@@ -346,7 +346,7 @@ func TestValidate(t *testing.T) {
 				c.Core.Database.Database = "testdb"
 			},
 			wantErr: true,
-			errMsg:  "room[0] 'room1': username is required",
+			errMsg:  "room[0] 'room1': username is required when password is set",
 		},
 		{
 			name: "room missing password",
@@ -365,7 +365,7 @@ func TestValidate(t *testing.T) {
 				c.Core.Database.Database = "testdb"
 			},
 			wantErr: true,
-			errMsg:  "room[0] 'room1': password is required",
+			errMsg:  "room[0] 'room1': password is required when username is set",
 		},
 		{
 			name: "room missing channel",
