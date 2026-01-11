@@ -525,17 +525,19 @@ func (p *Plugin) saveCommand(command string, info *CommandInfo) error {
 		info.Enabled)
 }
 
-func (p *Plugin) logCommand(command, username, channel string, args []string) error {
+func (p *Plugin) logCommand(command, username, channel string, args []string, success bool, errorMessage string) error {
 	query := `
-		INSERT INTO daz_eventfilter_history (command, username, channel, args)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO daz_eventfilter_history (command, username, channel, args, success, error_message)
+		VALUES ($1, $2, $3, $4, $5, $6)
 	`
 
 	return p.sqlClient.Exec(query,
 		command,
 		username,
 		channel,
-		args)
+		args,
+		success,
+		errorMessage)
 }
 
 // Helper functions
@@ -823,9 +825,12 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 
 	if !exists {
 		logger.Warn("EventFilter", "Unknown command: %s", cmdName)
+		err := fmt.Errorf("unknown command: %s", cmdName)
+		if logErr := p.logCommand(cmdName, chatData.Username, chatData.Channel, args, false, err.Error()); logErr != nil {
+			logger.Warn("EventFilter", "Failed to log command failure: %v", logErr)
+		}
 		// Emit failure event for unknown command
 		correlationID := fmt.Sprintf("unknown-%s-%d", cmdName, time.Now().UnixNano())
-		err := fmt.Errorf("unknown command: %s", cmdName)
 		p.emitFailureEvent("eventfilter.command.error", correlationID, "unknown_command", err)
 		return
 	}
@@ -833,9 +838,12 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 	// Check if command is enabled
 	if !cmdInfo.Enabled {
 		logger.Debug("EventFilter", "Command disabled: %s", cmdName)
+		err := fmt.Errorf("command disabled: %s", cmdName)
+		if logErr := p.logCommand(cmdName, chatData.Username, chatData.Channel, args, false, err.Error()); logErr != nil {
+			logger.Warn("EventFilter", "Failed to log command failure: %v", logErr)
+		}
 		// Emit failure event for disabled command
 		correlationID := fmt.Sprintf("disabled-%s-%d", cmdName, time.Now().UnixNano())
-		err := fmt.Errorf("command disabled: %s", cmdName)
 		p.emitFailureEvent("eventfilter.command.error", correlationID, "disabled_command", err)
 		return
 	}
@@ -846,9 +854,12 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 		if chatData.UserRank < cmdInfo.MinRank {
 			logger.Debug("EventFilter", "User %s lacks rank for command %s (has: %d, needs: %d)",
 				chatData.Username, cmdName, chatData.UserRank, cmdInfo.MinRank)
+			err := fmt.Errorf("insufficient rank for command %s: user has %d, needs %d", cmdName, chatData.UserRank, cmdInfo.MinRank)
+			if logErr := p.logCommand(cmdName, chatData.Username, chatData.Channel, args, false, err.Error()); logErr != nil {
+				logger.Warn("EventFilter", "Failed to log command failure: %v", logErr)
+			}
 			// Emit failure event for insufficient rank
 			correlationID := fmt.Sprintf("rank-%s-%d", cmdName, time.Now().UnixNano())
-			err := fmt.Errorf("insufficient rank for command %s: user has %d, needs %d", cmdName, chatData.UserRank, cmdInfo.MinRank)
 			p.emitFailureEvent("eventfilter.command.error", correlationID, "insufficient_rank", err)
 			return
 		}
@@ -856,8 +867,11 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 
 	if !isAdmin && !p.checkCooldown(chatData.Username, cmdName) {
 		logger.Debug("EventFilter", "Command cooldown active for %s on %s", chatData.Username, cmdName)
-		correlationID := fmt.Sprintf("cooldown-%s-%d", cmdName, time.Now().UnixNano())
 		err := fmt.Errorf("cooldown active for command %s", cmdName)
+		if logErr := p.logCommand(cmdName, chatData.Username, chatData.Channel, args, false, err.Error()); logErr != nil {
+			logger.Warn("EventFilter", "Failed to log command failure: %v", logErr)
+		}
+		correlationID := fmt.Sprintf("cooldown-%s-%d", cmdName, time.Now().UnixNano())
 		p.emitFailureEvent("eventfilter.command.error", correlationID, "cooldown", err)
 		return
 	}
@@ -899,7 +913,7 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 
 	// Log command execution
 	go func() {
-		if err := p.logCommand(cmdName, chatData.Username, chatData.Channel, args); err != nil {
+		if err := p.logCommand(cmdName, chatData.Username, chatData.Channel, args, true, ""); err != nil {
 			logger.Warn("EventFilter", "Failed to log command execution: %v", err)
 			// Emit failure event for retry
 			correlationID := fmt.Sprintf("cmdlog-%s-%d", cmdName, time.Now().UnixNano())
