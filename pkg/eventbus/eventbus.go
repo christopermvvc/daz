@@ -307,7 +307,7 @@ func (eb *EventBus) getOrCreateQueue(eventType string) *messageQueue {
 		return queue
 	}
 
-	queue := newMessageQueue()
+	queue := newMessageQueue(eb.getBufferSize(eventType))
 	eb.queues[eventType] = queue
 	return queue
 }
@@ -546,7 +546,7 @@ func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.Even
 		count := eb.droppedEvents[eventType]
 		eb.metricsMu.Unlock()
 
-		logger.Warn("EventBus", "Dropped event %s - queue closed (total dropped: %d)", eventType, count)
+		logger.Warn("EventBus", "Dropped event %s - queue full or closed (total dropped: %d)", eventType, count)
 		return nil
 	}
 

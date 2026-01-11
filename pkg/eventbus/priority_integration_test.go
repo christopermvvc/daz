@@ -129,7 +129,7 @@ func TestEventBusPriorityDequeue(t *testing.T) {
 
 // TestPriorityQueueDirectly tests the priority queue in isolation
 func TestPriorityQueueDirectly(t *testing.T) {
-	queue := newMessageQueue()
+	queue := newMessageQueue(0)
 
 	// Create messages with different priorities
 	messages := []struct {

@@ -55,7 +55,7 @@ func BenchmarkPriorityQueue_SamePriority(b *testing.B) {
 
 	for _, size := range sizes {
 		b.Run(fmt.Sprintf("size_%d", size), func(b *testing.B) {
-			mq := newMessageQueue()
+			mq := newMessageQueue(0)
 			defer mq.close()
 
 			// Start consumer
@@ -105,7 +105,7 @@ func BenchmarkPriorityQueue_MixedPriority(b *testing.B) {
 	}
 
 	b.Run("even_distribution", func(b *testing.B) {
-		mq := newMessageQueue()
+		mq := newMessageQueue(0)
 		defer mq.close()
 
 		// Start consumer
@@ -145,7 +145,7 @@ func BenchmarkPriorityQueue_MixedPriority(b *testing.B) {
 	})
 
 	b.Run("realistic_distribution", func(b *testing.B) {
-		mq := newMessageQueue()
+		mq := newMessageQueue(0)
 		defer mq.close()
 
 		// Start consumer
@@ -211,7 +211,7 @@ func BenchmarkPriorityQueue_LatencyByPriority(b *testing.B) {
 
 	for _, p := range priorities {
 		b.Run(p.name, func(b *testing.B) {
-			mq := newMessageQueue()
+			mq := newMessageQueue(0)
 			defer mq.close()
 
 			// Latency tracking
@@ -289,7 +289,7 @@ func BenchmarkPriorityQueue_Concurrent(b *testing.B) {
 
 	for _, s := range scenarios {
 		b.Run(s.name, func(b *testing.B) {
-			mq := newMessageQueue()
+			mq := newMessageQueue(0)
 			defer mq.close()
 
 			msgsPerProducer := b.N / s.producers
@@ -359,7 +359,7 @@ func BenchmarkPriorityQueueVsChannel(b *testing.B) {
 
 	for _, size := range sizes {
 		b.Run(fmt.Sprintf("priority_queue_size_%d", size), func(b *testing.B) {
-			mq := newMessageQueue()
+			mq := newMessageQueue(0)
 			defer mq.close()
 
 			var consumed int64
@@ -434,7 +434,7 @@ func BenchmarkPriorityQueue_UnderLoad(b *testing.B) {
 
 	for _, qsize := range queueSizes {
 		b.Run(fmt.Sprintf("queue_size_%d", qsize), func(b *testing.B) {
-			mq := newMessageQueue()
+			mq := newMessageQueue(0)
 			defer mq.close()
 
 			// Pre-fill queue to simulate load
@@ -490,7 +490,7 @@ func BenchmarkPriorityQueue_UnderLoad(b *testing.B) {
 // Benchmark priority ordering correctness under high concurrency
 func BenchmarkPriorityQueue_OrderingCorrectness(b *testing.B) {
 	b.Run("priority_ordering", func(b *testing.B) {
-		mq := newMessageQueue()
+		mq := newMessageQueue(0)
 		defer mq.close()
 
 		// Track dequeue order by priority

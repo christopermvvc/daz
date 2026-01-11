@@ -9,7 +9,7 @@ import (
 )
 
 func TestPriorityQueue(t *testing.T) {
-	queue := newMessageQueue()
+	queue := newMessageQueue(0)
 
 	// Create messages with different priorities
 	messages := []*eventMessage{
@@ -73,7 +73,7 @@ func TestPriorityQueue(t *testing.T) {
 }
 
 func TestPriorityQueueConcurrent(t *testing.T) {
-	queue := newMessageQueue()
+	queue := newMessageQueue(0)
 	var wg sync.WaitGroup
 
 	// Start multiple goroutines pushing messages
@@ -134,7 +134,7 @@ func TestPriorityQueueConcurrent(t *testing.T) {
 }
 
 func TestPriorityQueueClose(t *testing.T) {
-	queue := newMessageQueue()
+	queue := newMessageQueue(0)
 
 	// Push a message
 	msg := &eventMessage{

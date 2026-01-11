@@ -53,12 +53,14 @@ type messageQueue struct {
 	sequence int64
 	cond     *sync.Cond
 	closed   bool
+	maxSize  int
 }
 
 // newMessageQueue creates a new priority-based message queue
-func newMessageQueue() *messageQueue {
+func newMessageQueue(maxSize int) *messageQueue {
 	mq := &messageQueue{
-		pq: make(priorityQueue, 0),
+		pq:      make(priorityQueue, 0),
+		maxSize: maxSize,
 	}
 	mq.cond = sync.NewCond(&mq.mu)
 	heap.Init(&mq.pq)
@@ -71,6 +73,9 @@ func (mq *messageQueue) push(msg *eventMessage, priority int) bool {
 	defer mq.mu.Unlock()
 
 	if mq.closed {
+		return false
+	}
+	if mq.maxSize > 0 && len(mq.pq) >= mq.maxSize {
 		return false
 	}
 
