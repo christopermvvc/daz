@@ -388,6 +388,10 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 
 	// Check if message is a command
 	if strings.HasPrefix(chatData.Message, p.config.CommandPrefix) {
+		if len(chatData.Message) > 512 {
+			logger.Warn("EventFilter", "Command message too long from %s", chatData.Username)
+			return nil
+		}
 		p.handleCommand(dataEvent, *chatData)
 	}
 
@@ -824,6 +828,10 @@ func (p *Plugin) handlePMMessage(event framework.Event) error {
 
 	// Check if message is a command
 	if strings.HasPrefix(pmData.Message, p.config.CommandPrefix) {
+		if len(pmData.Message) > 512 {
+			logger.Warn("EventFilter", "Command PM too long from %s", pmData.FromUser)
+			return nil
+		}
 		// Create a ChatMessageData from PM data to reuse handleCommand
 		chatData := framework.ChatMessageData{
 			Username:    pmData.FromUser,
@@ -843,7 +851,14 @@ func (p *Plugin) handlePMMessage(event framework.Event) error {
 // handleCommandWithContext processes commands with context about their source
 func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData framework.ChatMessageData, isFromPM bool) {
 	// Remove command prefix and parse
-	cmdText := strings.TrimPrefix(chatData.Message, p.config.CommandPrefix)
+	cmdText := strings.TrimSpace(strings.TrimPrefix(chatData.Message, p.config.CommandPrefix))
+	if len(cmdText) == 0 {
+		return
+	}
+	if len(cmdText) > 256 {
+		logger.Warn("EventFilter", "Command payload too long from %s", chatData.Username)
+		return
+	}
 	parts := parseCommandFields(cmdText)
 
 	if len(parts) == 0 {

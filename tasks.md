@@ -87,3 +87,4 @@
 - [x] P2: EventFilter should persist command failures to history for auditing (`internal/plugins/eventfilter/plugin.go`).
 - [x] P2: EventFilter should avoid logging args for failed commands (`internal/plugins/eventfilter/plugin.go`).
 - [x] P2: EventFilter should periodically prune cooldowns via ticker (`internal/plugins/eventfilter/plugin.go`).
+- [x] P2: EventFilter should enforce command length limits before parsing (`internal/plugins/eventfilter/plugin.go`).
