@@ -3,8 +3,9 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
+
+	"github.com/hildolfr/daz/internal/logger"
 )
 
 // Config represents the complete application configuration
@@ -91,7 +92,7 @@ func LoadFromFile(path string) (*Config, error) {
 		if err == nil {
 			defer func() {
 				if err := file.Close(); err != nil {
-					log.Printf("Failed to close config file: %v", err)
+					logger.Warn("Config", "Failed to close config file: %v", err)
 				}
 			}()
 
