@@ -217,11 +217,14 @@ func (c *Config) Validate() error {
 			identifier = room.Channel
 		}
 
+		if room.Username == "" && room.Password == "" {
+			continue
+		}
 		if room.Username == "" {
-			return fmt.Errorf("room[%d] '%s': username is required", i, identifier)
+			return fmt.Errorf("room[%d] '%s': username is required when password is set", i, identifier)
 		}
 		if room.Password == "" {
-			return fmt.Errorf("room[%d] '%s': password is required", i, identifier)
+			return fmt.Errorf("room[%d] '%s': password is required when username is set", i, identifier)
 		}
 	}
 
