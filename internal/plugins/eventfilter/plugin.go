@@ -561,6 +561,28 @@ func parseRank(rankStr string) (int, error) {
 	return rank, err
 }
 
+func (p *Plugin) checkCooldown(username, command string) bool {
+	if p.config.DefaultCooldown <= 0 {
+		return true
+	}
+
+	key := fmt.Sprintf("%s:%s", strings.ToLower(username), command)
+	cooldownDuration := time.Duration(p.config.DefaultCooldown) * time.Second
+	now := time.Now()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if last, ok := p.cooldowns[key]; ok {
+		if now.Sub(last) < cooldownDuration {
+			return false
+		}
+	}
+
+	p.cooldowns[key] = now
+	return true
+}
+
 // getDefaultRoutingRules returns the default routing configuration
 func getDefaultRoutingRules() []RoutingRule {
 	return []RoutingRule{
@@ -752,8 +774,9 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 		return
 	}
 
+	isAdmin := p.isAdmin(chatData.Username)
 	// Check user rank (skip for PMs from admins)
-	if !isFromPM || !p.isAdmin(chatData.Username) {
+	if !isFromPM || !isAdmin {
 		if chatData.UserRank < cmdInfo.MinRank {
 			logger.Debug("EventFilter", "User %s lacks rank for command %s (has: %d, needs: %d)",
 				chatData.Username, cmdName, chatData.UserRank, cmdInfo.MinRank)
@@ -763,6 +786,14 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 			p.emitFailureEvent("eventfilter.command.error", correlationID, "insufficient_rank", err)
 			return
 		}
+	}
+
+	if !isAdmin && !p.checkCooldown(chatData.Username, cmdName) {
+		logger.Debug("EventFilter", "Command cooldown active for %s on %s", chatData.Username, cmdName)
+		correlationID := fmt.Sprintf("cooldown-%s-%d", cmdName, time.Now().UnixNano())
+		err := fmt.Errorf("cooldown active for command %s", cmdName)
+		p.emitFailureEvent("eventfilter.command.error", correlationID, "cooldown", err)
+		return
 	}
 
 	// Get target plugin
@@ -789,7 +820,7 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 						"rank":     fmt.Sprintf("%d", chatData.UserRank),
 						"channel":  chatData.Channel,
 						"is_pm":    fmt.Sprintf("%t", isFromPM),
-						"is_admin": fmt.Sprintf("%t", p.isAdmin(chatData.Username)),
+						"is_admin": fmt.Sprintf("%t", isAdmin),
 					},
 				},
 			},

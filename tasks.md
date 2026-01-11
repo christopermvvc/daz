@@ -73,3 +73,10 @@
 ## Issue Inventory (Prioritized - Latest Rescan)
 - [x] P1: Event discovery registers `pgx` driver inside `Run`, risking duplicate registration panic on repeated invocations (`cmd/daz/event_discovery.go`).
 - [x] P2: Event metadata priority warnings should use `internal/logger` instead of `fmt.Printf` (`internal/framework/event_metadata.go`).
+
+## Issue Inventory (Prioritized - Command/Gallery Security)
+- [x] P1: EventFilter defines `default_cooldown` but never enforces it, allowing command spam (`internal/plugins/eventfilter/plugin.go`).
+- [x] P1: Gallery output path should be absolute and validated before write (`internal/plugins/gallery/generator.go`).
+- [x] P1: Gallery git operations should require marker file if a git repo already exists (`internal/plugins/gallery/generator.go`).
+- [x] P1: Tell plugin should fail fast on subscription/registration failures (`internal/plugins/commands/tell/plugin.go`).
+- [ ] P2: Command parsing does not support quoted arguments; multi-word params must be manually joined (`internal/plugins/eventfilter/plugin.go`).
