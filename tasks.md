@@ -111,3 +111,20 @@
 
 ### P2 – Functional Gap (Not Stability)
 - [x] Implement queue “move” in MediaTracker (`internal/plugins/mediatracker/plugin.go`) if needed.
+
+## Prioritized Rescan Tasks (2026-01-10)
+
+### P1 – Context-Aware SQL Requests
+- [x] Replace `context.Background()` with plugin context for SQL UID lookup to respect shutdown (`internal/plugins/playlist/playlist.go`).
+- [x] Use plugin context for analytics table creation and user stats updates to avoid hanging on shutdown (`internal/plugins/analytics/plugin.go`).
+
+### P2 – Logging Consistency
+- [x] Replace `log.Printf` in CLI event discovery with `internal/logger` or scoped logger to keep logging consistent (`cmd/daz/event_discovery.go`).
+
+### P1 – Plugin Shutdown Coverage
+- [x] Ensure SQL logger middleware ticker stops on plugin shutdown to prevent goroutine leaks (`internal/plugins/sql/logger_middleware.go`).
+- [x] Audit `cmd/daz/main.go` periodic tickers for shutdown signal handling (ticks at lines 144/394/422).
+
+### P2 – Request Context Hygiene
+- [x] Replace `context.Background()` in long-lived plugin timers with plugin context where applicable (playlist/analytics/mediatracker/sql) to honor shutdown.
+- [x] Add timeouts to external HTTP calls in weather command requests (`internal/plugins/commands/weather/plugin.go`).

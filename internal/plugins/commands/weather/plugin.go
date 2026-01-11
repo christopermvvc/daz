@@ -1,6 +1,7 @@
 package weather
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -188,7 +189,10 @@ func (p *Plugin) getWeather(location string) (string, error) {
 		Timeout: 10 * time.Second,
 	}
 
-	req, err := http.NewRequest("GET", weatherURL, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", weatherURL, nil)
 	if err != nil {
 		return "", err
 	}
@@ -236,7 +240,10 @@ func (p *Plugin) getSimpleWeather(location string) (string, error) {
 		Timeout: 10 * time.Second,
 	}
 
-	req, err := http.NewRequest("GET", url, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", err
 	}

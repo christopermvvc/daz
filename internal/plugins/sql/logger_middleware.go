@@ -482,8 +482,13 @@ func (lm *LoggerMiddleware) buildBatchInsertQuery(table string, entries []LogEnt
 
 // batchFlushWorker periodically flushes batches
 func (lm *LoggerMiddleware) batchFlushWorker() {
-	for range lm.flushTicker.C {
-		lm.flushAll()
+	for {
+		select {
+		case <-lm.plugin.ctx.Done():
+			return
+		case <-lm.flushTicker.C:
+			lm.flushAll()
+		}
 	}
 }
 

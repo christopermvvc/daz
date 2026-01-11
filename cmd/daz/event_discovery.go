@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/hildolfr/daz/internal/logger"
 	"os"
 	"sort"
 	"sync"
@@ -21,7 +21,7 @@ var registerPGXOnce sync.Once
 // logDeferredError is a helper function to log errors from deferred calls
 func logDeferredError(err error, context string) {
 	if err != nil {
-		log.Printf("error in deferred %s: %v", context, err)
+		logger.Warn("EventDiscovery", "Error in deferred %s: %v", context, err)
 	}
 }
 

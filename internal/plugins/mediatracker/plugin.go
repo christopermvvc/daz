@@ -1215,7 +1215,7 @@ func (p *Plugin) addToLibrary(mediaID, mediaType, title string, duration int, ad
 // bulkAddPlaylistToLibraryWithTimeout adds items with an extended timeout for large operations
 func (p *Plugin) bulkAddPlaylistToLibraryWithTimeout(items []framework.PlaylistItem, channel string) error {
 	// Use a longer timeout for bulk operations (60 seconds)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(p.ctx, 60*time.Second)
 	defer cancel()
 	return p.bulkAddPlaylistToLibraryWithContext(ctx, items, channel)
 }

@@ -343,7 +343,8 @@ func (p *Plugin) createTables() error {
 	`
 
 	// Execute table creation
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
+	defer cancel()
 	for _, sql := range []string{hourlyTableSQL, dailyTableSQL, userStatsTableSQL} {
 		if _, err := p.sqlClient.ExecSync(ctx, sql); err != nil {
 			return fmt.Errorf("failed to create table: %w", err)
@@ -407,7 +408,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	`
 	// Use a timeout context for the SQL operation to prevent hanging
 	// Analytics updates are low priority, so we can use a shorter timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
 	_, err := p.sqlClient.ExecSync(ctx, userStatsSQL, channel, chat.Username)

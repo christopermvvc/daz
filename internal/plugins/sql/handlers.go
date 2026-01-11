@@ -146,7 +146,7 @@ func (p *Plugin) handleLogRequest(event framework.Event) error {
 		return fmt.Errorf("invalid table name: %s", logReq.Table)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
 	// Insert into specified table
@@ -207,7 +207,7 @@ func (p *Plugin) handleBatchLogRequest(event framework.Event) error {
 		return fmt.Errorf("invalid batch log request: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
 	defer cancel()
 
 	tx, err := p.pool.Begin(ctx)
@@ -389,7 +389,7 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 		return err
 	}
 
-	ctx := context.Background()
+	ctx := p.ctx
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
@@ -588,7 +588,7 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 		return err
 	}
 
-	ctx := context.Background()
+	ctx := p.ctx
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
@@ -721,7 +721,7 @@ func (p *Plugin) handleBatchQueryRequest(event framework.Event) error {
 		return fmt.Errorf("database not connected")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
 	defer cancel()
 
 	var responses []*framework.SQLQueryResponse
@@ -987,7 +987,7 @@ func (p *Plugin) handleBatchExecRequest(event framework.Event) error {
 		return fmt.Errorf("database not connected")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
 	defer cancel()
 
 	var responses []*framework.SQLExecResponse
@@ -1135,7 +1135,7 @@ func (p *Plugin) handleFrameworkBatchRequest(batchReq *framework.SQLBatchRequest
 		return fmt.Errorf("database not connected")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), batchReq.Timeout)
+	ctx, cancel := context.WithTimeout(p.ctx, batchReq.Timeout)
 	defer cancel()
 
 	var results []framework.BatchOperationResult

@@ -139,12 +139,20 @@ func main() {
 }
 
 func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime time.Time, roomNames []string) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Track bot uptime
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			metrics.BotUptime.Set(time.Since(startTime).Seconds())
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				metrics.BotUptime.Set(time.Since(startTime).Seconds())
+			}
 		}
 	}()
 
@@ -286,10 +294,10 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	healthService.RegisterChecker("database", dbChecker)
 
 	// Start periodic metrics updater for plugins
-	go updatePluginMetrics(plugins, corePlugin)
+	go updatePluginMetrics(ctx, plugins, corePlugin)
 
 	// Start periodic EventBus metrics updater
-	go updateEventBusMetrics(bus)
+	go updateEventBusMetrics(ctx, bus)
 
 	// Start health check HTTP server
 	mux := http.NewServeMux()
@@ -357,6 +365,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 
 	sig := <-sigChan
 	logger.Info("Main", "Received signal %v, shutting down...", sig)
+	cancel()
 
 	return nil
 }
@@ -387,7 +396,7 @@ func (rw *responseWriter) WriteHeader(code int) {
 }
 
 // updatePluginMetrics periodically updates Prometheus metrics for all plugins
-func updatePluginMetrics(plugins []struct {
+func updatePluginMetrics(ctx context.Context, plugins []struct {
 	name   string
 	plugin framework.Plugin
 }, corePlugin framework.Plugin) {
@@ -401,53 +410,63 @@ func updatePluginMetrics(plugins []struct {
 		allPlugins = append(allPlugins, p.plugin)
 	}
 
-	for range ticker.C {
-		for _, plugin := range allPlugins {
-			status := plugin.Status()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, plugin := range allPlugins {
+				status := plugin.Status()
 
-			// Determine if plugin is running
-			running := status.State == "running"
+				// Determine if plugin is running
+				running := status.State == "running"
 
-			// Calculate uptime in seconds
-			uptimeSeconds := status.Uptime.Seconds()
+				// Calculate uptime in seconds
+				uptimeSeconds := status.Uptime.Seconds()
 
-			// For now, we don't track incremental events/errors, just set current values
-			metrics.UpdatePluginMetrics(plugin.Name(), running, 0, 0, uptimeSeconds)
+				// For now, we don't track incremental events/errors, just set current values
+				metrics.UpdatePluginMetrics(plugin.Name(), running, 0, 0, uptimeSeconds)
+			}
 		}
 	}
 }
 
 // updateEventBusMetrics periodically updates EventBus metrics
-func updateEventBusMetrics(bus framework.EventBus) {
+func updateEventBusMetrics(ctx context.Context, bus framework.EventBus) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	lastCounts := make(map[string]int64)
 
-	for range ticker.C {
-		// Get current dropped event counts
-		currentCounts := bus.GetDroppedEventCounts()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Get current dropped event counts
+			currentCounts := bus.GetDroppedEventCounts()
 
-		// Calculate deltas and update metrics
-		deltas := make(map[string]int64)
-		for eventType, count := range currentCounts {
-			if lastCount, exists := lastCounts[eventType]; exists {
-				delta := count - lastCount
-				if delta > 0 {
-					deltas[eventType] = delta
+			// Calculate deltas and update metrics
+			deltas := make(map[string]int64)
+			for eventType, count := range currentCounts {
+				if lastCount, exists := lastCounts[eventType]; exists {
+					delta := count - lastCount
+					if delta > 0 {
+						deltas[eventType] = delta
+					}
+				} else if count > 0 {
+					// First time seeing this event type
+					deltas[eventType] = count
 				}
-			} else if count > 0 {
-				// First time seeing this event type
-				deltas[eventType] = count
 			}
-		}
 
-		// Update metrics with deltas
-		if len(deltas) > 0 {
-			metrics.UpdateEventBusMetrics(deltas)
-		}
+			// Update metrics with deltas
+			if len(deltas) > 0 {
+				metrics.UpdateEventBusMetrics(deltas)
+			}
 
-		// Store current counts for next iteration
-		lastCounts = currentCounts
+			// Store current counts for next iteration
+			lastCounts = currentCounts
+		}
 	}
 }

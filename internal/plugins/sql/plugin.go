@@ -259,7 +259,7 @@ func (p *Plugin) emitFailureEvent(eventType, correlationID, source, operationTyp
 }
 
 func (p *Plugin) connectDatabase() error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(p.config.Database.ConnectTimeout)*time.Second)
+	ctx, cancel := context.WithTimeout(p.ctx, time.Duration(p.config.Database.ConnectTimeout)*time.Second)
 	defer cancel()
 
 	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
@@ -481,7 +481,7 @@ func (p *Plugin) logEventData(rule LoggerRule, event *framework.DataEvent) error
 		return fmt.Errorf("invalid table name: %s", rule.Table)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
 	timer := prometheus.NewTimer(metrics.DatabaseQueryDuration)
