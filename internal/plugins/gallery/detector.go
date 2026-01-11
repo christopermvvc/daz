@@ -1,11 +1,13 @@
 package gallery
 
 import (
+	"context"
 	"net"
 	"net/url"
 	"path"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // ImageDetector detects image URLs in chat messages
@@ -122,7 +124,11 @@ func (d *ImageDetector) isImageURL(rawURL string) bool {
 		strings.HasPrefix(hostname, "169.254.") ||
 		strings.HasPrefix(hostname, "fe80:") ||
 		strings.HasPrefix(hostname, "fc00:") ||
-		strings.HasPrefix(hostname, "fd00:") {
+		strings.HasPrefix(hostname, "fd00:") ||
+		strings.HasSuffix(hostname, ".local") {
+		return false
+	}
+	if resolvesToPrivateIP(hostname) {
 		return false
 	}
 
@@ -183,6 +189,27 @@ func isPrivateIP(ip net.IP) bool {
 	}
 	if ip.To4() != nil && cgnatRange.Contains(ip) {
 		return true
+	}
+
+	return false
+}
+
+func resolvesToPrivateIP(hostname string) bool {
+	if hostname == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, hostname)
+	if err != nil {
+		return false
+	}
+
+	for _, addr := range ips {
+		if isPrivateIP(addr.IP) {
+			return true
+		}
 	}
 
 	return false

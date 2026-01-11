@@ -636,6 +636,16 @@ func (p *Plugin) checkCooldown(username, command string) bool {
 	}
 
 	p.cooldowns[key] = now
+
+	if len(p.cooldowns) > 10000 {
+		cutoff := now.Add(-2 * cooldownDuration)
+		for entryKey, lastSeen := range p.cooldowns {
+			if lastSeen.Before(cutoff) {
+				delete(p.cooldowns, entryKey)
+			}
+		}
+	}
+
 	return true
 }
 
