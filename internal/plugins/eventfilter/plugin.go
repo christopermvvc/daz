@@ -538,13 +538,38 @@ func (p *Plugin) logCommand(command, username, channel string, args []string, su
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`
 
+	sanitizedCommand := sanitizeForLog(command)
+	sanitizedUsername := sanitizeForLog(username)
+	sanitizedChannel := sanitizeForLog(channel)
+	sanitizedError := sanitizeForLog(errorMessage)
+	var sanitizedArgs []string
+	if len(args) > 0 {
+		sanitizedArgs = make([]string, 0, len(args))
+		for _, arg := range args {
+			sanitizedArgs = append(sanitizedArgs, sanitizeForLog(arg))
+		}
+	}
+
 	return p.sqlClient.Exec(query,
-		command,
-		username,
-		channel,
-		args,
+		sanitizedCommand,
+		sanitizedUsername,
+		sanitizedChannel,
+		sanitizedArgs,
 		success,
-		errorMessage)
+		sanitizedError)
+}
+
+func sanitizeForLog(value string) string {
+	if value == "" {
+		return value
+	}
+
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, value)
 }
 
 // Helper functions
@@ -867,6 +892,10 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 
 	cmdName := strings.ToLower(parts[0])
 	args := parts[1:]
+	if len(args) > 10 {
+		logger.Warn("EventFilter", "Command args truncated for %s", chatData.Username)
+		args = args[:10]
+	}
 
 	logger.Debug("EventFilter", "Detected command: %s with args: %v from user: %s (PM: %v)",
 		cmdName, args, chatData.Username, isFromPM)
