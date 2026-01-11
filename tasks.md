@@ -38,3 +38,14 @@
 - [x] P2: Replace `log.Printf` on config file close errors with `internal/logger` or suppress in `internal/config/config.go`.
 - [x] P2: Audit vendored Cytube `util.js` TODOs for relevance (`cytube_src/util.js`, `examples/cytube_src/util.js`).
   - Notes: Both TODOs appear in vendored Cytube sources (`highlightsMe` match semantics and emote UI refactor). No direct impact on daz runtime; keep for upstream sync.
+
+## Issue Inventory (Unprioritized - Fresh Scan)
+- [ ] EventBus nil metadata dereference risk in `SendWithMetadata` and `Request` (`pkg/eventbus/eventbus.go`).
+- [ ] EventBus response channel cleanup may race with `DeliverResponse`, risking send-on-closed panic (`pkg/eventbus/eventbus.go`).
+- [ ] EventBus spawns a goroutine per subscriber per event; could exhaust resources under load (`pkg/eventbus/eventbus.go`).
+- [ ] EventBus queue growth ignores configured buffer sizes and can be unbounded (`pkg/eventbus/eventbus.go`, `pkg/eventbus/priority_queue.go`).
+- [ ] `processRoomEvents` reads from `EventChan` without handling close, risking nil event panics (`internal/core/room_manager.go`).
+- [ ] Reconnect path starts a new `processRoomEvents` goroutine on each connect (possible duplicate handlers) (`internal/core/room_manager.go`).
+- [ ] Config validation requires credentials even though anonymous joins are supported (`internal/config/config.go`, `internal/core/room_manager.go`).
+- [ ] WebSocket client debug logging may include login payloads (credentials) when debug enabled (`pkg/cytube/websocket_client.go`).
+- [ ] Analytics plugin channel discovery subscribes repeatedly without unsubscribe (possible handler leak) (`internal/plugins/analytics/plugin.go`).
