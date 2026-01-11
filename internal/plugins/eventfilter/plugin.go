@@ -227,6 +227,9 @@ func (p *Plugin) Start() error {
 	// Load admin users from file
 	p.loadAdminUsers()
 
+	p.wg.Add(1)
+	go p.runCooldownPruner()
+
 	p.mu.Lock()
 	p.running = true
 	p.mu.Unlock()
@@ -649,6 +652,48 @@ func (p *Plugin) checkCooldown(username, command string) bool {
 	}
 
 	return true
+}
+
+func (p *Plugin) runCooldownPruner() {
+	defer p.wg.Done()
+
+	if p.config.DefaultCooldown <= 0 {
+		return
+	}
+
+	interval := time.Duration(p.config.DefaultCooldown) * time.Second
+	if interval < time.Minute {
+		interval = time.Minute
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.pruneCooldowns()
+		}
+	}
+}
+
+func (p *Plugin) pruneCooldowns() {
+	if p.config.DefaultCooldown <= 0 {
+		return
+	}
+
+	cutoff := time.Now().Add(-2 * time.Duration(p.config.DefaultCooldown) * time.Second)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for entryKey, lastSeen := range p.cooldowns {
+		if lastSeen.Before(cutoff) {
+			delete(p.cooldowns, entryKey)
+		}
+	}
 }
 
 // getDefaultRoutingRules returns the default routing configuration
