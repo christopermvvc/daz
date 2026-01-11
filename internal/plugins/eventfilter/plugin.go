@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/hildolfr/daz/internal/framework"
 	"github.com/hildolfr/daz/internal/logger"
@@ -561,6 +562,61 @@ func parseRank(rankStr string) (int, error) {
 	return rank, err
 }
 
+func parseCommandFields(input string) []string {
+	var fields []string
+	var current strings.Builder
+	var quote rune
+	escaped := false
+
+	flush := func() {
+		if current.Len() > 0 {
+			fields = append(fields, current.String())
+			current.Reset()
+		}
+	}
+
+	for _, r := range input {
+		if escaped {
+			current.WriteRune(r)
+			escaped = false
+			continue
+		}
+
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+				continue
+			}
+			current.WriteRune(r)
+			continue
+		}
+
+		if r == '"' || r == '\'' {
+			quote = r
+			continue
+		}
+
+		if unicode.IsSpace(r) {
+			flush()
+			continue
+		}
+
+		current.WriteRune(r)
+	}
+
+	if escaped {
+		current.WriteRune('\\')
+	}
+
+	flush()
+	return fields
+}
+
 func (p *Plugin) checkCooldown(username, command string) bool {
 	if p.config.DefaultCooldown <= 0 {
 		return true
@@ -731,7 +787,7 @@ func (p *Plugin) handlePMMessage(event framework.Event) error {
 func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData framework.ChatMessageData, isFromPM bool) {
 	// Remove command prefix and parse
 	cmdText := strings.TrimPrefix(chatData.Message, p.config.CommandPrefix)
-	parts := strings.Fields(cmdText)
+	parts := parseCommandFields(cmdText)
 
 	if len(parts) == 0 {
 		return

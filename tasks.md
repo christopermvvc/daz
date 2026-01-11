@@ -79,4 +79,5 @@
 - [x] P1: Gallery output path should be absolute and validated before write (`internal/plugins/gallery/generator.go`).
 - [x] P1: Gallery git operations should require marker file if a git repo already exists (`internal/plugins/gallery/generator.go`).
 - [x] P1: Tell plugin should fail fast on subscription/registration failures (`internal/plugins/commands/tell/plugin.go`).
-- [ ] P2: Command parsing does not support quoted arguments; multi-word params must be manually joined (`internal/plugins/eventfilter/plugin.go`).
+- [x] P1: Gallery image detector should reject private IP literals (SSRF hardening) (`internal/plugins/gallery/detector.go`).
+- [x] P2: Command parsing does not support quoted arguments; multi-word params must be manually joined (`internal/plugins/eventfilter/plugin.go`).

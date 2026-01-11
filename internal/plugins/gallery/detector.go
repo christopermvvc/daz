@@ -1,6 +1,7 @@
 package gallery
 
 import (
+	"net"
 	"net/url"
 	"path"
 	"regexp"
@@ -94,6 +95,11 @@ func (d *ImageDetector) isImageURL(rawURL string) bool {
 
 	// Security: Prevent localhost and private network access
 	hostname := strings.ToLower(u.Hostname())
+	if ip := net.ParseIP(hostname); ip != nil {
+		if isPrivateIP(ip) {
+			return false
+		}
+	}
 	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" ||
 		strings.HasPrefix(hostname, "192.168.") ||
 		strings.HasPrefix(hostname, "10.") ||
@@ -159,6 +165,23 @@ func (d *ImageDetector) isImageURL(rawURL string) bool {
 	// Check Twitter/X image URLs
 	if (strings.Contains(host, "pbs.twimg.com") || strings.Contains(host, "ton.twitter.com")) &&
 		strings.Contains(u.Path, "/media/") {
+		return true
+	}
+
+	return false
+}
+
+func isPrivateIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+
+	cgnatRange := &net.IPNet{
+		IP:   net.IPv4(100, 64, 0, 0),
+		Mask: net.CIDRMask(10, 32),
+	}
+	if ip.To4() != nil && cgnatRange.Contains(ip) {
 		return true
 	}
 
