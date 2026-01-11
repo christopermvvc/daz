@@ -826,7 +826,7 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 	if !exists {
 		logger.Warn("EventFilter", "Unknown command: %s", cmdName)
 		err := fmt.Errorf("unknown command: %s", cmdName)
-		if logErr := p.logCommand(cmdName, chatData.Username, chatData.Channel, args, false, err.Error()); logErr != nil {
+		if logErr := p.logCommand(cmdName, chatData.Username, chatData.Channel, nil, false, err.Error()); logErr != nil {
 			logger.Warn("EventFilter", "Failed to log command failure: %v", logErr)
 		}
 		// Emit failure event for unknown command
@@ -839,7 +839,7 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 	if !cmdInfo.Enabled {
 		logger.Debug("EventFilter", "Command disabled: %s", cmdName)
 		err := fmt.Errorf("command disabled: %s", cmdName)
-		if logErr := p.logCommand(cmdName, chatData.Username, chatData.Channel, args, false, err.Error()); logErr != nil {
+		if logErr := p.logCommand(cmdName, chatData.Username, chatData.Channel, nil, false, err.Error()); logErr != nil {
 			logger.Warn("EventFilter", "Failed to log command failure: %v", logErr)
 		}
 		// Emit failure event for disabled command
@@ -855,7 +855,7 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 			logger.Debug("EventFilter", "User %s lacks rank for command %s (has: %d, needs: %d)",
 				chatData.Username, cmdName, chatData.UserRank, cmdInfo.MinRank)
 			err := fmt.Errorf("insufficient rank for command %s: user has %d, needs %d", cmdName, chatData.UserRank, cmdInfo.MinRank)
-			if logErr := p.logCommand(cmdName, chatData.Username, chatData.Channel, args, false, err.Error()); logErr != nil {
+			if logErr := p.logCommand(cmdName, chatData.Username, chatData.Channel, nil, false, err.Error()); logErr != nil {
 				logger.Warn("EventFilter", "Failed to log command failure: %v", logErr)
 			}
 			// Emit failure event for insufficient rank
@@ -868,7 +868,7 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 	if !isAdmin && !p.checkCooldown(chatData.Username, cmdName) {
 		logger.Debug("EventFilter", "Command cooldown active for %s on %s", chatData.Username, cmdName)
 		err := fmt.Errorf("cooldown active for command %s", cmdName)
-		if logErr := p.logCommand(cmdName, chatData.Username, chatData.Channel, args, false, err.Error()); logErr != nil {
+		if logErr := p.logCommand(cmdName, chatData.Username, chatData.Channel, nil, false, err.Error()); logErr != nil {
 			logger.Warn("EventFilter", "Failed to log command failure: %v", logErr)
 		}
 		correlationID := fmt.Sprintf("cooldown-%s-%d", cmdName, time.Now().UnixNano())

@@ -85,3 +85,4 @@
 - [x] P2: Gallery hostname checks should resolve DNS to block private IPs (SSRF hardening) (`internal/plugins/gallery/detector.go`).
 - [x] P2: Gallery health checks should skip unsafe URLs before HTTP probes (`internal/plugins/gallery/health.go`).
 - [x] P2: EventFilter should persist command failures to history for auditing (`internal/plugins/eventfilter/plugin.go`).
+- [x] P2: EventFilter should avoid logging args for failed commands (`internal/plugins/eventfilter/plugin.go`).
