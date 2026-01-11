@@ -79,7 +79,7 @@ type Plugin struct {
 	successfulRequests int64
 	failedRequests     int64
 	metricsLock        sync.RWMutex
-	
+
 	// Plugin start time to ignore old messages
 	startTime time.Time
 }
@@ -160,7 +160,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 			return fmt.Errorf("failed to parse config: %w", err)
 		}
 	}
-	
+
 	// Ensure defaults are set if not provided in config
 	if p.config.OllamaURL == "" {
 		p.config.OllamaURL = defaultOllamaURL
@@ -180,10 +180,6 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	if p.config.SystemPrompt == "" {
 		p.config.SystemPrompt = defaultSystemPrompt
 	}
-	
-	// IMPORTANT: Default to enabled if not explicitly set
-	// Since this is a new plugin, it should be enabled by default
-	p.config.Enabled = true
 
 	// Set bot name from environment or config
 	p.botName = os.Getenv("DAZ_BOT_NAME")
@@ -347,7 +343,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	if !ok {
 		return nil
 	}
-	
+
 	if dataEvent.Data == nil || dataEvent.Data.ChatMessage == nil {
 		return nil
 	}
@@ -537,7 +533,7 @@ func (p *Plugin) isRateLimited(channel, username string) bool {
 		if err := rows.Scan(&lastResponseAt, &secondsSince); err == nil {
 			rateLimitSeconds := float64(p.config.RateLimitSeconds)
 			isBlocked := secondsSince < rateLimitSeconds
-			logger.Debug(p.name, "Rate limit check for %s: %.2f seconds since last response, limit is %.0f seconds, blocked=%v", 
+			logger.Debug(p.name, "Rate limit check for %s: %.2f seconds since last response, limit is %.0f seconds, blocked=%v",
 				username, secondsSince, rateLimitSeconds, isBlocked)
 			if isBlocked {
 				return true
@@ -971,4 +967,3 @@ func (p *Plugin) Status() framework.PluginStatus {
 		EventsHandled: total,
 	}
 }
-
