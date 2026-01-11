@@ -76,13 +76,11 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 
 func (p *Plugin) Start() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.running {
+		p.mu.Unlock()
 		return fmt.Errorf("plugin already running")
 	}
-
-	p.running = true
+	p.mu.Unlock()
 
 	// Create database table
 	if err := p.createTable(); err != nil {
@@ -95,20 +93,29 @@ func (p *Plugin) Start() error {
 	logger.Debug(p.name, "Subscribing to cytube.event.addUser")
 	if err := p.eventBus.Subscribe("cytube.event.addUser", p.handleUserJoin); err != nil {
 		logger.Error(p.name, "Failed to subscribe to addUser: %v", err)
+		return fmt.Errorf("failed to subscribe to addUser: %w", err)
 	}
 
 	logger.Debug(p.name, "Subscribing to cytube.event.userLeave")
 	if err := p.eventBus.Subscribe("cytube.event.userLeave", p.handleUserLeave); err != nil {
 		logger.Error(p.name, "Failed to subscribe to userLeave: %v", err)
+		return fmt.Errorf("failed to subscribe to userLeave: %w", err)
 	}
 
 	logger.Debug(p.name, "Subscribing to command.tell.execute")
 	if err := p.eventBus.Subscribe("command.tell.execute", p.handleCommandEvent); err != nil {
 		logger.Error(p.name, "Failed to subscribe to command.tell.execute: %v", err)
+		return fmt.Errorf("failed to subscribe to command.tell.execute: %w", err)
 	}
 
-	// Register command with eventfilter
-	p.registerCommand()
+	if err := p.registerCommand(); err != nil {
+		logger.Error(p.name, "Failed to register command: %v", err)
+		return err
+	}
+
+	p.mu.Lock()
+	p.running = true
+	p.mu.Unlock()
 
 	// Start cleanup goroutine
 	p.wg.Add(1)
@@ -201,7 +208,7 @@ func (p *Plugin) createTable() error {
 	return err
 }
 
-func (p *Plugin) registerCommand() {
+func (p *Plugin) registerCommand() error {
 	regEvent := &framework.EventData{
 		PluginRequest: &framework.PluginRequest{
 			To:   "eventfilter",
@@ -215,7 +222,10 @@ func (p *Plugin) registerCommand() {
 			},
 		},
 	}
-	_ = p.eventBus.Broadcast("command.register", regEvent)
+	if err := p.eventBus.Broadcast("command.register", regEvent); err != nil {
+		return fmt.Errorf("failed to register tell command: %w", err)
+	}
+	return nil
 }
 
 func (p *Plugin) handleUserJoin(event framework.Event) error {
@@ -438,10 +448,7 @@ func (p *Plugin) deliverMessages(channel, username string) {
 			if messagesInBatch >= deliveryLimit {
 				// Send notification about remaining messages
 				remaining := len(messages) - totalDelivered
-				nextBatch := remaining
-				if nextBatch > deliveryLimit {
-					nextBatch = deliveryLimit
-				}
+				nextBatch := min(remaining, deliveryLimit)
 
 				// Check if any remaining messages are private
 				hasPrivateRemaining := false

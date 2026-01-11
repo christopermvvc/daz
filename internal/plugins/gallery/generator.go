@@ -72,7 +72,9 @@ func (g *HTMLGenerator) GenerateAllGalleries() error {
 
 // GenerateSharedGallery generates a single shared gallery page with all users' images
 func (g *HTMLGenerator) GenerateSharedGallery(users []struct{ Username, Channel string }) error {
-	// Create output directory
+	if !g.isSafeOutputPath() {
+		return fmt.Errorf("unsafe html output path: %s", g.config.HTMLOutputPath)
+	}
 	if err := os.MkdirAll(g.config.HTMLOutputPath, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
@@ -901,6 +903,23 @@ func (g *HTMLGenerator) ensureMarkerFile() error {
 		return fmt.Errorf("unsafe html output path: %s", g.config.HTMLOutputPath)
 	}
 	markerPath := g.markerFilePath()
+	gitDir := filepath.Join(filepath.Clean(g.config.HTMLOutputPath), ".git")
+	if _, err := os.Stat(gitDir); err == nil {
+		if _, err := os.Stat(markerPath); err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("gallery marker missing in existing git directory: %s", g.config.HTMLOutputPath)
+			}
+			return fmt.Errorf("failed to stat gallery marker: %w", err)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to stat gallery git directory: %w", err)
+	}
+	if _, err := os.Stat(markerPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to stat gallery marker: %w", err)
+	}
 	return os.WriteFile(markerPath, []byte("daz gallery output"), 0644)
 }
 
@@ -914,6 +933,9 @@ func (g *HTMLGenerator) hasMarkerFile() bool {
 func (g *HTMLGenerator) isSafeOutputPath() bool {
 	outputPath := filepath.Clean(g.config.HTMLOutputPath)
 	if outputPath == "" || outputPath == "." || outputPath == string(filepath.Separator) {
+		return false
+	}
+	if !filepath.IsAbs(outputPath) {
 		return false
 	}
 	return true
