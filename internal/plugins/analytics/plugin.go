@@ -35,6 +35,9 @@ type Plugin struct {
 
 	// Plugin status tracking
 	status framework.PluginStatus
+
+	pendingMu        sync.Mutex
+	pendingResponses map[string]chan *framework.PluginResponse
 }
 
 // Config holds analytics plugin configuration
@@ -164,6 +167,12 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.eventBus = bus
 	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
+	p.pendingResponses = make(map[string]chan *framework.PluginResponse)
+
+	responseEvent := fmt.Sprintf("plugin.response.%s", p.name)
+	if err := p.eventBus.Subscribe(responseEvent, p.handlePluginResponse); err != nil {
+		return fmt.Errorf("failed to subscribe to response: %w", err)
+	}
 
 	logger.Debug("Analytics", "Initialized with hourly interval: %v, daily interval: %v",
 		p.config.HourlyInterval, p.config.DailyInterval)
@@ -582,6 +591,32 @@ func (p *Plugin) runHourlyAggregation() {
 	}
 }
 
+// handlePluginResponse routes responses to waiting requests
+func (p *Plugin) handlePluginResponse(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil || dataEvent.Data.PluginResponse == nil {
+		return nil
+	}
+
+	resp := dataEvent.Data.PluginResponse
+
+	p.pendingMu.Lock()
+	responseChan, exists := p.pendingResponses[resp.ID]
+	if exists {
+		delete(p.pendingResponses, resp.ID)
+	}
+	p.pendingMu.Unlock()
+
+	if exists {
+		select {
+		case responseChan <- resp:
+		default:
+		}
+	}
+
+	return nil
+}
+
 // getConfiguredChannels returns the currently connected channels from the core plugin
 func (p *Plugin) getConfiguredChannels() ([]string, error) {
 	// Create a unique request ID
@@ -591,28 +626,15 @@ func (p *Plugin) getConfiguredChannels() ([]string, error) {
 	responseChan := make(chan *framework.PluginResponse, 1)
 	errorChan := make(chan error, 1)
 
-	// Create a handler that will receive the response
-	responseHandler := func(event framework.Event) error {
-		dataEvent, ok := event.(*framework.DataEvent)
-		if !ok || dataEvent.Data == nil || dataEvent.Data.PluginResponse == nil {
-			return nil
-		}
+	p.pendingMu.Lock()
+	p.pendingResponses[requestID] = responseChan
+	p.pendingMu.Unlock()
 
-		resp := dataEvent.Data.PluginResponse
-		if resp.ID == requestID {
-			select {
-			case responseChan <- resp:
-			default:
-			}
-		}
-		return nil
-	}
-
-	// Subscribe to the response event BEFORE sending the request
-	responseEvent := fmt.Sprintf("plugin.response.%s", p.name)
-	if err := p.eventBus.Subscribe(responseEvent, responseHandler); err != nil {
-		return nil, fmt.Errorf("failed to subscribe to response: %w", err)
-	}
+	defer func() {
+		p.pendingMu.Lock()
+		delete(p.pendingResponses, requestID)
+		p.pendingMu.Unlock()
+	}()
 
 	// Send the request in a goroutine to avoid blocking
 	go func() {

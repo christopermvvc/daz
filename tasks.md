@@ -48,4 +48,4 @@
 - [x] P1: Reconnect path starts a new `processRoomEvents` goroutine on each connect (possible duplicate handlers) (`internal/core/room_manager.go`).
 - [x] P1: Config validation requires credentials even though anonymous joins are supported (`internal/config/config.go`, `internal/core/room_manager.go`).
 - [x] P0: WebSocket client debug logging may include login payloads (credentials) when debug enabled (`pkg/cytube/websocket_client.go`).
-- [ ] P1: Analytics plugin channel discovery subscribes repeatedly without unsubscribe (possible handler leak) (`internal/plugins/analytics/plugin.go`).
+- [x] P1: Analytics plugin channel discovery subscribes repeatedly without unsubscribe (possible handler leak) (`internal/plugins/analytics/plugin.go`).
