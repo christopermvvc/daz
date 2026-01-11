@@ -468,7 +468,13 @@ func (p *Plugin) runHTMLGenerator() {
 	defer ticker.Stop()
 
 	// Wait 30 seconds before first generation to offset from health checks
-	time.Sleep(30 * time.Second)
+	initialTimer := time.NewTimer(30 * time.Second)
+	select {
+	case <-initialTimer.C:
+	case <-p.ctx.Done():
+		initialTimer.Stop()
+		return
+	}
 
 	// Generate immediately after initial delay
 	if err := p.generator.GenerateAllGalleries(); err != nil {
