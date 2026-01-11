@@ -23,6 +23,7 @@ type RoomConnection struct {
 	ReconnectAttempt    int
 	LastReconnect       time.Time
 	LastMediaUpdate     time.Time
+	eventLoopStarted    bool
 	reconnectInProgress bool
 	mu                  sync.RWMutex
 }
@@ -178,8 +179,11 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 		conn.LastMediaUpdate = time.Now() // Reset timestamp on successful connection
 		logger.Info("RoomManager", "Room '%s': Connected successfully", roomID)
 
-		// Start event processing for this room
-		go rm.processRoomEvents(roomID)
+		// Start event processing for this room once
+		if !conn.eventLoopStarted {
+			conn.eventLoopStarted = true
+			go rm.processRoomEvents(roomID)
+		}
 
 		// Wait for connection to stabilize
 		stabilizeTimer := time.NewTimer(3 * time.Second)
