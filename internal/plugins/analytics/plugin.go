@@ -34,7 +34,8 @@ type Plugin struct {
 	usersActive   map[string]bool
 
 	// Plugin status tracking
-	status framework.PluginStatus
+	status    framework.PluginStatus
+	startTime time.Time
 
 	pendingMu        sync.Mutex
 	pendingResponses map[string]chan *framework.PluginResponse
@@ -232,7 +233,8 @@ func (p *Plugin) Start() error {
 
 	p.running = true
 	p.status.State = "running"
-	p.status.Uptime = time.Since(time.Now())
+	p.status.Uptime = 0
+	p.startTime = time.Now()
 
 	// Signal that the plugin is ready
 	close(p.readyChan)
@@ -275,8 +277,8 @@ func (p *Plugin) Status() framework.PluginStatus {
 	defer p.mu.RUnlock()
 
 	status := p.status
-	if p.running {
-		status.Uptime = time.Since(time.Now().Add(-status.Uptime))
+	if p.running && !p.startTime.IsZero() {
+		status.Uptime = time.Since(p.startTime)
 	}
 	return status
 }
@@ -426,8 +428,25 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 	}
 
 	channel := ""
+	username := ""
 	if dataEvent.Data.ChatMessage != nil {
 		channel = dataEvent.Data.ChatMessage.Channel
+		username = dataEvent.Data.ChatMessage.Username
+	}
+	if dataEvent.Data.PrivateMessage != nil {
+		channel = dataEvent.Data.PrivateMessage.Channel
+		if username == "" {
+			username = dataEvent.Data.PrivateMessage.FromUser
+		}
+	}
+	if dataEvent.Data.PluginRequest != nil && dataEvent.Data.PluginRequest.Data != nil && dataEvent.Data.PluginRequest.Data.Command != nil {
+		params := dataEvent.Data.PluginRequest.Data.Command.Params
+		if channel == "" {
+			channel = params["channel"]
+		}
+		if username == "" {
+			username = params["username"]
+		}
 	}
 	if channel == "" {
 		logger.Warn("Analytics", "Skipping stats request without channel context")
@@ -547,8 +566,14 @@ func (p *Plugin) handleStatsRequest(event framework.Event) error {
 			Success: true,
 			Data: &framework.ResponseData{
 				KeyValue: map[string]string{
-					"message": response,
-					"type":    "stats",
+					"message":  response,
+					"type":     "stats",
+					"channel":  channel,
+					"username": username,
+				},
+				CommandResult: &framework.CommandResultData{
+					Success: true,
+					Output:  response,
 				},
 			},
 		},
