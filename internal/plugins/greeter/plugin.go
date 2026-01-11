@@ -967,7 +967,9 @@ func (p *Plugin) sendPM(channel, toUser, message string) {
 			Channel: channel,
 		},
 	}
-	_ = p.eventBus.Broadcast("cytube.send.pm", pmData)
+	if err := p.eventBus.Broadcast("cytube.send.pm", pmData); err != nil {
+		logger.Error(p.name, "Failed to send PM to %s: %v", toUser, err)
+	}
 }
 
 // isInChannelGracePeriod checks if we're still in the grace period after joining a channel
