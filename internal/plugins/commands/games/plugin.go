@@ -87,18 +87,8 @@ func (p *Plugin) Start() error {
 		return fmt.Errorf("failed to register command: %w", err)
 	}
 
-	subs := map[string]framework.EventHandler{
-		"command.8ball.execute":     p.handle8BallCommand,
-		"command.eightball.execute": p.handle8BallCommand,
-		"command.coinflip.execute":  p.handleCoinFlipCommand,
-		"command.flip.execute":      p.handleCoinFlipCommand,
-		"command.rps.execute":       p.handleRPSCommand,
-	}
-
-	for topic, handler := range subs {
-		if err := p.eventBus.Subscribe(topic, handler); err != nil {
-			return fmt.Errorf("failed to subscribe to %s: %w", topic, err)
-		}
+	if err := p.eventBus.Subscribe("command.games.execute", p.handleCommand); err != nil {
+		return fmt.Errorf("failed to subscribe to command.games.execute: %w", err)
 	}
 
 	return nil
@@ -141,6 +131,29 @@ func (p *Plugin) handleCoinFlipCommand(event framework.Event) error {
 
 func (p *Plugin) handleRPSCommand(event framework.Event) error {
 	return p.handleWithGeneratedResponse(event, p.generateRPSResponse)
+}
+
+func (p *Plugin) handleCommand(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil || dataEvent.Data.PluginRequest == nil {
+		return nil
+	}
+
+	req := dataEvent.Data.PluginRequest
+	if req.Data == nil || req.Data.Command == nil {
+		return nil
+	}
+
+	switch req.Data.Command.Name {
+	case "8ball", "eightball":
+		return p.handle8BallCommand(event)
+	case "coinflip", "flip":
+		return p.handleCoinFlipCommand(event)
+	case "rps":
+		return p.handleRPSCommand(event)
+	default:
+		return nil
+	}
 }
 
 func (p *Plugin) handleWithGeneratedResponse(event framework.Event, generator func([]string) string) error {

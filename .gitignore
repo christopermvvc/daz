@@ -152,6 +152,7 @@ coverage.out
 *_discovered.txt
 
 # External repository clones and references
+dazza/
 dazza-repo/
 dazza-reference/
 *-repo/

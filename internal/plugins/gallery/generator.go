@@ -22,6 +22,8 @@ type HTMLGenerator struct {
 	mu     sync.Mutex // Protects git operations from concurrent access
 }
 
+const defaultGalleryOutputPath = "./data/galleries"
+
 // UserGalleryData holds gallery data for a single user
 type UserGalleryData struct {
 	Username string
@@ -32,24 +34,65 @@ type UserGalleryData struct {
 
 // NewHTMLGenerator creates a new HTML generator
 func NewHTMLGenerator(store *Store, config *Config) *HTMLGenerator {
-	outputPath := filepath.Clean(config.HTMLOutputPath)
-	if outputPath == "" || outputPath == "." {
-		outputPath = filepath.Join(".", "data", "galleries")
-	}
-	if !filepath.IsAbs(outputPath) {
-		absPath, err := filepath.Abs(outputPath)
-		if err != nil {
-			logger.Warn("gallery", "Failed to resolve html output path %s: %v", outputPath, err)
-		} else {
-			outputPath = absPath
-		}
-	}
-	config.HTMLOutputPath = outputPath
+	config.HTMLOutputPath = normalizeOutputPath(config.HTMLOutputPath)
 
 	return &HTMLGenerator{
 		store:  store,
 		config: config,
 	}
+}
+
+func normalizeOutputPath(raw string) string {
+	fallback := mustResolveFallbackPath()
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return fallback
+	}
+
+	outputPath := trimmed
+	if outputPath == "~" || strings.HasPrefix(outputPath, "~/") {
+		homeDir, err := os.UserHomeDir()
+		if err != nil || homeDir == "" {
+			logger.Warn("gallery", "Failed to resolve home directory for html output path %q, using %s", raw, fallback)
+			return fallback
+		}
+		if outputPath == "~" {
+			outputPath = homeDir
+		} else {
+			outputPath = filepath.Join(homeDir, outputPath[2:])
+		}
+	}
+
+	outputPath = filepath.Clean(outputPath)
+	if outputPath == "" || outputPath == "." || outputPath == string(filepath.Separator) {
+		logger.Warn("gallery", "Unsafe html output path %q configured, using %s", raw, fallback)
+		return fallback
+	}
+
+	if !filepath.IsAbs(outputPath) {
+		absPath, err := filepath.Abs(outputPath)
+		if err != nil {
+			logger.Warn("gallery", "Failed to resolve html output path %q: %v; using %s", raw, err, fallback)
+			return fallback
+		}
+		outputPath = absPath
+	}
+
+	if outputPath == string(filepath.Separator) {
+		logger.Warn("gallery", "Unsafe html output path %q configured, using %s", raw, fallback)
+		return fallback
+	}
+
+	return outputPath
+}
+
+func mustResolveFallbackPath() string {
+	fallbackAbs, err := filepath.Abs(defaultGalleryOutputPath)
+	if err != nil {
+		logger.Warn("gallery", "Failed to resolve default html output path %s: %v", defaultGalleryOutputPath, err)
+		return filepath.Clean(defaultGalleryOutputPath)
+	}
+	return fallbackAbs
 }
 
 // GenerateAllGalleries generates a single shared HTML gallery for all users

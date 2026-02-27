@@ -38,6 +38,7 @@ type Plugin struct {
 	eventsHandled int64
 	imagesAdded   int64
 	htmlDirty     atomic.Bool
+	htmlDirtyCh   chan struct{}
 }
 
 // Config holds plugin configuration
@@ -95,6 +96,7 @@ func (p *Plugin) Init(configData json.RawMessage, bus framework.EventBus) error 
 	p.generator = NewHTMLGenerator(p.store, p.config)
 
 	p.userRateLimit = make(map[string]time.Time)
+	p.htmlDirtyCh = make(chan struct{}, 1)
 
 	logger.Info(p.name, "Gallery plugin initialized with max %d images per user", p.config.MaxImagesPerUser)
 	return nil
@@ -295,6 +297,10 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 
 func (p *Plugin) markHTMLDirty() {
 	p.htmlDirty.Store(true)
+	select {
+	case p.htmlDirtyCh <- struct{}{}:
+	default:
+	}
 }
 
 func (p *Plugin) handleCommand(event framework.Event) error {
@@ -479,30 +485,33 @@ func (p *Plugin) runHTMLGenerator() {
 	defer ticker.Stop()
 
 	initialTimer := time.NewTimer(30 * time.Second)
-	select {
-	case <-initialTimer.C:
-	case <-p.ctx.Done():
-		initialTimer.Stop()
-		return
-	}
+	defer initialTimer.Stop()
 
-	if p.htmlDirty.Swap(false) {
-		if err := p.generator.GenerateAllGalleries(p.ctx); err != nil {
-			logger.Warn(p.name, "Initial HTML generation had issues: %v", err)
+	lastRun := time.Time{}
+	runIfDirty := func() {
+		if !p.htmlDirty.Swap(false) {
+			return
 		}
+		if !lastRun.IsZero() && time.Since(lastRun) < time.Minute {
+			p.htmlDirty.Store(true)
+			return
+		}
+		if err := p.generator.GenerateAllGalleries(p.ctx); err != nil {
+			logger.Warn(p.name, "HTML generation had issues: %v", err)
+		}
+		lastRun = time.Now()
 	}
 
 	for {
 		select {
 		case <-p.ctx.Done():
 			return
+		case <-initialTimer.C:
+			runIfDirty()
 		case <-ticker.C:
-			if !p.htmlDirty.Swap(false) {
-				continue
-			}
-			if err := p.generator.GenerateAllGalleries(p.ctx); err != nil {
-				logger.Warn(p.name, "HTML generation had issues: %v", err)
-			}
+			runIfDirty()
+		case <-p.htmlDirtyCh:
+			runIfDirty()
 		}
 	}
 }
