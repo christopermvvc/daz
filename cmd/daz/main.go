@@ -24,6 +24,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/fortune"
 	"github.com/hildolfr/daz/internal/plugins/commands/games"
 	"github.com/hildolfr/daz/internal/plugins/commands/help"
+	"github.com/hildolfr/daz/internal/plugins/commands/insult"
 	"github.com/hildolfr/daz/internal/plugins/commands/quote"
 	"github.com/hildolfr/daz/internal/plugins/commands/random"
 	"github.com/hildolfr/daz/internal/plugins/commands/seen"
@@ -220,6 +221,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"fortune", fortune.New()},
 		{"games", games.New()},
 		{"help", help.New()},
+		{"insult", insult.New()},
 		{"quote", quote.New()},
 		{"uptime", uptime.New()},
 		{"weather", weather.New()},
@@ -248,6 +250,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["analytics"] = cfg.GetPluginConfig("analytics")
 	pluginConfigs["about"] = cfg.GetPluginConfig("about")
 	pluginConfigs["clap"] = cfg.GetPluginConfig("clap")
+	pluginConfigs["insult"] = cfg.GetPluginConfig("insult")
 	pluginConfigs["fortune"] = cfg.GetPluginConfig("fortune")
 	pluginConfigs["games"] = cfg.GetPluginConfig("games")
 	pluginConfigs["help"] = cfg.GetPluginConfig("help")
