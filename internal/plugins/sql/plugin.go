@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -431,8 +433,74 @@ func (p *Plugin) initializeSchema(ctx context.Context) error {
 		}
 	}
 
+	if err := p.applyExternalMigrations(ctx); err != nil {
+		return err
+	}
+
 	logger.Debug("SQL", "Database schema initialized")
 	return nil
+}
+
+func (p *Plugin) applyExternalMigrations(ctx context.Context) error {
+	migrationFiles := []string{
+		"scripts/sql/032_user_state_foundation.sql",
+	}
+
+	for _, migrationFile := range migrationFiles {
+		migrationSQL, err := p.loadMigrationSQL(migrationFile)
+		if err != nil {
+			return err
+		}
+
+		if strings.TrimSpace(migrationSQL) == "" {
+			continue
+		}
+
+		if _, err := p.pool.Exec(ctx, migrationSQL); err != nil {
+			return fmt.Errorf("failed to apply migration %s: %w", migrationFile, err)
+		}
+	}
+
+	return nil
+}
+
+func (p *Plugin) loadMigrationSQL(relativePath string) (string, error) {
+	path, err := p.resolveMigrationPath(relativePath)
+	if err != nil {
+		return "", err
+	}
+
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read migration %s: %w", path, err)
+	}
+
+	return string(contents), nil
+}
+
+func (p *Plugin) resolveMigrationPath(relativePath string) (string, error) {
+	candidates := []string{relativePath}
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(cwd, relativePath))
+	}
+	if execPath, err := os.Executable(); err == nil {
+		execDir := filepath.Dir(execPath)
+		candidates = append(candidates,
+			filepath.Join(execDir, relativePath),
+			filepath.Join(execDir, "..", relativePath),
+		)
+	}
+
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			return filepath.Clean(candidate), nil
+		}
+	}
+
+	return "", fmt.Errorf("migration file not found: %s", relativePath)
 }
 
 func (p *Plugin) generateID() string {

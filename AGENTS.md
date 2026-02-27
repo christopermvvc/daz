@@ -149,6 +149,17 @@
 - `make test`
 - `go test ./internal/... -run TestName`
 
+## Legacy User-State Schema (032)
+- Migration file: `scripts/sql/032_user_state_foundation.sql`.
+- Runtime application: `internal/plugins/sql/plugin.go` via `applyExternalMigrations()` in `initializeSchema()`.
+- Purpose: storage foundation for legacy Dazza-style user quantities before plugin porting.
+- Economy table: `daz_user_economy` (`balance`, `trust_score`, `heist_count`, `last_heist_at`, `total_earned`, `total_lost`).
+- Body-state table: `daz_user_bladder` (`current_amount`, `last_drink_time`, `drinks_since_piss`, `last_piss_time`).
+- Pissing contest tables: `daz_pissing_contest_stats`, `daz_pissing_contest_challenges`.
+- Game stat tables: `daz_mystery_box_stats`, `daz_couch_stats`, `daz_coin_flip_stats`, `daz_sign_spinning_stats`, `daz_mug_stats`.
+- Progression/session tables: `daz_coin_flip_challenges`, `daz_bong_sessions`, `daz_user_bong_streaks`.
+- All new tables are channel-scoped (`channel` + `username` uniqueness), include timestamps, and grant CRUD access to `daz_user`.
+
 ## Footnotes
 - Build script is `scripts/build-daz.sh` and is authoritative.
 - The build script creates `./bin/daz` and enforces location checks.
