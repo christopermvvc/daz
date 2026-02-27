@@ -416,7 +416,9 @@ func (p *Plugin) initializeSchema(ctx context.Context) error {
 
 		// Migrations to add missing columns
 		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS message_time BIGINT`,
+		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS to_user VARCHAR(100)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_events_chatmsg_unique ON daz_core_events (channel_name, message_time, username) WHERE event_type = 'cytube.event.chatMsg'`,
+		`CREATE INDEX IF NOT EXISTS idx_events_to_user ON daz_core_events (to_user)`,
 		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS video_id VARCHAR(255)`,
 		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS video_type VARCHAR(50)`,
 		`ALTER TABLE daz_core_events ADD COLUMN IF NOT EXISTS title TEXT`,

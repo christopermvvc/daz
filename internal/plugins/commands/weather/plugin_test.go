@@ -171,3 +171,52 @@ func TestHandleEvent(t *testing.T) {
 	err := plugin.HandleEvent(event)
 	assert.NoError(t, err)
 }
+
+func TestSendResponsePublic(t *testing.T) {
+	plugin := New().(*Plugin)
+	mockBus := new(MockEventBus)
+	_ = plugin.Init(nil, mockBus)
+
+	mockBus.On("Broadcast", "cytube.send", mock.Anything).Return(nil)
+
+	plugin.sendResponse("testuser", "testchannel", "test weather", true, false)
+
+	mockBus.AssertExpectations(t)
+}
+
+func TestSendResponsePM(t *testing.T) {
+	plugin := New().(*Plugin)
+	mockBus := new(MockEventBus)
+	_ = plugin.Init(nil, mockBus)
+
+	mockBus.On("Broadcast", "plugin.response", mock.Anything).Return(nil)
+
+	plugin.sendResponse("testuser", "testchannel", "test weather", true, true)
+
+	mockBus.AssertExpectations(t)
+}
+
+func TestWeatherCodeDescription(t *testing.T) {
+	tests := []struct {
+		name     string
+		code     int
+		expected string
+	}{
+		{name: "clear", code: 0, expected: "Clear"},
+		{name: "partly cloudy", code: 2, expected: "Partly cloudy"},
+		{name: "rain", code: 63, expected: "Rain"},
+		{name: "thunderstorm", code: 95, expected: "Thunderstorm"},
+		{name: "unknown", code: 999, expected: "Unknown"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, weatherCodeDescription(tc.code))
+		})
+	}
+}
+
+func TestCToF(t *testing.T) {
+	assert.Equal(t, 32.0, cToF(0))
+	assert.Equal(t, 68.0, cToF(20))
+}
