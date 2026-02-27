@@ -20,6 +20,7 @@ import (
 	"github.com/hildolfr/daz/internal/metrics"
 	"github.com/hildolfr/daz/internal/plugins/analytics"
 	"github.com/hildolfr/daz/internal/plugins/commands/about"
+	"github.com/hildolfr/daz/internal/plugins/commands/clap"
 	"github.com/hildolfr/daz/internal/plugins/commands/fortune"
 	"github.com/hildolfr/daz/internal/plugins/commands/games"
 	"github.com/hildolfr/daz/internal/plugins/commands/help"
@@ -215,6 +216,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"greeter", greeter.New()},
 		{"gallery", gallery.New()},
 		{"about", about.New()},
+		{"clap", clap.New()},
 		{"fortune", fortune.New()},
 		{"games", games.New()},
 		{"help", help.New()},
@@ -245,6 +247,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["mediatracker"] = cfg.GetPluginConfig("mediatracker")
 	pluginConfigs["analytics"] = cfg.GetPluginConfig("analytics")
 	pluginConfigs["about"] = cfg.GetPluginConfig("about")
+	pluginConfigs["clap"] = cfg.GetPluginConfig("clap")
 	pluginConfigs["fortune"] = cfg.GetPluginConfig("fortune")
 	pluginConfigs["games"] = cfg.GetPluginConfig("games")
 	pluginConfigs["help"] = cfg.GetPluginConfig("help")
