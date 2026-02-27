@@ -30,3 +30,25 @@ func TestPickIndexAvoidingLast_AvoidsRepeat(t *testing.T) {
 		t.Fatalf("expected idx != last")
 	}
 }
+
+func TestIsSelfTarget(t *testing.T) {
+	tests := []struct {
+		name        string
+		target      string
+		botUsername string
+		expected    bool
+	}{
+		{name: "explicit bot username", target: "MyBot", botUsername: "mybot", expected: true},
+		{name: "default dazza", target: "dazza", botUsername: "", expected: true},
+		{name: "default bot", target: "bot", botUsername: "", expected: true},
+		{name: "non-self target", target: "someone", botUsername: "", expected: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSelfTarget(tc.target, tc.botUsername); got != tc.expected {
+				t.Fatalf("got %v want %v", got, tc.expected)
+			}
+		})
+	}
+}

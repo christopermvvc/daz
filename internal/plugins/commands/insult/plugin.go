@@ -176,7 +176,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	// Self-defense if trying to insult the bot.
 	botUsername := p.config.BotUsername
 
-	if botUsername != "" && strings.EqualFold(target, botUsername) {
+	if isSelfTarget(target, botUsername) {
 		msg := p.pickSelfDefense(channel)
 		p.sendResponse(username, channel, isPM, p.limit(msg))
 		return nil
@@ -195,6 +195,29 @@ func sanitizeTarget(raw, fallback string) string {
 		return fallback
 	}
 	return t
+}
+
+func isSelfTarget(target, botUsername string) bool {
+	t := strings.ToLower(strings.TrimSpace(target))
+	if t == "" {
+		return false
+	}
+
+	b := strings.ToLower(strings.TrimSpace(botUsername))
+	if b != "" && t == b {
+		return true
+	}
+
+	defaultSelfTargets := map[string]struct{}{
+		"dazza":    {},
+		"daz":      {},
+		"bot":      {},
+		"yourself": {},
+		"self":     {},
+		"you":      {},
+	}
+	_, ok := defaultSelfTargets[t]
+	return ok
 }
 
 func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool) {
