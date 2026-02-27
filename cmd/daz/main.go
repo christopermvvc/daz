@@ -21,6 +21,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/analytics"
 	"github.com/hildolfr/daz/internal/plugins/commands/about"
 	"github.com/hildolfr/daz/internal/plugins/commands/fortune"
+	"github.com/hildolfr/daz/internal/plugins/commands/games"
 	"github.com/hildolfr/daz/internal/plugins/commands/help"
 	"github.com/hildolfr/daz/internal/plugins/commands/random"
 	"github.com/hildolfr/daz/internal/plugins/commands/seen"
@@ -214,6 +215,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"gallery", gallery.New()},
 		{"about", about.New()},
 		{"fortune", fortune.New()},
+		{"games", games.New()},
 		{"help", help.New()},
 		{"uptime", uptime.New()},
 		{"weather", weather.New()},
@@ -242,6 +244,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["analytics"] = cfg.GetPluginConfig("analytics")
 	pluginConfigs["about"] = cfg.GetPluginConfig("about")
 	pluginConfigs["fortune"] = cfg.GetPluginConfig("fortune")
+	pluginConfigs["games"] = cfg.GetPluginConfig("games")
 	pluginConfigs["help"] = cfg.GetPluginConfig("help")
 	pluginConfigs["uptime"] = cfg.GetPluginConfig("uptime")
 	pluginConfigs["tell"] = cfg.GetPluginConfig("tell")
