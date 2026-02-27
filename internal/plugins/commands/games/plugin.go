@@ -172,12 +172,12 @@ func (p *Plugin) handleWithGeneratedResponse(event framework.Event, generator fu
 	args := req.Data.Command.Args
 
 	if !p.checkRateLimit(username) {
-		p.sendResponse(req.ID, username, channel, "Slow down! Please wait a few seconds between game commands.")
+		p.sendResponse(channel, "Slow down! Please wait a few seconds between game commands.")
 		return nil
 	}
 
 	response := generator(args)
-	p.sendResponse(req.ID, username, channel, response)
+	p.sendResponse(channel, response)
 	return nil
 }
 
@@ -266,24 +266,15 @@ func (p *Plugin) generateRPSResponse(args []string) string {
 	return fmt.Sprintf("✂️ You played %s, I played %s — %s", player, bot, result)
 }
 
-func (p *Plugin) sendResponse(requestID, username, channel, message string) {
+func (p *Plugin) sendResponse(channel, message string) {
 	responseData := &framework.EventData{
-		PluginResponse: &framework.PluginResponse{
-			ID:      requestID,
-			From:    p.name,
-			Success: true,
-			Data: &framework.ResponseData{
-				CommandResult: &framework.CommandResultData{Success: true, Output: message},
-				KeyValue: map[string]string{
-					"username": username,
-					"channel":  channel,
-					"is_pm":    "false",
-				},
-			},
+		RawMessage: &framework.RawMessageData{
+			Message: message,
+			Channel: channel,
 		},
 	}
 
-	if err := p.eventBus.Broadcast("plugin.response", responseData); err != nil {
+	if err := p.eventBus.Broadcast("cytube.send", responseData); err != nil {
 		logger.Error(p.name, "failed to send response: %v", err)
 	}
 }

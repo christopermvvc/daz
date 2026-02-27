@@ -153,31 +153,52 @@ func TestGenerateRPSResponse(t *testing.T) {
 	})
 }
 
-func TestHandleCommand_RoutesRPSViaPluginTopic(t *testing.T) {
+func TestHandleCommand_RoutesResponsesToRequestedChannel(t *testing.T) {
 	plugin := New().(*Plugin)
 	mockBus := new(MockEventBus)
 	plugin.eventBus = mockBus
 
-	mockBus.On("Broadcast", "plugin.response", mock.MatchedBy(func(data *framework.EventData) bool {
-		if data == nil || data.PluginResponse == nil || data.PluginResponse.Data == nil || data.PluginResponse.Data.CommandResult == nil {
-			return false
-		}
-		return strings.Contains(data.PluginResponse.Data.CommandResult.Output, "You played rock")
-	})).Return(nil)
+	tests := []struct {
+		name        string
+		commandName string
+		args        []string
+		contains    string
+	}{
+		{name: "coinflip", commandName: "flip", contains: "🪙"},
+		{name: "rps", commandName: "rps", args: []string{"rock"}, contains: "You played rock"},
+		{name: "8ball", commandName: "8ball", args: []string{"will", "it", "work?"}, contains: "🎱 "},
+	}
 
-	err := plugin.handleCommand(&framework.DataEvent{Data: &framework.EventData{PluginRequest: &framework.PluginRequest{
-		ID: "req-1",
-		Data: &framework.RequestData{Command: &framework.CommandData{
-			Name: "rps",
-			Args: []string{"rock"},
-			Params: map[string]string{
-				"username": "tester",
-				"channel":  "always_always_sunny",
-				"is_pm":    "false",
-			},
-		}},
-	}}})
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockBus.On("Broadcast", "cytube.send", mock.MatchedBy(func(data *framework.EventData) bool {
+				if data == nil || data.RawMessage == nil {
+					return false
+				}
+				if data.RawMessage.Channel != "always_always_sunny" {
+					return false
+				}
+				return strings.Contains(data.RawMessage.Message, tc.contains)
+			})).Return(nil).Once()
 
-	assert.NoError(t, err)
+			username := "tester-" + string(rune('1'+i))
+
+			err := plugin.handleCommand(&framework.DataEvent{Data: &framework.EventData{PluginRequest: &framework.PluginRequest{
+				ID: "req-" + string(rune('1'+i)),
+				Data: &framework.RequestData{Command: &framework.CommandData{
+					Name: tc.commandName,
+					Args: tc.args,
+					Params: map[string]string{
+						"username": username,
+						"channel":  "always_always_sunny",
+						"is_pm":    "true",
+					},
+				}},
+			}}})
+
+			assert.NoError(t, err)
+		})
+	}
+
 	mockBus.AssertExpectations(t)
 }
