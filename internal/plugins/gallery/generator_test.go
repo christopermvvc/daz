@@ -1,10 +1,54 @@
 package gallery
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestNewHTMLGenerator_NormalizesOutputPath(t *testing.T) {
+	store := &Store{}
+	config := &Config{HTMLOutputPath: " ./data/custom-gallery "}
+
+	NewHTMLGenerator(store, config)
+
+	if !filepath.IsAbs(config.HTMLOutputPath) {
+		t.Fatalf("expected absolute output path, got %q", config.HTMLOutputPath)
+	}
+	if strings.Contains(config.HTMLOutputPath, " ") {
+		t.Fatalf("expected trimmed output path, got %q", config.HTMLOutputPath)
+	}
+}
+
+func TestNewHTMLGenerator_FallbackForUnsafePath(t *testing.T) {
+	store := &Store{}
+	config := &Config{HTMLOutputPath: "/"}
+
+	NewHTMLGenerator(store, config)
+
+	if config.HTMLOutputPath == string(filepath.Separator) {
+		t.Fatalf("expected fallback path for root output path")
+	}
+	if !filepath.IsAbs(config.HTMLOutputPath) {
+		t.Fatalf("expected absolute fallback path, got %q", config.HTMLOutputPath)
+	}
+}
+
+func TestNewHTMLGenerator_ExpandsHomePath(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	store := &Store{}
+	config := &Config{HTMLOutputPath: "~/daz-galleries"}
+
+	NewHTMLGenerator(store, config)
+
+	expected := filepath.Join(homeDir, "daz-galleries")
+	if config.HTMLOutputPath != expected {
+		t.Fatalf("expected %q, got %q", expected, config.HTMLOutputPath)
+	}
+}
 
 func TestHTMLGenerator_XSSProtection(t *testing.T) {
 	// Create a mock store and generator
