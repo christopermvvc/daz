@@ -157,7 +157,7 @@ func (p *Plugin) handleWeatherCommand(event framework.Event) error {
 	location := strings.Join(args, " ")
 	weather, err := p.getWeather(location)
 	if err != nil {
-		p.sendResponse(username, channel, "weather", fmt.Sprintf("Error getting weather: %v", err), false)
+		p.sendResponse(username, channel, "weather", fmt.Sprintf("Couldn't fetch weather for %q right now. Please try again in a bit.", location), false)
 		return nil
 	}
 
@@ -178,6 +178,10 @@ func (p *Plugin) checkRateLimit(username string) bool {
 }
 
 func (p *Plugin) getWeather(location string) (string, error) {
+	if weather, err := p.getSimpleWeather(location); err == nil {
+		return weather, nil
+	}
+
 	encodedLocation := url.QueryEscape(location)
 
 	// Using custom format for more detailed weather info
@@ -216,11 +220,15 @@ func (p *Plugin) getWeather(location string) (string, error) {
 		return "", err
 	}
 
+	bodyText := strings.TrimSpace(string(body))
+	if looksLikeHTML(bodyText) {
+		return "", fmt.Errorf("weather service returned an unexpected response")
+	}
+
 	// Parse JSON response
 	var data map[string]interface{}
 	if err := json.Unmarshal(body, &data); err != nil {
-		// Try the simple format as fallback
-		return p.getSimpleWeather(location)
+		return "", err
 	}
 
 	// Extract and format the weather data
@@ -268,11 +276,23 @@ func (p *Plugin) getSimpleWeather(location string) (string, error) {
 		return "", fmt.Errorf("no weather data received")
 	}
 
+	if looksLikeHTML(weather) {
+		return "", fmt.Errorf("weather service returned an unexpected response")
+	}
+
 	if strings.Contains(weather, "Unknown location") {
 		return "", fmt.Errorf("unknown location: %s", location)
 	}
 
 	return weather, nil
+}
+
+func looksLikeHTML(body string) bool {
+	lower := strings.ToLower(strings.TrimSpace(body))
+	return strings.HasPrefix(lower, "<!doctype html") ||
+		strings.HasPrefix(lower, "<html") ||
+		strings.HasPrefix(lower, "<head") ||
+		strings.HasPrefix(lower, "<body")
 }
 
 func (p *Plugin) formatWeatherResponse(data map[string]interface{}) string {
