@@ -185,6 +185,9 @@ Daz's event-driven architecture ensures maximum performance and reliability:
 - **!help** - Display available commands
 - **!about** - Show bot information
 - **!uptime** - Report bot uptime
+- **!8ball / !eightball** - Ask the magic 8-ball a question
+- **!coinflip / !flip** - Flip a coin
+- **!rps** - Play rock-paper-scissors with the bot
 
 ## 🛠️ Development
 
