@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/hildolfr/daz/internal/logger"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/logger"
 	"github.com/hildolfr/daz/internal/metrics"
 	"github.com/hildolfr/daz/pkg/eventbus"
 )
@@ -449,24 +450,35 @@ func (p *Plugin) handlePluginRequest(event framework.Event) error {
 	switch req.Type {
 	case "get_configured_channels":
 		return p.handleGetConfiguredChannels(req)
+	case "get_bot_username":
+		return p.handleGetBotUsername(req)
 	case "queue_media":
 		return p.handleQueueMedia(req)
 	case "delete_media":
 		return p.handleDeleteMedia(req)
 	default:
-		// Send error response for unknown request types
-		response := &framework.EventData{
-			PluginResponse: &framework.PluginResponse{
-				ID:      req.ID,
-				From:    "core",
-				Success: false,
-				Error:   fmt.Sprintf("unknown request type: %s", req.Type),
-			},
-		}
-
-		// Send response back to requesting plugin
-		return p.eventBus.Broadcast(fmt.Sprintf("plugin.response.%s", req.From), response)
+		return p.respondToPluginRequest(req, &framework.EventData{PluginResponse: &framework.PluginResponse{
+			ID:      req.ID,
+			From:    "core",
+			Success: false,
+			Error:   fmt.Sprintf("unknown request type: %s", req.Type),
+		}}, fmt.Errorf("unknown request type: %s", req.Type))
 	}
+}
+
+func (p *Plugin) respondToPluginRequest(req *framework.PluginRequest, response *framework.EventData, err error) error {
+	if req == nil {
+		return nil
+	}
+
+	// If this is a synchronous request (EventBus.Request), deliver directly.
+	if req.ReplyTo == "eventbus" && req.ID != "" {
+		p.eventBus.DeliverResponse(req.ID, response, err)
+		return nil
+	}
+
+	// Default async behavior: broadcast to per-plugin response topic.
+	return p.eventBus.Broadcast(fmt.Sprintf("plugin.response.%s", req.From), response)
 }
 
 // handleGetConfiguredChannels returns the list of configured channels
@@ -480,15 +492,17 @@ func (p *Plugin) handleGetConfiguredChannels(req *framework.PluginRequest) error
 		Channel   string `json:"channel"`
 		Enabled   bool   `json:"enabled"`
 		Connected bool   `json:"connected"`
+		Username  string `json:"username,omitempty"`
 	}
 
 	channels := make([]channelInfo, 0, len(p.config.Rooms))
 
 	for _, room := range p.config.Rooms {
 		info := channelInfo{
-			ID:      room.ID,
-			Channel: room.Channel,
-			Enabled: room.Enabled,
+			ID:       room.ID,
+			Channel:  room.Channel,
+			Enabled:  room.Enabled,
+			Username: room.Username,
 		}
 
 		// Get connection status from room manager
@@ -523,7 +537,47 @@ func (p *Plugin) handleGetConfiguredChannels(req *framework.PluginRequest) error
 	}
 
 	// Send response back to requesting plugin
-	return p.eventBus.Broadcast(fmt.Sprintf("plugin.response.%s", req.From), response)
+	return p.respondToPluginRequest(req, response, nil)
+}
+
+func (p *Plugin) handleGetBotUsername(req *framework.PluginRequest) error {
+	channel := ""
+	if req.Data != nil && req.Data.KeyValue != nil {
+		channel = req.Data.KeyValue["channel"]
+	}
+	channel = strings.TrimSpace(channel)
+	if channel == "" {
+		resp := &framework.EventData{PluginResponse: &framework.PluginResponse{
+			ID:      req.ID,
+			From:    "core",
+			Success: false,
+			Error:   "channel is required",
+		}}
+		return p.respondToPluginRequest(req, resp, fmt.Errorf("channel is required"))
+	}
+
+	botUsername := ""
+	p.mu.RLock()
+	for _, room := range p.config.Rooms {
+		if room.Enabled && room.Channel == channel {
+			botUsername = room.Username
+			break
+		}
+	}
+	p.mu.RUnlock()
+
+	resp := &framework.EventData{PluginResponse: &framework.PluginResponse{
+		ID:      req.ID,
+		From:    "core",
+		Success: true,
+		Data: &framework.ResponseData{
+			KeyValue: map[string]string{
+				"channel":      channel,
+				"bot_username": botUsername,
+			},
+		},
+	}}
+	return p.respondToPluginRequest(req, resp, nil)
 }
 
 // handleQueueMedia handles requests to queue media in CyTube
