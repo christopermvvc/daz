@@ -104,11 +104,7 @@ func TestStart(t *testing.T) {
 	_ = plugin.Init(nil, mockBus)
 
 	mockBus.On("Broadcast", "command.register", mock.Anything).Return(nil)
-	mockBus.On("Subscribe", "command.8ball.execute", mock.Anything).Return(nil)
-	mockBus.On("Subscribe", "command.eightball.execute", mock.Anything).Return(nil)
-	mockBus.On("Subscribe", "command.coinflip.execute", mock.Anything).Return(nil)
-	mockBus.On("Subscribe", "command.flip.execute", mock.Anything).Return(nil)
-	mockBus.On("Subscribe", "command.rps.execute", mock.Anything).Return(nil)
+	mockBus.On("Subscribe", "command.games.execute", mock.Anything).Return(nil)
 
 	err := plugin.Start()
 	assert.NoError(t, err)
@@ -155,4 +151,33 @@ func TestGenerateRPSResponse(t *testing.T) {
 		response := plugin.generateRPSResponse([]string{"rock"})
 		assert.True(t, strings.HasPrefix(response, "✂️ You played rock, I played "))
 	})
+}
+
+func TestHandleCommand_RoutesRPSViaPluginTopic(t *testing.T) {
+	plugin := New().(*Plugin)
+	mockBus := new(MockEventBus)
+	plugin.eventBus = mockBus
+
+	mockBus.On("Broadcast", "plugin.response", mock.MatchedBy(func(data *framework.EventData) bool {
+		if data == nil || data.PluginResponse == nil || data.PluginResponse.Data == nil || data.PluginResponse.Data.CommandResult == nil {
+			return false
+		}
+		return strings.Contains(data.PluginResponse.Data.CommandResult.Output, "You played rock")
+	})).Return(nil)
+
+	err := plugin.handleCommand(&framework.DataEvent{Data: &framework.EventData{PluginRequest: &framework.PluginRequest{
+		ID: "req-1",
+		Data: &framework.RequestData{Command: &framework.CommandData{
+			Name: "rps",
+			Args: []string{"rock"},
+			Params: map[string]string{
+				"username": "tester",
+				"channel":  "always_always_sunny",
+				"is_pm":    "false",
+			},
+		}},
+	}}})
+
+	assert.NoError(t, err)
+	mockBus.AssertExpectations(t)
 }
