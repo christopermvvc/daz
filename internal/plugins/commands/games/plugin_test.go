@@ -156,3 +156,38 @@ func TestGenerateRPSResponse(t *testing.T) {
 		assert.True(t, strings.HasPrefix(response, "✂️ You played rock, I played "))
 	})
 }
+
+func TestHandleWithGeneratedResponse_ForcesPublicChat(t *testing.T) {
+	plugin := New().(*Plugin)
+	mockBus := new(MockEventBus)
+	plugin.eventBus = mockBus
+
+	mockBus.On("Broadcast", "plugin.response", mock.MatchedBy(func(data *framework.EventData) bool {
+		if data == nil || data.PluginResponse == nil || data.PluginResponse.Data == nil {
+			return false
+		}
+
+		kv := data.PluginResponse.Data.KeyValue
+		return kv["username"] == "alice" && kv["channel"] == "room" && kv["is_pm"] == "false"
+	})).Return(nil).Once()
+
+	event := framework.NewDataEvent("command.8ball.execute", &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			ID: "req-1",
+			Data: &framework.RequestData{
+				Command: &framework.CommandData{
+					Args: []string{"will", "it", "work?"},
+					Params: map[string]string{
+						"username": "alice",
+						"channel":  "room",
+						"is_pm":    "true",
+					},
+				},
+			},
+		},
+	})
+
+	err := plugin.handle8BallCommand(event)
+	assert.NoError(t, err)
+	mockBus.AssertExpectations(t)
+}
