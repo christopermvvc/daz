@@ -232,25 +232,16 @@ func (p *Plugin) getRandomQuote(ctx context.Context, channel, username string) (
 }
 
 func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
-	username := req.Data.Command.Params["username"]
 	channel := req.Data.Command.Params["channel"]
 
-	response := &framework.EventData{
-		PluginResponse: &framework.PluginResponse{
-			ID:      req.ID,
-			From:    p.name,
-			Success: true,
-			Data: &framework.ResponseData{
-				CommandResult: &framework.CommandResultData{Success: true, Output: message},
-				KeyValue: map[string]string{
-					"username": username,
-					"channel":  channel,
-				},
-			},
+	chatData := &framework.EventData{
+		RawMessage: &framework.RawMessageData{
+			Message: message,
+			Channel: channel,
 		},
 	}
 
-	if err := p.eventBus.Broadcast("plugin.response", response); err != nil {
+	if err := p.eventBus.Broadcast("cytube.send", chatData); err != nil {
 		logger.Error(p.name, "Failed to send quote response: %v", err)
 	}
 }

@@ -150,10 +150,10 @@ func TestHandleCommandUsageWhenUsernameMissing(t *testing.T) {
 
 	foundUsage := false
 	for _, call := range bus.broadcasts {
-		if call.eventType != "plugin.response" || call.data == nil || call.data.PluginResponse == nil || call.data.PluginResponse.Data == nil || call.data.PluginResponse.Data.CommandResult == nil {
+		if call.eventType != "cytube.send" || call.data == nil || call.data.RawMessage == nil {
 			continue
 		}
-		if call.data.PluginResponse.Data.CommandResult.Output == "Usage: !quote <username> (or !rq for random quote)" {
+		if call.data.RawMessage.Message == "Usage: !quote <username> (or !rq for random quote)" {
 			foundUsage = true
 			break
 		}
