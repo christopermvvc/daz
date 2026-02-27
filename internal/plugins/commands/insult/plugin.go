@@ -112,7 +112,6 @@ func (p *Plugin) Stop() error {
 	if p.cancel != nil {
 		p.cancel()
 	}
-
 	logger.Debug(p.name, "Stopped")
 	return nil
 }
@@ -194,7 +193,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		botUsername = p.getBotUsername(channel)
 	}
 
-	if botUsername != "" && strings.EqualFold(target, botUsername) {
+	if isSelfTarget(target, botUsername) {
 		msg := p.pickSelfDefense(channel)
 		p.sendResponse(username, channel, isPM, p.limit(msg))
 		return nil
@@ -215,6 +214,28 @@ func sanitizeTarget(raw, fallback string) string {
 	return t
 }
 
+func isSelfTarget(target, botUsername string) bool {
+	t := strings.ToLower(strings.TrimSpace(target))
+	if t == "" {
+		return false
+	}
+
+	b := strings.ToLower(strings.TrimSpace(botUsername))
+	if b != "" && t == b {
+		return true
+	}
+
+	defaultSelfTargets := map[string]struct{}{
+		"dazza":    {},
+		"daz":      {},
+		"bot":      {},
+		"yourself": {},
+		"self":     {},
+		"you":      {},
+	}
+	_, ok := defaultSelfTargets[t]
+	return ok
+}
 func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool) {
 	if p.cooldown <= 0 {
 		return 0, true
