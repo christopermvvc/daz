@@ -169,16 +169,15 @@ func (p *Plugin) handleWithGeneratedResponse(event framework.Event, generator fu
 
 	username := req.Data.Command.Params["username"]
 	channel := req.Data.Command.Params["channel"]
-	isPM := req.Data.Command.Params["is_pm"] == "true"
 	args := req.Data.Command.Args
 
 	if !p.checkRateLimit(username) {
-		p.sendResponse(req.ID, username, channel, isPM, "Slow down! Please wait a few seconds between game commands.")
+		p.sendResponse(req.ID, username, channel, "Slow down! Please wait a few seconds between game commands.")
 		return nil
 	}
 
 	response := generator(args)
-	p.sendResponse(req.ID, username, channel, isPM, response)
+	p.sendResponse(req.ID, username, channel, response)
 	return nil
 }
 
@@ -267,7 +266,7 @@ func (p *Plugin) generateRPSResponse(args []string) string {
 	return fmt.Sprintf("✂️ You played %s, I played %s — %s", player, bot, result)
 }
 
-func (p *Plugin) sendResponse(requestID, username, channel string, isPM bool, message string) {
+func (p *Plugin) sendResponse(requestID, username, channel, message string) {
 	responseData := &framework.EventData{
 		PluginResponse: &framework.PluginResponse{
 			ID:      requestID,
@@ -278,7 +277,7 @@ func (p *Plugin) sendResponse(requestID, username, channel string, isPM bool, me
 				KeyValue: map[string]string{
 					"username": username,
 					"channel":  channel,
-					"is_pm":    fmt.Sprintf("%t", isPM),
+					"is_pm":    "false",
 				},
 			},
 		},
