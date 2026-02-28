@@ -9,5 +9,5 @@ Config (optional)
 
 Notes
 - Cooldown is per user per channel.
-- Daily counts are per channel (based on current date).
+- Daily counts are per user per channel (based on current date).
 - Uses `daz_bong_sessions` from the legacy user-state migration.

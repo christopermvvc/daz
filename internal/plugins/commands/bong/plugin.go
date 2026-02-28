@@ -195,7 +195,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		if err := p.logUserBong(channel, username); err != nil {
 			logger.Error(p.name, "Failed to log user bong: %v", err)
 		} else {
-			count, err := p.getDailyCount(channel)
+			count, err := p.getDailyCount(channel, username)
 			if err != nil {
 				logger.Error(p.name, "Failed to fetch daily bong count: %v", err)
 			} else {
@@ -261,15 +261,15 @@ func (p *Plugin) logUserBong(channel, username string) error {
 	return err
 }
 
-func (p *Plugin) getDailyCount(channel string) (int64, error) {
+func (p *Plugin) getDailyCount(channel, username string) (int64, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
 	query := `SELECT COALESCE(SUM(cone_count), 0)
 		FROM daz_bong_sessions
-		WHERE channel = $1 AND session_start::date = CURRENT_DATE`
+		WHERE channel = $1 AND username = $2 AND session_start::date = CURRENT_DATE`
 
-	rows, err := p.sqlClient.QueryContext(ctx, query, channel)
+	rows, err := p.sqlClient.QueryContext(ctx, query, channel, normalizeUsername(username))
 	if err != nil {
 		return 0, err
 	}
@@ -287,18 +287,18 @@ func (p *Plugin) getDailyCount(channel string) (int64, error) {
 
 func (p *Plugin) pickResponse(channel string, count int64) string {
 	lines := []string{
-		fmt.Sprintf("🌿 That's bong number %d for today mate", count),
+		fmt.Sprintf("🌿 That's bong number %d for you today mate", count),
 		fmt.Sprintf("🌿 %d cones punched today, feelin' good", count),
 		fmt.Sprintf("🌿 Bong %d done, Shazza's gonna kill me", count),
-		fmt.Sprintf("🌿 %d billies today, fuckin' legend", count),
+		fmt.Sprintf("🌿 %d billies today for ya, fuckin' legend", count),
 		fmt.Sprintf("🌿 Cone %d sorted, time for a dart", count),
 		fmt.Sprintf("🌿 *takes a massive fuckin rip* number %d down the hatch", count),
 		fmt.Sprintf("🌿 *coughs violently* fuck me dead that was number %d", count),
-		fmt.Sprintf("🌿 *bubbling sounds* ... *exhales* ... %d today, fuckin oath", count),
+		fmt.Sprintf("🌿 *bubbling sounds* ... *exhales* ... %d today for ya, fuckin oath", count),
 		fmt.Sprintf("🌿 Number %d... I'm already cooked as... *rips it anyway*", count),
 		fmt.Sprintf("🌿 *packs a fresh cone* number %d for you legends *massive rip*", count),
 		fmt.Sprintf("🌿 %d today already but... *takes another hit*", count),
-		fmt.Sprintf("🌿 *chops up* oi Shazza! That's %d! *bubbling sounds*", count),
+		fmt.Sprintf("🌿 *chops up* oi Shazza! That's %d for ya! *bubbling sounds*", count),
 		fmt.Sprintf("🌿 *coughing fit* number %d went straight to me head", count),
 		fmt.Sprintf("🌿 *rips the billy* %d down, yeah nah yeah that's fuckin mint", count),
 		fmt.Sprintf("🌿 Number %d? *loads up the Gatorade bottle bong*", count),
@@ -377,9 +377,9 @@ func (p *Plugin) maybeSendMilestone(username, channel string, isPM bool, count i
 
 	message := ""
 	if count%50 == 0 {
-		message = fmt.Sprintf("fuckin hell lads, that's %d cones today! I think I can see through time", count)
+		message = fmt.Sprintf("fuckin hell, that's %d cones today for ya! I think I can see through time", count)
 	} else if count%25 == 0 {
-		message = fmt.Sprintf("%d billies! me lungs are fucked but we soldier on", count)
+		message = fmt.Sprintf("%d billies for you! me lungs are fucked but we soldier on", count)
 	}
 
 	if message == "" {
