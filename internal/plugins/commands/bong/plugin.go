@@ -190,6 +190,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	}
 
 	newCount := int64(0)
+	countValid := false
 	if channel != "" && username != "" {
 		if err := p.logUserBong(channel, username); err != nil {
 			logger.Error(p.name, "Failed to log user bong: %v", err)
@@ -199,14 +200,22 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 				logger.Error(p.name, "Failed to fetch daily bong count: %v", err)
 			} else {
 				newCount = count
+				countValid = true
 			}
 		}
 	}
 
-	response := p.pickResponse(channel, newCount)
+	response := ""
+	if countValid {
+		response = p.pickResponse(channel, newCount)
+	} else {
+		response = p.pickFallbackResponse(channel)
+	}
 	p.sendResponse(username, channel, isPM, p.limit(response))
 
-	p.maybeSendMilestone(username, channel, isPM, newCount)
+	if countValid {
+		p.maybeSendMilestone(username, channel, isPM, newCount)
+	}
 	return nil
 }
 
@@ -296,6 +305,20 @@ func (p *Plugin) pickResponse(channel string, count int64) string {
 	}
 
 	key := strings.ToLower(channel)
+	idx := p.pickIndex(key, len(lines))
+	return lines[idx]
+}
+
+func (p *Plugin) pickFallbackResponse(channel string) string {
+	lines := []string{
+		"🌿 *packs a cone* righto, sorted",
+		"🌿 *bubbling sounds* ... *exhales*",
+		"🌿 cone sorted, yeah nah yeah",
+		"🌿 *coughs* fuck me that was a rip",
+		"🌿 *rips the billy* mint",
+	}
+
+	key := strings.ToLower(channel) + ":fallback"
 	idx := p.pickIndex(key, len(lines))
 	return lines[idx]
 }
