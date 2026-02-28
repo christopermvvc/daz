@@ -10,8 +10,9 @@ import (
 )
 
 type quoteMockEventBus struct {
-	broadcasts []quoteBroadcastCall
-	subs       []string
+	broadcasts  []quoteBroadcastCall
+	subs        []string
+	onBroadcast func(eventType string, data *framework.EventData)
 }
 
 type quoteBroadcastCall struct {
@@ -21,6 +22,9 @@ type quoteBroadcastCall struct {
 
 func (m *quoteMockEventBus) Broadcast(eventType string, data *framework.EventData) error {
 	m.broadcasts = append(m.broadcasts, quoteBroadcastCall{eventType: eventType, data: data})
+	if m.onBroadcast != nil {
+		m.onBroadcast(eventType, data)
+	}
 	return nil
 }
 
@@ -201,6 +205,7 @@ func TestSanitizeQuoteMessage(t *testing.T) {
 
 func TestInitUsesEnvBotNameWhenConfigEmpty(t *testing.T) {
 	t.Setenv("DAZ_BOT_NAME", "EnvBot")
+	t.Setenv("DAZ_CYTUBE_USERNAME", "CytubeBot")
 
 	p := New().(*Plugin)
 	if err := p.Init(json.RawMessage("{}"), &quoteMockEventBus{}); err != nil {
@@ -209,5 +214,153 @@ func TestInitUsesEnvBotNameWhenConfigEmpty(t *testing.T) {
 
 	if p.config.BotUsername != "EnvBot" {
 		t.Fatalf("expected BotUsername from env, got %q", p.config.BotUsername)
+	}
+}
+
+func TestResolveBotUsernameFallsBackToCytubeUsername(t *testing.T) {
+	t.Setenv("DAZ_BOT_NAME", "")
+	t.Setenv("DAZ_CYTUBE_USERNAME", "CytubeBot")
+
+	got := resolveBotUsername("")
+	if got != "CytubeBot" {
+		t.Fatalf("expected DAZ_CYTUBE_USERNAME fallback, got %q", got)
+	}
+}
+
+func TestResolveBotUsernamePrefersConfig(t *testing.T) {
+	t.Setenv("DAZ_BOT_NAME", "EnvBot")
+	t.Setenv("DAZ_CYTUBE_USERNAME", "CytubeBot")
+
+	got := resolveBotUsername("ConfiguredBot")
+	if got != "ConfiguredBot" {
+		t.Fatalf("expected configured bot username, got %q", got)
+	}
+}
+
+func TestResolveBotUsernameForChannelFromCoreResponse(t *testing.T) {
+	bus := &quoteMockEventBus{}
+
+	t.Setenv("DAZ_BOT_NAME", "")
+	t.Setenv("DAZ_CYTUBE_USERNAME", "")
+
+	p := New().(*Plugin)
+	if err := p.Init(json.RawMessage("{}"), bus); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	bus.onBroadcast = func(eventType string, data *framework.EventData) {
+		if eventType != "plugin.request" || data == nil || data.PluginRequest == nil {
+			return
+		}
+		requestID := data.PluginRequest.ID
+		if requestID == "" {
+			return
+		}
+
+		respEvent := &framework.DataEvent{Data: &framework.EventData{PluginResponse: &framework.PluginResponse{
+			ID:      requestID,
+			Success: true,
+			Data: &framework.ResponseData{
+				RawJSON: json.RawMessage(`{"channels":[{"channel":"always_always_sunny","username":"dazza","enabled":true,"connected":true}]}`),
+			},
+		}}}
+
+		go func() {
+			_ = p.handlePluginResponse(respEvent)
+		}()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	botUsername, err := p.resolveBotUsernameForChannel(ctx, "always_always_sunny")
+	if err != nil {
+		t.Fatalf("resolveBotUsernameForChannel failed: %v", err)
+	}
+	if botUsername != "dazza" {
+		t.Fatalf("expected bot username from core response, got %q", botUsername)
+	}
+}
+
+func TestExtractBotUsernameFromChannels(t *testing.T) {
+	username, err := extractBotUsernameFromChannels(
+		json.RawMessage(`{"channels":[{"channel":"always_always_sunny","username":"dazza"}]}`),
+		"always_always_sunny",
+	)
+	if err != nil {
+		t.Fatalf("extractBotUsernameFromChannels failed: %v", err)
+	}
+	if username != "dazza" {
+		t.Fatalf("expected dazza, got %q", username)
+	}
+}
+
+func TestHandleCommandRejectsSelfTargetResolvedFromCore(t *testing.T) {
+	bus := &quoteMockEventBus{}
+	p := New().(*Plugin)
+
+	t.Setenv("DAZ_BOT_NAME", "")
+	t.Setenv("DAZ_CYTUBE_USERNAME", "")
+
+	if err := p.Init(json.RawMessage("{}"), bus); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	p.ctx, p.cancel = context.WithCancel(context.Background())
+	defer p.cancel()
+
+	bus.onBroadcast = func(eventType string, data *framework.EventData) {
+		if eventType != "plugin.request" || data == nil || data.PluginRequest == nil {
+			return
+		}
+		if data.PluginRequest.Type != "get_configured_channels" {
+			return
+		}
+
+		requestID := data.PluginRequest.ID
+		if requestID == "" {
+			return
+		}
+
+		respEvent := &framework.DataEvent{Data: &framework.EventData{PluginResponse: &framework.PluginResponse{
+			ID:      requestID,
+			Success: true,
+			Data: &framework.ResponseData{
+				RawJSON: json.RawMessage(`{"channels":[{"channel":"always_always_sunny","username":"dazza","enabled":true,"connected":true}]}`),
+			},
+		}}}
+
+		go func() {
+			_ = p.handlePluginResponse(respEvent)
+		}()
+	}
+
+	err := p.handleCommand(&framework.DataEvent{Data: &framework.EventData{PluginRequest: &framework.PluginRequest{
+		ID: "req-quote-self",
+		Data: &framework.RequestData{Command: &framework.CommandData{
+			Name: "q",
+			Args: []string{"dazza"},
+			Params: map[string]string{
+				"username": "hildolfr",
+				"channel":  "always_always_sunny",
+			},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("handleCommand failed: %v", err)
+	}
+
+	foundBlock := false
+	for _, call := range bus.broadcasts {
+		if call.eventType != "cytube.send" || call.data == nil || call.data.RawMessage == nil {
+			continue
+		}
+		if call.data.RawMessage.Message == "Nope. I won't quote myself." {
+			foundBlock = true
+			break
+		}
+	}
+
+	if !foundBlock {
+		t.Fatalf("expected self-quote block response")
 	}
 }

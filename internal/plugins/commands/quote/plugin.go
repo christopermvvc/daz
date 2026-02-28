@@ -16,13 +16,15 @@ import (
 )
 
 type Plugin struct {
-	name     string
-	eventBus framework.EventBus
-	running  bool
-	mu       sync.RWMutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	config   Config
+	name             string
+	eventBus         framework.EventBus
+	running          bool
+	mu               sync.RWMutex
+	ctx              context.Context
+	cancel           context.CancelFunc
+	config           Config
+	pendingMu        sync.Mutex
+	pendingResponses map[string]chan *framework.PluginResponse
 }
 
 type Config struct {
@@ -38,7 +40,10 @@ type quoteRow struct {
 }
 
 func New() framework.Plugin {
-	return &Plugin{name: "quote"}
+	return &Plugin{
+		name:             "quote",
+		pendingResponses: make(map[string]chan *framework.PluginResponse),
+	}
 }
 
 func (p *Plugin) Dependencies() []string {
@@ -62,9 +67,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 
 	p.config.BotUsername = strings.TrimSpace(p.config.BotUsername)
-	if p.config.BotUsername == "" {
-		p.config.BotUsername = strings.TrimSpace(os.Getenv("DAZ_BOT_NAME"))
-	}
+	p.config.BotUsername = resolveBotUsername(p.config.BotUsername)
 	return nil
 }
 
@@ -79,6 +82,10 @@ func (p *Plugin) Start() error {
 
 	if err := p.eventBus.Subscribe("command.quote.execute", p.handleCommand); err != nil {
 		return fmt.Errorf("failed to subscribe to command.quote.execute: %w", err)
+	}
+
+	if err := p.eventBus.Subscribe("plugin.response.quote", p.handlePluginResponse); err != nil {
+		return fmt.Errorf("failed to subscribe to plugin.response.quote: %w", err)
 	}
 
 	p.registerCommands()
@@ -172,20 +179,26 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		err error
 	)
 
+	botUsername, botErr := p.resolveBotUsernameForChannel(ctx, channel)
+	if botErr != nil {
+		logger.Warn(p.name, "Failed to resolve bot username for channel %s: %v", channel, botErr)
+	}
+
 	switch commandName {
 	case "rq":
-		row, err = p.getRandomQuote(ctx, channel, "")
+		row, err = p.getRandomQuote(ctx, channel, "", botUsername)
 	default:
 		if len(cmd.Args) == 0 || strings.TrimSpace(cmd.Args[0]) == "" {
 			p.sendResponse(req, "Usage: !quote <username> (or !rq for random quote)")
 			return nil
 		}
 		target := sanitizeTarget(cmd.Args[0])
-		if isSelfTarget(target, p.config.BotUsername) {
+		logger.Debug(p.name, "Quote self-target check: target=%q bot=%q channel=%q", target, botUsername, channel)
+		if isSelfTarget(target, botUsername) {
 			p.sendResponse(req, "Nope. I won't quote myself.")
 			return nil
 		}
-		row, err = p.getRandomQuote(ctx, channel, target)
+		row, err = p.getRandomQuote(ctx, channel, target, botUsername)
 	}
 
 	if err != nil {
@@ -213,7 +226,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	return nil
 }
 
-func (p *Plugin) getRandomQuote(ctx context.Context, channel, username string) (*quoteRow, error) {
+func (p *Plugin) getRandomQuote(ctx context.Context, channel, username, botUsername string) (*quoteRow, error) {
 	helper := framework.NewSQLRequestHelper(p.eventBus, p.name)
 
 	query := `
@@ -230,6 +243,9 @@ func (p *Plugin) getRandomQuote(ctx context.Context, channel, username string) (
 	if username != "" {
 		query += " AND LOWER(username) = LOWER($2)"
 		args = append(args, username)
+	} else if botUsername != "" {
+		query += " AND LOWER(username) <> LOWER($2)"
+		args = append(args, botUsername)
 	}
 
 	query += " ORDER BY RANDOM() LIMIT 1"
@@ -256,6 +272,109 @@ func (p *Plugin) getRandomQuote(ctx context.Context, channel, username string) (
 	return &row, nil
 }
 
+func (p *Plugin) handlePluginResponse(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil || dataEvent.Data.PluginResponse == nil {
+		return nil
+	}
+
+	resp := dataEvent.Data.PluginResponse
+	if strings.TrimSpace(resp.ID) == "" {
+		return nil
+	}
+
+	p.pendingMu.Lock()
+	responseChan, exists := p.pendingResponses[resp.ID]
+	if exists {
+		delete(p.pendingResponses, resp.ID)
+	}
+	p.pendingMu.Unlock()
+
+	if exists {
+		select {
+		case responseChan <- resp:
+		default:
+		}
+	}
+
+	return nil
+}
+
+func (p *Plugin) resolveBotUsernameForChannel(ctx context.Context, channel string) (string, error) {
+	configured := resolveBotUsername(p.config.BotUsername)
+	if configured != "" {
+		return configured, nil
+	}
+
+	requestID := fmt.Sprintf("quote-botname-%d", time.Now().UnixNano())
+	responseChan := make(chan *framework.PluginResponse, 1)
+
+	p.pendingMu.Lock()
+	p.pendingResponses[requestID] = responseChan
+	p.pendingMu.Unlock()
+
+	defer func() {
+		p.pendingMu.Lock()
+		delete(p.pendingResponses, requestID)
+		p.pendingMu.Unlock()
+	}()
+
+	request := &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			ID:   requestID,
+			To:   "core",
+			From: p.name,
+			Type: "get_configured_channels",
+		},
+	}
+
+	if err := p.eventBus.Broadcast("plugin.request", request); err != nil {
+		return "", fmt.Errorf("failed to request configured channels: %w", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case resp := <-responseChan:
+		if resp == nil {
+			return "", nil
+		}
+		if !resp.Success {
+			if resp.Error == "" {
+				return "", nil
+			}
+			return "", fmt.Errorf("core get_configured_channels failed: %s", resp.Error)
+		}
+		if resp.Data == nil || len(resp.Data.RawJSON) == 0 {
+			return "", nil
+		}
+		return extractBotUsernameFromChannels(resp.Data.RawJSON, channel)
+	case <-time.After(1 * time.Second):
+		return "", nil
+	}
+}
+
+func extractBotUsernameFromChannels(rawJSON json.RawMessage, channel string) (string, error) {
+	var responseData struct {
+		Channels []struct {
+			Channel  string `json:"channel"`
+			Username string `json:"username"`
+		} `json:"channels"`
+	}
+
+	if err := json.Unmarshal(rawJSON, &responseData); err != nil {
+		return "", fmt.Errorf("failed to parse channel config response: %w", err)
+	}
+
+	for _, ch := range responseData.Channels {
+		if strings.EqualFold(strings.TrimSpace(ch.Channel), strings.TrimSpace(channel)) {
+			return strings.TrimSpace(ch.Username), nil
+		}
+	}
+
+	return "", nil
+}
+
 func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
 	channel := req.Data.Command.Params["channel"]
 
@@ -276,6 +395,20 @@ func sanitizeTarget(raw string) string {
 	t = strings.TrimLeft(t, "-@")
 	t = strings.Trim(t, " \t\n\r,.;:!?()[]{}\"'`")
 	return t
+}
+
+func resolveBotUsername(configBotUsername string) string {
+	configured := strings.TrimSpace(configBotUsername)
+	if configured != "" {
+		return configured
+	}
+
+	fromBotName := strings.TrimSpace(os.Getenv("DAZ_BOT_NAME"))
+	if fromBotName != "" {
+		return fromBotName
+	}
+
+	return strings.TrimSpace(os.Getenv("DAZ_CYTUBE_USERNAME"))
 }
 
 func sanitizeQuoteMessage(raw string) string {
