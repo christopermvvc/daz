@@ -478,6 +478,7 @@ func (p *Plugin) handleGetConfiguredChannels(req *framework.PluginRequest) error
 	type channelInfo struct {
 		ID        string `json:"id"`
 		Channel   string `json:"channel"`
+		Username  string `json:"username"`
 		Enabled   bool   `json:"enabled"`
 		Connected bool   `json:"connected"`
 	}
@@ -486,9 +487,10 @@ func (p *Plugin) handleGetConfiguredChannels(req *framework.PluginRequest) error
 
 	for _, room := range p.config.Rooms {
 		info := channelInfo{
-			ID:      room.ID,
-			Channel: room.Channel,
-			Enabled: room.Enabled,
+			ID:       room.ID,
+			Channel:  room.Channel,
+			Username: room.Username,
+			Enabled:  room.Enabled,
 		}
 
 		// Get connection status from room manager

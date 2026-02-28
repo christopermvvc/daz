@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
@@ -239,14 +240,16 @@ func TestPlugin_HandlePluginRequest_GetConfiguredChannels(t *testing.T) {
 	config := &Config{
 		Rooms: []RoomConfig{
 			{
-				ID:      "room1",
-				Channel: "channel1",
-				Enabled: true,
+				ID:       "room1",
+				Channel:  "channel1",
+				Username: "dazza",
+				Enabled:  true,
 			},
 			{
-				ID:      "room2",
-				Channel: "channel2",
-				Enabled: false,
+				ID:       "room2",
+				Channel:  "channel2",
+				Username: "altbot",
+				Enabled:  false,
 			},
 		},
 	}
@@ -313,6 +316,26 @@ func TestPlugin_HandlePluginRequest_GetConfiguredChannels(t *testing.T) {
 	// Verify the response contains channel data
 	if resp.Data == nil || resp.Data.RawJSON == nil {
 		t.Fatal("Expected response data with RawJSON")
+	}
+
+	var responseData struct {
+		Channels []struct {
+			Channel  string `json:"channel"`
+			Username string `json:"username"`
+		} `json:"channels"`
+	}
+
+	if err := json.Unmarshal(resp.Data.RawJSON, &responseData); err != nil {
+		t.Fatalf("failed to parse response data: %v", err)
+	}
+
+	if len(responseData.Channels) != 2 {
+		t.Fatalf("expected 2 channels in response, got %d", len(responseData.Channels))
+	}
+
+	if responseData.Channels[0].Channel != "channel1" || responseData.Channels[0].Username != "dazza" {
+		t.Fatalf("expected first channel username mapping to include dazza, got channel=%q username=%q",
+			responseData.Channels[0].Channel, responseData.Channels[0].Username)
 	}
 }
 
