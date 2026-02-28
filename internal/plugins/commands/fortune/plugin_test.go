@@ -307,3 +307,23 @@ func TestPlugin_GetFortune(t *testing.T) {
 			"Expected helpful error message, got: %s", fortune)
 	}
 }
+
+func TestIsFortuneStyle(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "fortune proverb", input: "A calm sea does not make a skilled sailor.", want: true},
+		{name: "q and a joke", input: "Q: Why did the chicken cross the road?\nA: To get to the other side.", want: false},
+		{name: "riddle text", input: "Here is a riddle for you", want: false},
+		{name: "knock knock", input: "Knock knock. Who's there?", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isFortuneStyle(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,14 @@ type Plugin struct {
 
 type Config struct {
 	CooldownSeconds int `json:"cooldown_seconds"`
+}
+
+var nonFortunePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?im)^\s*q\s*[:\-]`),
+	regexp.MustCompile(`(?im)^\s*a\s*[:\-]`),
+	regexp.MustCompile(`(?i)\bknock\s+knock\b`),
+	regexp.MustCompile(`(?i)\bwhy\s+did\b`),
+	regexp.MustCompile(`(?i)\briddle\b`),
 }
 
 func New() framework.Plugin {
@@ -217,45 +226,62 @@ func (p *Plugin) getFortune() string {
 		return "Sorry, fortune is not installed on this system. Ask an admin to install the 'fortune-mod' package."
 	}
 
-	// Try with specific categories first
-	cmd := exec.Command("fortune", "-so", "platitudes", "tao", "wisdom", "startrek")
+	for attempts := 0; attempts < 5; attempts++ {
+		fortune, err := p.getFortuneFromCuratedCategories()
+		if err != nil {
+			if strings.Contains(err.Error(), "No fortunes found") || strings.Contains(err.Error(), "not found") {
+				logger.Warn(p.name, "Fortunes database unavailable: %v", err)
+				return "Sorry, the 'fortunes' database is unavailable on this system right now."
+			}
+			logger.Error(p.name, "Failed to execute fortune command: %v", err)
+			return "Sorry, I couldn't fetch a fortune right now."
+		}
+
+		if isFortuneStyle(fortune) {
+			return fortune
+		}
+	}
+
+	return "The oracle is only speaking in jokes right now. Try again shortly."
+}
+
+func (p *Plugin) getFortuneFromCuratedCategories() (string, error) {
+	cmd := exec.Command("fortune", "-so", "fortunes")
 	var out bytes.Buffer
 	var errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
 
-	err := cmd.Run()
-	if err != nil {
-		// If categories don't exist, fall back to default fortune
-		if strings.Contains(errBuf.String(), "No fortunes found") || strings.Contains(errBuf.String(), "not found") {
-			logger.Debug(p.name, "Specific categories not found, trying default fortune")
-			cmd = exec.Command("fortune", "-s")
-			out.Reset()
-			errBuf.Reset()
-			cmd.Stdout = &out
-			cmd.Stderr = &errBuf
-			err = cmd.Run()
-		}
-
-		if err != nil {
-			logger.Error(p.name, "Failed to execute fortune command: %v, stderr: %s", err, errBuf.String())
-			return "Sorry, I couldn't fetch a fortune right now."
-		}
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("fortune command failed: %w (stderr: %s)", err, strings.TrimSpace(errBuf.String()))
 	}
 
-	// Clean up the output
 	fortune := strings.TrimSpace(out.String())
 	if fortune == "" {
-		return "The fortune cookie was empty!"
+		return "", fmt.Errorf("empty fortune output")
 	}
 
-	// Limit length to prevent spam
 	maxLength := 500
 	if len(fortune) > maxLength {
 		fortune = fortune[:maxLength] + "..."
 	}
 
-	return fortune
+	return fortune, nil
+}
+
+func isFortuneStyle(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+
+	for _, pattern := range nonFortunePatterns {
+		if pattern.MatchString(trimmed) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (p *Plugin) sendPMResponse(username, channel, message string) {
