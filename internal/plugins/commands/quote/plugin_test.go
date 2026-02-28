@@ -3,6 +3,7 @@ package quote
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/hildolfr/daz/internal/framework"
@@ -161,5 +162,52 @@ func TestHandleCommandUsageWhenUsernameMissing(t *testing.T) {
 
 	if !foundUsage {
 		t.Fatalf("expected usage response for missing quote username")
+	}
+}
+
+func TestIsSelfTarget(t *testing.T) {
+	tests := []struct {
+		name        string
+		target      string
+		botUsername string
+		want        bool
+	}{
+		{name: "no configured bot username", target: "dazza", botUsername: "", want: false},
+		{name: "configured username", target: "myBot", botUsername: "myBot", want: true},
+		{name: "normal user", target: "hildolfr", botUsername: "dazza", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isSelfTarget(tt.target, tt.botUsername)
+			if got != tt.want {
+				t.Fatalf("isSelfTarget(%q, %q) = %v, want %v", tt.target, tt.botUsername, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeQuoteMessage(t *testing.T) {
+	raw := `<span class="quote">&gt;dip my nuts in ink </span>`
+	got := sanitizeQuoteMessage(raw)
+
+	if strings.Contains(got, "<span") || strings.Contains(got, "</span>") {
+		t.Fatalf("expected html tags stripped, got %q", got)
+	}
+	if !strings.Contains(got, "&gt;dip my nuts in ink") {
+		t.Fatalf("expected quote text preserved and escaped, got %q", got)
+	}
+}
+
+func TestInitUsesEnvBotNameWhenConfigEmpty(t *testing.T) {
+	t.Setenv("DAZ_BOT_NAME", "EnvBot")
+
+	p := New().(*Plugin)
+	if err := p.Init(json.RawMessage("{}"), &quoteMockEventBus{}); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	if p.config.BotUsername != "EnvBot" {
+		t.Fatalf("expected BotUsername from env, got %q", p.config.BotUsername)
 	}
 }

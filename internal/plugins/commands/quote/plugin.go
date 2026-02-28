@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
+	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +22,14 @@ type Plugin struct {
 	mu       sync.RWMutex
 	ctx      context.Context
 	cancel   context.CancelFunc
+	config   Config
 }
+
+type Config struct {
+	BotUsername string `json:"bot_username"`
+}
+
+var htmlTagPattern = regexp.MustCompile(`<[^>]*>`)
 
 type quoteRow struct {
 	Username    string
@@ -41,9 +51,20 @@ func (p *Plugin) Ready() bool {
 	return p.running
 }
 
-func (p *Plugin) Init(_ json.RawMessage, bus framework.EventBus) error {
+func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.eventBus = bus
 	p.ctx, p.cancel = context.WithCancel(context.Background())
+
+	if len(config) != 0 {
+		if err := json.Unmarshal(config, &p.config); err != nil {
+			return fmt.Errorf("failed to unmarshal config: %w", err)
+		}
+	}
+
+	p.config.BotUsername = strings.TrimSpace(p.config.BotUsername)
+	if p.config.BotUsername == "" {
+		p.config.BotUsername = strings.TrimSpace(os.Getenv("DAZ_BOT_NAME"))
+	}
 	return nil
 }
 
@@ -159,7 +180,11 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 			p.sendResponse(req, "Usage: !quote <username> (or !rq for random quote)")
 			return nil
 		}
-		target := strings.TrimSpace(cmd.Args[0])
+		target := sanitizeTarget(cmd.Args[0])
+		if isSelfTarget(target, p.config.BotUsername) {
+			p.sendResponse(req, "Nope. I won't quote myself.")
+			return nil
+		}
 		row, err = p.getRandomQuote(ctx, channel, target)
 	}
 
@@ -178,7 +203,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		return nil
 	}
 
-	msg := strings.Join(strings.Fields(strings.TrimSpace(row.Message)), " ")
+	msg := sanitizeQuoteMessage(row.Message)
 	if len(msg) > 220 {
 		msg = msg[:217] + "..."
 	}
@@ -244,6 +269,36 @@ func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
 	if err := p.eventBus.Broadcast("cytube.send", chatData); err != nil {
 		logger.Error(p.name, "Failed to send quote response: %v", err)
 	}
+}
+
+func sanitizeTarget(raw string) string {
+	t := strings.TrimSpace(raw)
+	t = strings.TrimLeft(t, "-@")
+	t = strings.Trim(t, " \t\n\r,.;:!?()[]{}\"'`")
+	return t
+}
+
+func sanitizeQuoteMessage(raw string) string {
+	text := strings.TrimSpace(raw)
+	text = html.UnescapeString(text)
+	text = htmlTagPattern.ReplaceAllString(text, " ")
+	text = strings.Join(strings.Fields(text), " ")
+	text = html.EscapeString(text)
+	return text
+}
+
+func isSelfTarget(target, botUsername string) bool {
+	t := strings.ToLower(strings.TrimSpace(target))
+	if t == "" {
+		return false
+	}
+
+	b := strings.ToLower(strings.TrimSpace(botUsername))
+	if b == "" {
+		return false
+	}
+
+	return t == b
 }
 
 func formatSince(messageTime int64) string {
