@@ -20,6 +20,7 @@ import (
 	"github.com/hildolfr/daz/internal/metrics"
 	"github.com/hildolfr/daz/internal/plugins/analytics"
 	"github.com/hildolfr/daz/internal/plugins/commands/about"
+	"github.com/hildolfr/daz/internal/plugins/commands/bong"
 	"github.com/hildolfr/daz/internal/plugins/commands/clap"
 	"github.com/hildolfr/daz/internal/plugins/commands/fortune"
 	"github.com/hildolfr/daz/internal/plugins/commands/games"
@@ -218,6 +219,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"greeter", greeter.New()},
 		{"gallery", gallery.New()},
 		{"about", about.New()},
+		{"bong", bong.New()},
 		{"clap", clap.New()},
 		{"fortune", fortune.New()},
 		{"games", games.New()},
@@ -251,6 +253,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["mediatracker"] = cfg.GetPluginConfig("mediatracker")
 	pluginConfigs["analytics"] = cfg.GetPluginConfig("analytics")
 	pluginConfigs["about"] = cfg.GetPluginConfig("about")
+	pluginConfigs["bong"] = cfg.GetPluginConfig("bong")
 	pluginConfigs["clap"] = cfg.GetPluginConfig("clap")
 	pluginConfigs["insult"] = cfg.GetPluginConfig("insult")
 	pluginConfigs["ping"] = cfg.GetPluginConfig("ping")
