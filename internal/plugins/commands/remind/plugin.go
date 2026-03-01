@@ -201,8 +201,9 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		return nil
 	}
 
-	input, duration, ok := parseReminderDuration(args)
-	if !ok {
+	input := strings.TrimSpace(args[0])
+	duration, ok := parseTimeString(input)
+	if !ok || duration <= 0 {
 		p.sendChannelMessage(channel, "dunno what time that is mate, try like '5m' or '1h30m'")
 		return nil
 	}
@@ -325,24 +326,6 @@ func parseTimeString(value string) (time.Duration, bool) {
 		return 0, false
 	}
 	return total, true
-}
-
-func parseReminderDuration(args []string) (string, time.Duration, bool) {
-	if len(args) == 0 {
-		return "", 0, false
-	}
-
-	input := strings.TrimSpace(strings.Join(args, " "))
-	if input == "" {
-		return "", 0, false
-	}
-
-	duration, ok := parseTimeString(input)
-	if !ok || duration <= 0 {
-		return input, 0, false
-	}
-
-	return input, duration, true
 }
 
 func parseTimeToken(value string) (int, string, string, bool) {

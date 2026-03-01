@@ -444,8 +444,8 @@ func (p *Plugin) initializeSchema(ctx context.Context) error {
 func (p *Plugin) applyExternalMigrations(ctx context.Context) error {
 	migrationFiles := []string{
 		"scripts/sql/032_user_state_foundation.sql",
-		"scripts/sql/033_eventfilter_command_descriptions.sql",
 		"scripts/sql/033_economy_api.sql",
+		"scripts/sql/033_eventfilter_command_descriptions.sql",
 		"scripts/sql/034_tell_pending_unique.sql",
 	}
 
