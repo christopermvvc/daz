@@ -167,16 +167,23 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	params := req.Data.Command.Params
 	username := strings.TrimSpace(params["username"])
 	channel := strings.TrimSpace(params["channel"])
+	isPM := params["is_pm"] == "true"
 	if username == "" || channel == "" {
 		return nil
 	}
 
-	if remaining, ok := p.checkCooldown(channel, username); !ok {
-		p.sendMessage(channel, fmt.Sprintf("-%s ya already cracked a box today. wait %dh %dm", username, int(remaining.Hours()), int(remaining.Minutes())%60))
+	remaining, ok, err := p.checkCooldown(channel, username)
+	if err != nil {
+		logger.Error(p.name, "Cooldown check failed: %v", err)
+		p.sendResponse(channel, username, "box machine's cactus right now, try again later", isPM)
+		return nil
+	}
+	if !ok {
+		p.sendResponse(channel, username, fmt.Sprintf("-%s ya already cracked a box today. wait %dh %dm", username, int(remaining.Hours()), int(remaining.Minutes())%60), isPM)
 		return nil
 	}
 
-	result := rollMysteryBox()
+	result := rollMysteryBoxFunc()
 	message := result.message
 	if result.amount > 0 {
 		ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
@@ -184,13 +191,13 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		_, err := p.economyClient.Credit(ctx, framework.CreditRequest{Channel: channel, Username: username, Amount: int64(result.amount), Reason: "mystery_box"})
 		if err != nil {
 			logger.Error(p.name, "Failed to credit mystery box winnings: %v", err)
-			p.sendMessage(channel, "mystery box jammed. try again later")
+			p.sendResponse(channel, username, "mystery box jammed. try again later", isPM)
 			return nil
 		}
 		message = fmt.Sprintf("%s You scored $%d!", message, result.amount)
 	}
 
-	p.sendMessage(channel, fmt.Sprintf("🎁 %s", message))
+	p.sendResponse(channel, username, fmt.Sprintf("🎁 %s", message), isPM)
 
 	if err := p.updateStats(channel, username, result); err != nil {
 		logger.Error(p.name, "Failed to update mystery box stats: %v", err)
@@ -203,7 +210,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 			case <-p.ctx.Done():
 				return
 			default:
-				p.sendMessage(channel, announcement)
+				p.sendResponse(channel, username, announcement, false)
 			}
 		})
 	}
@@ -211,7 +218,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	return nil
 }
 
-func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool) {
+func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 	query := `
@@ -222,24 +229,24 @@ func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool) {
 	`
 	rows, err := p.sqlClient.QueryContext(ctx, query, channel, username)
 	if err != nil {
-		return 0, true
+		return 0, false, err
 	}
 	defer rows.Close()
 	if !rows.Next() {
-		return 0, true
+		return 0, true, nil
 	}
 	var lastPlayed time.Time
 	if err := rows.Scan(&lastPlayed); err != nil {
-		return 0, true
+		return 0, false, err
 	}
 	if lastPlayed.IsZero() {
-		return 0, true
+		return 0, true, nil
 	}
 	until := lastPlayed.Add(p.cooldown)
 	if time.Now().Before(until) {
-		return until.Sub(time.Now()), false
+		return until.Sub(time.Now()), false, nil
 	}
-	return 0, true
+	return 0, true, nil
 }
 
 func (p *Plugin) updateStats(channel, username string, result mysteryResult) error {
@@ -288,8 +295,13 @@ func (p *Plugin) updateStats(channel, username string, result mysteryResult) err
 	return err
 }
 
-func (p *Plugin) sendMessage(channel, message string) {
+func (p *Plugin) sendResponse(channel, username, message string, isPM bool) {
 	if strings.TrimSpace(message) == "" {
+		return
+	}
+	if isPM {
+		pm := &framework.EventData{PrivateMessage: &framework.PrivateMessageData{ToUser: username, Message: message, Channel: channel}}
+		_ = p.eventBus.Broadcast("cytube.send.pm", pm)
 		return
 	}
 	chat := &framework.EventData{RawMessage: &framework.RawMessageData{Message: message, Channel: channel}}
@@ -320,6 +332,8 @@ func rollMysteryBox() mysteryResult {
 	amount := rand.Intn(301) + 200
 	return mysteryResult{amount: int64(amount), message: "JACKPOT!", jackpot: true, bigWin: true}
 }
+
+var rollMysteryBoxFunc = rollMysteryBox
 
 func boolToInt(value bool) int {
 	if value {

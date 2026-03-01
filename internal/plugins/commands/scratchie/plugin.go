@@ -228,6 +228,8 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 			_, err := p.economyClient.Credit(ctx, framework.CreditRequest{Channel: channel, Username: username, Amount: winnings, Reason: "scratchie_win"})
 			if err != nil {
 				logger.Error(p.name, "Failed to credit scratchie winnings: %v", err)
+				p.sendResponse(channel, username, "scratchie printer ate ya winnings. try again later", isPM)
+				return
 			}
 		}
 

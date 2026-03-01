@@ -167,41 +167,48 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	params := req.Data.Command.Params
 	username := strings.TrimSpace(params["username"])
 	channel := strings.TrimSpace(params["channel"])
+	isPM := params["is_pm"] == "true"
 	if username == "" || channel == "" {
 		return nil
 	}
 
-	if remaining, ok := p.checkCooldown(channel, username); !ok {
-		p.sendMessage(channel, waitMessage(username, remaining))
+	remaining, ok, err := p.checkCooldown(channel, username)
+	if err != nil {
+		logger.Error(p.name, "Cooldown check failed: %v", err)
+		p.sendResponse(channel, username, "boss ain't answerin' the phone. try again later", isPM)
+		return nil
+	}
+	if !ok {
+		p.sendResponse(channel, username, waitMessage(username, remaining), isPM)
 		return nil
 	}
 
 	intro := introMessages[rand.Intn(len(introMessages))]
-	p.sendMessage(channel, fmt.Sprintf(intro, username))
+	p.sendResponse(channel, username, fmt.Sprintf(intro, username), isPM)
 
-	failed := rand.Float64() < 0.20
+	failed := oddjobFailureRoll()
 	if failed {
 		p.updateStats(channel, username, oddjobUpdate{Jobs: 1, Fails: 1, LastPlayed: time.Now()})
-		p.sendMessage(channel, fmt.Sprintf("❌ %s", failMessages[rand.Intn(len(failMessages))]))
+		p.sendResponse(channel, username, fmt.Sprintf("❌ %s", failMessages[rand.Intn(len(failMessages))]), isPM)
 		return nil
 	}
 
 	payout := rand.Intn(41) + 10
 	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
 	defer cancel()
-	_, err := p.economyClient.Credit(ctx, framework.CreditRequest{Channel: channel, Username: username, Amount: int64(payout), Reason: "oddjob"})
+	_, err = p.economyClient.Credit(ctx, framework.CreditRequest{Channel: channel, Username: username, Amount: int64(payout), Reason: "oddjob"})
 	if err != nil {
 		logger.Error(p.name, "Failed to credit oddjob payout: %v", err)
-		p.sendMessage(channel, "oddjob boss stiffed ya, try again later")
+		p.sendResponse(channel, username, "oddjob boss stiffed ya, try again later", isPM)
 		return nil
 	}
 
 	p.updateStats(channel, username, oddjobUpdate{Jobs: 1, Earnings: int64(payout), LastPlayed: time.Now()})
-	p.sendMessage(channel, fmt.Sprintf("✅ %s You earned $%d.", successMessages[rand.Intn(len(successMessages))], payout))
+	p.sendResponse(channel, username, fmt.Sprintf("✅ %s You earned $%d.", successMessages[rand.Intn(len(successMessages))], payout), isPM)
 	return nil
 }
 
-func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool) {
+func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 	query := `
@@ -212,24 +219,24 @@ func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool) {
 	`
 	rows, err := p.sqlClient.QueryContext(ctx, query, channel, username)
 	if err != nil {
-		return 0, true
+		return 0, false, err
 	}
 	defer rows.Close()
 	if !rows.Next() {
-		return 0, true
+		return 0, true, nil
 	}
 	var lastPlayed time.Time
 	if err := rows.Scan(&lastPlayed); err != nil {
-		return 0, true
+		return 0, false, err
 	}
 	if lastPlayed.IsZero() {
-		return 0, true
+		return 0, true, nil
 	}
 	until := lastPlayed.Add(p.cooldown)
 	if time.Now().Before(until) {
-		return until.Sub(time.Now()), false
+		return until.Sub(time.Now()), false, nil
 	}
-	return 0, true
+	return 0, true, nil
 }
 
 type oddjobUpdate struct {
@@ -266,8 +273,13 @@ func (p *Plugin) updateStats(channel, username string, update oddjobUpdate) {
 	}
 }
 
-func (p *Plugin) sendMessage(channel, message string) {
+func (p *Plugin) sendResponse(channel, username, message string, isPM bool) {
 	if strings.TrimSpace(message) == "" {
+		return
+	}
+	if isPM {
+		pm := &framework.EventData{PrivateMessage: &framework.PrivateMessageData{ToUser: username, Message: message, Channel: channel}}
+		_ = p.eventBus.Broadcast("cytube.send.pm", pm)
 		return
 	}
 	chat := &framework.EventData{RawMessage: &framework.RawMessageData{Message: message, Channel: channel}}
@@ -308,4 +320,8 @@ var failMessages = []string{
 	"fell asleep on the job and got the boot",
 	"broke the boss's whipper snipper",
 	"forgot to turn up. no pay today",
+}
+
+var oddjobFailureRoll = func() bool {
+	return rand.Float64() < 0.20
 }
