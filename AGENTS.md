@@ -86,6 +86,16 @@
 - Use `eventbus` constants for core Cytube events.
 - Keep plugin names stable; they are used in logs and routing.
 
+### Command Plugin Contract (EventFilter)
+- `command.register` must include a comma-separated `commands` list and stable `req.From` plugin name; EventFilter routes execution to `command.<plugin-name>.execute`.
+- Always subscribe the plugin to `command.<plugin-name>.execute` before (or at least in the same startup phase as) command registration.
+- Keep registration aliases and subscribed handlers in sync; if you register `sign`, `spin`, etc., verify they resolve to your plugin and execute successfully.
+- Prefer one canonical command entry that matches plugin identity (for example `couchcoins` for plugin `couchcoins`) and keep legacy aliases additive.
+- In handlers, rely on `commandData.Name` and params (`username`, `channel`, `rank`, `is_pm`, `is_admin`) rather than inferring behavior from event topic names.
+- For PM-capable commands, honor `is_pm` in response routing; do not leak PM-triggered private responses into channel chat unless explicitly intended (for example public jackpot announcements).
+- Registration/persistence side effects must not block command availability at startup; failures should log and degrade safely instead of disabling command dispatch.
+- Add/maintain tests that cover command dispatch for the canonical command plus at least one alias, and include cooldown + PM routing behavior.
+
 ## Economy API Guide
 
 The economy API is an EventBus request/reply contract for reading and mutating per-channel user balances. When present, the stable contract is documented in `docs/economy.md`. Callers should prefer the Go wrapper in `internal/framework/economy_client.go`.
