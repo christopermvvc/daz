@@ -109,9 +109,10 @@ func (p *Plugin) registerCommand() {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands":   "uptime,up",
-					"min_rank":   "0",
-					"admin_only": "true",
+					"commands":    "uptime,up",
+					"min_rank":    "0",
+					"admin_only":  "true",
+					"description": "show bot uptime",
 				},
 			},
 		},

@@ -139,8 +139,9 @@ func (p *Plugin) registerCommands() {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "quote,q,rq",
-					"min_rank": "0",
+					"commands":    "quote,q,rq",
+					"min_rank":    "0",
+					"description": "grab a random quote",
 				},
 			},
 		},

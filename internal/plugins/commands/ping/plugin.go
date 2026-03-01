@@ -94,8 +94,9 @@ func (p *Plugin) registerCommands() {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "ping",
-					"min_rank": "0",
+					"commands":    "ping",
+					"min_rank":    "0",
+					"description": "check bot status",
 				},
 			},
 		},
