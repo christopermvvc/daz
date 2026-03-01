@@ -30,6 +30,7 @@
     "eventfilter": {
       "command_prefix": "!"
     },
-    "economy": {}
+    "economy": {},
+    "fishing": {}
   }
 }

@@ -23,14 +23,18 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/bong"
 	"github.com/hildolfr/daz/internal/plugins/commands/clap"
 	"github.com/hildolfr/daz/internal/plugins/commands/couchcoins"
+	"github.com/hildolfr/daz/internal/plugins/commands/fishing"
 	"github.com/hildolfr/daz/internal/plugins/commands/fortune"
 	"github.com/hildolfr/daz/internal/plugins/commands/games"
 	"github.com/hildolfr/daz/internal/plugins/commands/help"
 	"github.com/hildolfr/daz/internal/plugins/commands/insult"
+	"github.com/hildolfr/daz/internal/plugins/commands/mysterybox"
+	"github.com/hildolfr/daz/internal/plugins/commands/oddjob"
 	"github.com/hildolfr/daz/internal/plugins/commands/ping"
 	"github.com/hildolfr/daz/internal/plugins/commands/quote"
 	"github.com/hildolfr/daz/internal/plugins/commands/random"
 	"github.com/hildolfr/daz/internal/plugins/commands/remind"
+	"github.com/hildolfr/daz/internal/plugins/commands/scratchie"
 	"github.com/hildolfr/daz/internal/plugins/commands/seen"
 	"github.com/hildolfr/daz/internal/plugins/commands/signspinning"
 	"github.com/hildolfr/daz/internal/plugins/commands/tell"
@@ -227,10 +231,13 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"bong", bong.New()},
 		{"clap", clap.New()},
 		{"couchcoins", couchcoins.New()},
+		{"fishing", fishing.New()},
 		{"fortune", fortune.New()},
 		{"games", games.New()},
 		{"help", help.New()},
 		{"insult", insult.New()},
+		{"mysterybox", mysterybox.New()},
+		{"oddjob", oddjob.New()},
 		{"ping", ping.New()},
 		{"quote", quote.New()},
 		{"uptime", uptime.New()},
@@ -242,6 +249,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"signspinning", signspinning.New()},
 		{"playlist", playlist.New()},
 		{"ollama", ollama.New()},
+		{"scratchie", scratchie.New()},
 	}
 
 	// Register all plugins with the manager
@@ -265,6 +273,9 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["clap"] = cfg.GetPluginConfig("clap")
 	pluginConfigs["couchcoins"] = cfg.GetPluginConfig("couchcoins")
 	pluginConfigs["insult"] = cfg.GetPluginConfig("insult")
+	pluginConfigs["fishing"] = cfg.GetPluginConfig("fishing")
+	pluginConfigs["mysterybox"] = cfg.GetPluginConfig("mysterybox")
+	pluginConfigs["oddjob"] = cfg.GetPluginConfig("oddjob")
 	pluginConfigs["ping"] = cfg.GetPluginConfig("ping")
 	pluginConfigs["fortune"] = cfg.GetPluginConfig("fortune")
 	pluginConfigs["games"] = cfg.GetPluginConfig("games")
@@ -280,6 +291,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["playlist"] = cfg.GetPluginConfig("playlist")
 	pluginConfigs["gallery"] = cfg.GetPluginConfig("gallery")
 	pluginConfigs["ollama"] = cfg.GetPluginConfig("ollama")
+	pluginConfigs["scratchie"] = cfg.GetPluginConfig("scratchie")
 	pluginConfigs["signspinning"] = cfg.GetPluginConfig("signspinning")
 
 	// Initialize all plugins (respects dependencies)
