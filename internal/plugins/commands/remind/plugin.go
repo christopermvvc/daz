@@ -292,6 +292,20 @@ func reminderKey(channel, username string) string {
 	return strings.ToLower(strings.TrimSpace(channel)) + ":" + strings.ToLower(strings.TrimSpace(username))
 }
 
+func parseReminderDuration(args []string) (string, time.Duration, bool) {
+	input := strings.TrimSpace(strings.Join(args, " "))
+	if input == "" {
+		return "", 0, false
+	}
+
+	duration, ok := parseTimeString(input)
+	if !ok {
+		return input, 0, false
+	}
+
+	return input, duration, true
+}
+
 func parseTimeString(value string) (time.Duration, bool) {
 	value = strings.TrimSpace(strings.ToLower(value))
 	if value == "" {

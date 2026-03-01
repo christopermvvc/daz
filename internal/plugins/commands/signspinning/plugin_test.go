@@ -3,6 +3,7 @@ package signspinning
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -105,7 +106,10 @@ func TestSignSpinningCooldown(t *testing.T) {
 		t.Fatalf("expected cooldown response")
 	}
 	message := strings.ToLower(bus.broadcasts[0].data.RawMessage.Message)
-	if !strings.Contains(message, "wait") && !strings.Contains(message, "recovery") {
+	if !strings.Contains(message, "dazza") {
+		t.Fatalf("unexpected cooldown message (missing username): %s", bus.broadcasts[0].data.RawMessage.Message)
+	}
+	if !regexp.MustCompile(`\d+h\s+\d+m`).MatchString(message) {
 		t.Fatalf("unexpected cooldown message: %s", bus.broadcasts[0].data.RawMessage.Message)
 	}
 }
