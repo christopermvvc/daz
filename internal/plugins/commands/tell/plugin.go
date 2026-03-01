@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -23,6 +24,8 @@ const (
 	maxPendingPerTarget   = 1
 )
 
+var errTellAlreadyPending = errors.New("tell already pending")
+
 type Plugin struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -34,6 +37,11 @@ type Plugin struct {
 	onlineUsers    map[string]map[string]bool // channel -> username -> online
 	deliveryTimers map[string]*time.Timer     // channel:username -> timer
 	wg             sync.WaitGroup
+
+	checkOnlineFunc   func(channel, username string) (bool, error)
+	pendingSenderFunc func(channel, username string) (string, bool, error)
+	storeMessageFunc  func(channel, fromUser, toUser, message string, isPM bool) error
+	sendResponseFunc  func(channel, username, message string, isPM bool)
 }
 
 type tellMessage struct {
@@ -204,6 +212,9 @@ func (p *Plugin) createTable() error {
 
 		CREATE INDEX IF NOT EXISTS idx_tell_pending ON daz_tell_messages(channel, to_user, delivered);
 		CREATE INDEX IF NOT EXISTS idx_tell_expires ON daz_tell_messages(expires_at) WHERE delivered = FALSE;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_tell_pending_unique
+			ON daz_tell_messages(channel, LOWER(to_user))
+			WHERE delivered = FALSE;
 	`
 
 	ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
@@ -356,7 +367,7 @@ func (p *Plugin) processTellCommand(channel, fromUser, args string, isPM bool) {
 	}
 
 	// Check if user is online in database first
-	isOnline, err := p.isUserOnlineInDB(channel, toUser)
+	isOnline, err := p.checkOnline(channel, toUser)
 	if err != nil {
 		logger.Error(p.name, "Failed to check user online status in DB: %v", err)
 		// Fall back to in-memory check
@@ -370,7 +381,7 @@ func (p *Plugin) processTellCommand(channel, fromUser, args string, isPM bool) {
 		return
 	}
 
-	if existingFrom, ok, err := p.getPendingSender(channel, toUser); err != nil {
+	if existingFrom, ok, err := p.pendingSender(channel, toUser); err != nil {
 		logger.Error(p.name, "Failed to check pending messages: %v", err)
 	} else if ok {
 		responses := []string{
@@ -392,7 +403,15 @@ func (p *Plugin) processTellCommand(channel, fromUser, args string, isPM bool) {
 	logger.Debug(p.name, "User %s not found online (checked lowercase: %s), proceeding to store message", toUser, strings.ToLower(toUser))
 
 	// Store the message - preserve the case as given by the sender
-	if err := p.storeMessage(channel, fromUser, toUser, message, isPM); err != nil {
+	if err := p.storeMessageOverride(channel, fromUser, toUser, message, isPM); err != nil {
+		if errors.Is(err, errTellAlreadyPending) {
+			msg := fmt.Sprintf("can't do it mate, -%s's inbox is already full", toUser)
+			if isPM {
+				msg = strings.ReplaceAll(msg, "-", "")
+			}
+			p.sendResponse(channel, fromUser, msg, isPM)
+			return
+		}
 		logger.Error(p.name, "Failed to store message: %v", err)
 		p.sendResponse(channel, fromUser, "Failed to store message. Please try again later.", isPM)
 		return
@@ -413,6 +432,9 @@ func (p *Plugin) storeMessage(channel, fromUser, toUser, message string, isPM bo
 
 	expiresAt := time.Now().Add(messageLifetime)
 	_, err := p.sqlClient.ExecContext(ctx, query, channel, fromUser, toUser, message, isPM, expiresAt)
+	if err != nil && isDuplicateTellError(err) {
+		return errTellAlreadyPending
+	}
 	return err
 }
 
@@ -752,6 +774,10 @@ func (p *Plugin) markDelivered(messageID int) error {
 }
 
 func (p *Plugin) sendResponse(channel, username, message string, isPM bool) {
+	if p.sendResponseFunc != nil {
+		p.sendResponseFunc(channel, username, message, isPM)
+		return
+	}
 	if isPM {
 		p.sendPM(channel, username, message)
 	} else {
@@ -825,6 +851,32 @@ func resolveBotUsername() string {
 		return configured
 	}
 	return strings.TrimSpace(os.Getenv("DAZ_CYTUBE_USERNAME"))
+}
+
+func (p *Plugin) checkOnline(channel, username string) (bool, error) {
+	if p.checkOnlineFunc != nil {
+		return p.checkOnlineFunc(channel, username)
+	}
+	return p.isUserOnlineInDB(channel, username)
+}
+
+func (p *Plugin) pendingSender(channel, username string) (string, bool, error) {
+	if p.pendingSenderFunc != nil {
+		return p.pendingSenderFunc(channel, username)
+	}
+	return p.getPendingSender(channel, username)
+}
+
+func (p *Plugin) storeMessageOverride(channel, fromUser, toUser, message string, isPM bool) error {
+	if p.storeMessageFunc == nil {
+		return p.storeMessage(channel, fromUser, toUser, message, isPM)
+	}
+	return p.storeMessageFunc(channel, fromUser, toUser, message, isPM)
+}
+
+func isDuplicateTellError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate key value") && strings.Contains(msg, "idx_tell_pending_unique")
 }
 
 func (p *Plugin) startPeriodicDeliveryCheck() {
