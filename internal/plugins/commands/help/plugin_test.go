@@ -251,8 +251,8 @@ func TestStartStop(t *testing.T) {
 	bus.mu.Lock()
 	subCount := len(bus.subscriptions)
 	bus.mu.Unlock()
-	if subCount != 1 {
-		t.Errorf("Expected 1 subscription, got %d", subCount)
+	if subCount != 2 {
+		t.Errorf("Expected 2 subscriptions, got %d", subCount)
 	}
 
 	// Check command registration

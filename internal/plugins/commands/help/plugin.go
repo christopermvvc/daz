@@ -28,6 +28,10 @@ type Plugin struct {
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 	running   bool
+
+	cacheMu      sync.RWMutex
+	commandCache map[string]*commandEntry
+	aliasIndex   map[string]string
 }
 
 func New() framework.Plugin {
@@ -49,6 +53,8 @@ func (p *Plugin) Ready() bool {
 func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.eventBus = bus
 	p.sqlClient = framework.NewSQLClient(bus, p.name)
+	p.commandCache = make(map[string]*commandEntry)
+	p.aliasIndex = make(map[string]string)
 
 	if len(config) > 0 {
 		if err := json.Unmarshal(config, &p.config); err != nil {
@@ -83,6 +89,15 @@ func (p *Plugin) Start() error {
 
 	// Register our command with the command router
 	p.registerCommand()
+
+	if err := p.eventBus.Subscribe("command.register", p.handleRegisterEvent); err != nil {
+		p.emitFailureEvent("command.help.failed", "subscription", "event_subscription", err)
+		return fmt.Errorf("failed to subscribe to command.register: %w", err)
+	}
+
+	if err := p.loadCacheFromDB(); err != nil {
+		logger.Error(p.name, "Failed to load command cache: %v", err)
+	}
 
 	logger.Debug(p.name, "Started")
 	return nil
@@ -229,27 +244,22 @@ type commandEntry struct {
 	PluginName string
 	MinRank    int
 	Aliases    []string
+	AdminOnly  bool
 }
 
 func (p *Plugin) buildCommandList(req *framework.PluginRequest) ([]string, error) {
 	userRank := 0
+	isAdmin := false
 	if req.Data != nil && req.Data.Command != nil {
 		if rankStr := req.Data.Command.Params["rank"]; rankStr != "" {
 			if parsed, err := strconv.Atoi(rankStr); err == nil {
 				userRank = parsed
 			}
 		}
+		isAdmin = req.Data.Command.Params["is_admin"] == "true"
 	}
 
-	commands, err := p.fetchCommands(userRank)
-	if err != nil {
-		return nil, err
-	}
-
-	entries := make([]*commandEntry, 0, len(commands))
-	for _, entry := range commands {
-		entries = append(entries, entry)
-	}
+	entries := p.snapshotEntries(userRank, isAdmin)
 
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].Primary < entries[j].Primary
@@ -272,23 +282,157 @@ func (p *Plugin) buildCommandList(req *framework.PluginRequest) ([]string, error
 	return splitMessages("Commands:", lines, 450), nil
 }
 
-func (p *Plugin) fetchCommands(userRank int) (map[string]*commandEntry, error) {
+func (p *Plugin) lookupCommand(req *framework.PluginRequest, command string) (*commandEntry, []string, error) {
+	command = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(command, "!")))
+	if command == "" {
+		return nil, nil, nil
+	}
+
+	userRank := 0
+	isAdmin := false
+	if req.Data != nil && req.Data.Command != nil {
+		if rankStr := req.Data.Command.Params["rank"]; rankStr != "" {
+			if parsed, err := strconv.Atoi(rankStr); err == nil {
+				userRank = parsed
+			}
+		}
+		isAdmin = req.Data.Command.Params["is_admin"] == "true"
+	}
+
+	entry := p.lookupEntry(command)
+	if entry == nil {
+		return nil, nil, nil
+	}
+	if entry.MinRank > userRank || (entry.AdminOnly && !isAdmin) {
+		return nil, nil, nil
+	}
+
+	return entry, entry.Aliases, nil
+}
+
+func (p *Plugin) lookupEntry(command string) *commandEntry {
+	p.cacheMu.RLock()
+	primary, ok := p.aliasIndex[command]
+	if !ok {
+		primary = command
+	}
+	entry := p.commandCache[primary]
+	if entry == nil {
+		p.cacheMu.RUnlock()
+		return nil
+	}
+	clone := *entry
+	clone.Aliases = append([]string(nil), entry.Aliases...)
+	p.cacheMu.RUnlock()
+	return &clone
+}
+
+func (p *Plugin) snapshotEntries(userRank int, isAdmin bool) []*commandEntry {
+	p.cacheMu.RLock()
+	entries := make([]*commandEntry, 0, len(p.commandCache))
+	for _, entry := range p.commandCache {
+		if entry.MinRank > userRank {
+			continue
+		}
+		if entry.AdminOnly && !isAdmin {
+			continue
+		}
+		clone := *entry
+		clone.Aliases = append([]string(nil), entry.Aliases...)
+		entries = append(entries, &clone)
+	}
+	p.cacheMu.RUnlock()
+	return entries
+}
+
+func (p *Plugin) handleRegisterEvent(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil || dataEvent.Data.PluginRequest == nil {
+		return nil
+	}
+
+	req := dataEvent.Data.PluginRequest
+	if req.Data == nil || req.Data.KeyValue == nil {
+		return nil
+	}
+
+	commandsRaw := strings.TrimSpace(req.Data.KeyValue["commands"])
+	if commandsRaw == "" {
+		return nil
+	}
+
+	minRank := 0
+	if minRankStr := strings.TrimSpace(req.Data.KeyValue["min_rank"]); minRankStr != "" {
+		if parsed, err := strconv.Atoi(minRankStr); err == nil {
+			minRank = parsed
+		}
+	}
+
+	adminOnlySet, adminOnlyAll := parseAdminOnly(req.Data.KeyValue["admin_only"])
+	commands := strings.Split(commandsRaw, ",")
+	primary := ""
+	if len(commands) > 0 {
+		primary = strings.ToLower(strings.TrimSpace(commands[0]))
+	}
+
+	p.cacheMu.Lock()
+	for i, command := range commands {
+		cmd := strings.ToLower(strings.TrimSpace(command))
+		if cmd == "" {
+			continue
+		}
+		isAlias := i > 0
+		cmdPrimary := primary
+		if !isAlias || cmdPrimary == "" {
+			cmdPrimary = cmd
+		}
+		adminOnly := adminOnlyAll || adminOnlySet[cmd]
+		if cmdPrimary != "" && adminOnlySet[cmdPrimary] {
+			adminOnly = true
+		}
+
+		entry, ok := p.commandCache[cmdPrimary]
+		if !ok {
+			entry = &commandEntry{Primary: cmdPrimary}
+			p.commandCache[cmdPrimary] = entry
+		}
+		entry.PluginName = req.From
+		entry.MinRank = minRank
+		entry.AdminOnly = adminOnly
+		if isAlias && cmd != cmdPrimary {
+			p.aliasIndex[cmd] = cmdPrimary
+			if !contains(entry.Aliases, cmd) {
+				entry.Aliases = append(entry.Aliases, cmd)
+			}
+		}
+	}
+	for _, entry := range p.commandCache {
+		sort.Strings(entry.Aliases)
+	}
+	p.cacheMu.Unlock()
+
+	return nil
+}
+
+func (p *Plugin) loadCacheFromDB() error {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
 	query := `
-		SELECT command, plugin_name, is_alias, COALESCE(primary_command, ''), min_rank, enabled
+		SELECT command, plugin_name, is_alias, COALESCE(primary_command, ''), min_rank, enabled, admin_only
 		FROM daz_eventfilter_commands
-		WHERE enabled = true AND min_rank <= $1
+		WHERE enabled = true
 	`
 
-	rows, err := p.sqlClient.QueryContext(ctx, query, userRank)
+	rows, err := p.sqlClient.QueryContext(ctx, query)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
 
-	commands := make(map[string]*commandEntry)
+	cache := make(map[string]*commandEntry)
+	aliasIndex := make(map[string]string)
+
 	for rows.Next() {
 		var (
 			command    string
@@ -297,15 +441,15 @@ func (p *Plugin) fetchCommands(userRank int) (map[string]*commandEntry, error) {
 			primary    string
 			minRank    int
 			enabled    bool
+			adminOnly  bool
 		)
 
-		if err := rows.Scan(&command, &pluginName, &isAlias, &primary, &minRank, &enabled); err != nil {
-			return nil, err
+		if err := rows.Scan(&command, &pluginName, &isAlias, &primary, &minRank, &enabled, &adminOnly); err != nil {
+			return err
 		}
 		if !enabled {
 			continue
 		}
-
 		command = strings.ToLower(strings.TrimSpace(command))
 		primary = strings.ToLower(strings.TrimSpace(primary))
 		if command == "" {
@@ -315,108 +459,56 @@ func (p *Plugin) fetchCommands(userRank int) (map[string]*commandEntry, error) {
 			primary = command
 		}
 
-		entry, ok := commands[primary]
+		entry, ok := cache[primary]
 		if !ok {
-			entry = &commandEntry{Primary: primary, PluginName: pluginName, MinRank: minRank}
-			commands[primary] = entry
+			entry = &commandEntry{Primary: primary, PluginName: pluginName, MinRank: minRank, AdminOnly: adminOnly}
+			cache[primary] = entry
 		}
 		if isAlias && command != primary {
-			entry.Aliases = append(entry.Aliases, command)
+			aliasIndex[command] = primary
+			if !contains(entry.Aliases, command) {
+				entry.Aliases = append(entry.Aliases, command)
+			}
 		}
 	}
 
-	for _, entry := range commands {
+	for _, entry := range cache {
 		sort.Strings(entry.Aliases)
 	}
 
-	return commands, rows.Err()
+	p.cacheMu.Lock()
+	p.commandCache = cache
+	p.aliasIndex = aliasIndex
+	p.cacheMu.Unlock()
+
+	return rows.Err()
 }
 
-func (p *Plugin) lookupCommand(req *framework.PluginRequest, command string) (*commandEntry, []string, error) {
-	command = strings.ToLower(strings.TrimSpace(command))
-	if command == "" {
-		return nil, nil, nil
+func parseAdminOnly(raw string) (map[string]bool, bool) {
+	result := make(map[string]bool)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return result, false
 	}
-
-	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
-	defer cancel()
-
-	query := `
-		SELECT command, plugin_name, is_alias, COALESCE(primary_command, ''), min_rank, enabled
-		FROM daz_eventfilter_commands
-		WHERE command = $1 AND enabled = true
-		LIMIT 1
-	`
-
-	rows, err := p.sqlClient.QueryContext(ctx, query, command)
-	if err != nil {
-		return nil, nil, err
+	if strings.EqualFold(raw, "true") {
+		return result, true
 	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		return nil, nil, nil
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry != "" {
+			result[entry] = true
+		}
 	}
-
-	var (
-		cmd        string
-		pluginName string
-		isAlias    bool
-		primary    string
-		minRank    int
-		enabled    bool
-	)
-
-	if err := rows.Scan(&cmd, &pluginName, &isAlias, &primary, &minRank, &enabled); err != nil {
-		return nil, nil, err
-	}
-	if !enabled {
-		return nil, nil, nil
-	}
-
-	cmd = strings.ToLower(strings.TrimSpace(cmd))
-	primary = strings.ToLower(strings.TrimSpace(primary))
-	if cmd == "" {
-		return nil, nil, nil
-	}
-	if !isAlias || primary == "" {
-		primary = cmd
-	}
-
-	aliases, err := p.fetchAliases(ctx, primary)
-	if err != nil {
-		return nil, nil, err
-	}
-	return &commandEntry{Primary: primary, PluginName: pluginName, MinRank: minRank, Aliases: aliases}, aliases, nil
+	return result, false
 }
 
-func (p *Plugin) fetchAliases(ctx context.Context, primary string) ([]string, error) {
-	query := `
-		SELECT command
-		FROM daz_eventfilter_commands
-		WHERE enabled = true AND is_alias = true AND primary_command = $1
-		ORDER BY command ASC
-	`
-
-	rows, err := p.sqlClient.QueryContext(ctx, query, primary)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	aliases := []string{}
-	for rows.Next() {
-		var cmd string
-		if err := rows.Scan(&cmd); err != nil {
-			return nil, err
-		}
-		cmd = strings.ToLower(strings.TrimSpace(cmd))
-		if cmd != "" {
-			aliases = append(aliases, cmd)
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
 		}
 	}
-
-	return aliases, rows.Err()
+	return false
 }
 
 func (p *Plugin) limit(message string) string {

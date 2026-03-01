@@ -213,6 +213,12 @@ func (p *Plugin) registerCommand() error {
 				KeyValue: map[string]string{
 					"commands": "playlistadd,playlistdelete",
 					"min_rank": "0", // Allow all users, we'll check admin in handler
+					"admin_only": func() string {
+						if p.adminOnly {
+							return "true"
+						}
+						return ""
+					}(),
 				},
 			},
 		},
