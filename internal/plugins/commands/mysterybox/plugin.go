@@ -210,7 +210,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 			case <-p.ctx.Done():
 				return
 			default:
-				p.sendResponse(channel, username, announcement, false)
+				p.sendResponse(channel, username, announcement, isPM)
 			}
 		})
 	}
