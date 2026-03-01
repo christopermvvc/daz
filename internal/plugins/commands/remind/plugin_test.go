@@ -11,7 +11,15 @@ func TestParseTimeString(t *testing.T) {
 		ok    bool
 	}{
 		{"5m", true},
+		{"5min", true},
+		{"5mins", true},
+		{"5minutes", true},
+		{"5 minutes", true},
 		{"1h30m", true},
+		{"1h 30m", true},
+		{"1 hour 30 minutes", true},
+		{"2hrs", true},
+		{"1day", true},
 		{"2d", true},
 		{"10s", true},
 		{"1h0m", true},
