@@ -166,3 +166,6 @@ COMMAND_PROCESSING_FIX.md
 # Systemd override files with potential secrets
 scripts/daz-override.conf
 .github_token
+
+# Agent planning and evidence
+.sisyphus/
