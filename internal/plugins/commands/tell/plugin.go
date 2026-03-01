@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math/rand"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -15,9 +17,10 @@ import (
 
 const (
 	pluginName            = "tell"
-	messageLifetime       = 10 * 365 * 24 * time.Hour // 10 years
+	messageLifetime       = 7 * 24 * time.Hour
 	deliveryLimit         = 15
 	periodicCheckInterval = 5 * time.Minute // Check for online recipients every 5 minutes
+	maxPendingPerTarget   = 1
 )
 
 type Plugin struct {
@@ -81,6 +84,8 @@ func (p *Plugin) Start() error {
 		return fmt.Errorf("plugin already running")
 	}
 	p.mu.Unlock()
+
+	rand.Seed(time.Now().UnixNano())
 
 	// Create database table
 	if err := p.createTable(); err != nil {
@@ -341,6 +346,15 @@ func (p *Plugin) processTellCommand(channel, fromUser, args string, isPM bool) {
 	toUser := parts[0]
 	message := parts[1]
 
+	if strings.EqualFold(toUser, fromUser) {
+		p.sendResponse(channel, fromUser, "just talk to yourself in your head mate", isPM)
+		return
+	}
+	if botName := resolveBotUsername(); botName != "" && strings.EqualFold(toUser, botName) {
+		p.sendResponse(channel, fromUser, "mate I'm not gonna talk to meself, that's cooked", isPM)
+		return
+	}
+
 	// Check if user is online in database first
 	isOnline, err := p.isUserOnlineInDB(channel, toUser)
 	if err != nil {
@@ -353,6 +367,25 @@ func (p *Plugin) processTellCommand(channel, fromUser, args string, isPM bool) {
 
 	if isOnline {
 		p.sendResponse(channel, fromUser, fmt.Sprintf("%s is currently online. Please message them directly.", toUser), isPM)
+		return
+	}
+
+	if existingFrom, ok, err := p.getPendingSender(channel, toUser); err != nil {
+		logger.Error(p.name, "Failed to check pending messages: %v", err)
+	} else if ok {
+		responses := []string{
+			fmt.Sprintf("mate, I've already got a message for -%s from -%s. one at a time ya greedy bastard", toUser, existingFrom),
+			fmt.Sprintf("-%s's already got mail waiting from -%s. tell 'em to check in first", toUser, existingFrom),
+			fmt.Sprintf("nah mate, -%s beat ya to it. wait till -%s gets that one first", existingFrom, toUser),
+			fmt.Sprintf("I'm not a bloody answering machine! -%s's already got one from -%s", toUser, existingFrom),
+			fmt.Sprintf("oi, -%s already left a message for -%s. wait ya turn", existingFrom, toUser),
+			fmt.Sprintf("can't do it mate, -%s's inbox is full with one from -%s", toUser, existingFrom),
+		}
+		msg := responses[rand.Intn(len(responses))]
+		if isPM {
+			msg = strings.ReplaceAll(msg, "-", "")
+		}
+		p.sendResponse(channel, fromUser, msg, isPM)
 		return
 	}
 
@@ -381,6 +414,48 @@ func (p *Plugin) storeMessage(channel, fromUser, toUser, message string, isPM bo
 	expiresAt := time.Now().Add(messageLifetime)
 	_, err := p.sqlClient.ExecContext(ctx, query, channel, fromUser, toUser, message, isPM, expiresAt)
 	return err
+}
+
+func (p *Plugin) getPendingSender(channel, toUser string) (string, bool, error) {
+	if maxPendingPerTarget <= 0 {
+		return "", false, nil
+	}
+
+	query := `
+		SELECT from_user
+		FROM daz_tell_messages
+		WHERE channel = $1 AND LOWER(to_user) = LOWER($2) AND delivered = FALSE AND expires_at > CURRENT_TIMESTAMP
+		ORDER BY created_at ASC
+		LIMIT 1
+	`
+
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := p.sqlClient.QueryContext(ctx, query, channel, toUser)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error(p.name, "Failed to close rows: %v", err)
+		}
+	}()
+
+	if !rows.Next() {
+		return "", false, rows.Err()
+	}
+
+	var fromUser string
+	if err := rows.Scan(&fromUser); err != nil {
+		return "", false, err
+	}
+
+	if strings.TrimSpace(fromUser) == "" {
+		return "", false, nil
+	}
+
+	return fromUser, true, nil
 }
 
 func (p *Plugin) scheduleMessageDelivery(channel, username string) {
@@ -742,6 +817,14 @@ func (p *Plugin) deleteExpiredMessages() {
 	if rowsAffected > 0 {
 		logger.Info(p.name, "Deleted %d expired messages", rowsAffected)
 	}
+}
+
+func resolveBotUsername() string {
+	configured := strings.TrimSpace(os.Getenv("DAZ_BOT_NAME"))
+	if configured != "" {
+		return configured
+	}
+	return strings.TrimSpace(os.Getenv("DAZ_CYTUBE_USERNAME"))
 }
 
 func (p *Plugin) startPeriodicDeliveryCheck() {
