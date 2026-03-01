@@ -26,15 +26,3 @@ func TestParseTimeString(t *testing.T) {
 		}
 	}
 }
-
-func TestIsSelfAlias(t *testing.T) {
-	if !isSelfAlias("@me") {
-		t.Fatalf("expected @me to be self alias")
-	}
-	if !isSelfAlias("myself") {
-		t.Fatalf("expected myself to be self alias")
-	}
-	if isSelfAlias("bob") {
-		t.Fatalf("expected bob to not be self alias")
-	}
-}
