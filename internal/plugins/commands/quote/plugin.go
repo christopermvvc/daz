@@ -139,8 +139,9 @@ func (p *Plugin) registerCommands() {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "quote,q,rq",
-					"min_rank": "0",
+					"commands":    "quote,q,rq",
+					"min_rank":    "0",
+					"description": "grab a random quote",
 				},
 			},
 		},
@@ -198,6 +199,10 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 			p.sendResponse(req, "Nope. I won't quote myself.")
 			return nil
 		}
+		if isExcludedQuoteUsername(target, botUsername) {
+			p.sendResponse(req, fmt.Sprintf("No quote found for %s.", strings.TrimSpace(cmd.Args[0])))
+			return nil
+		}
 		row, err = p.getRandomQuote(ctx, channel, target, botUsername)
 	}
 
@@ -237,6 +242,8 @@ func (p *Plugin) getRandomQuote(ctx context.Context, channel, username, botUsern
 		  AND message IS NOT NULL
 		  AND LENGTH(TRIM(message)) > 0
 		  AND message NOT LIKE '!%'
+		  AND LOWER(username) NOT IN ('system', 'server', 'cytube')
+		  AND LENGTH(TRIM(username)) > 0
 	`
 
 	args := []interface{}{channel}
@@ -248,7 +255,7 @@ func (p *Plugin) getRandomQuote(ctx context.Context, channel, username, botUsern
 		args = append(args, botUsername)
 	}
 
-	query += " ORDER BY RANDOM() LIMIT 1"
+	query += " ORDER BY RANDOM() LIMIT 32"
 
 	rows, err := helper.SlowQuery(ctx, query, args...)
 	if err != nil {
@@ -260,16 +267,17 @@ func (p *Plugin) getRandomQuote(ctx context.Context, channel, username, botUsern
 		}
 	}()
 
-	if !rows.Next() {
-		return nil, nil
+	for rows.Next() {
+		var row quoteRow
+		if err := rows.Scan(&row.Username, &row.Message, &row.MessageTime); err != nil {
+			return nil, fmt.Errorf("failed to scan quote row: %w", err)
+		}
+		if !isExcludedQuoteUsername(row.Username, botUsername) {
+			return &row, nil
+		}
 	}
 
-	var row quoteRow
-	if err := rows.Scan(&row.Username, &row.Message, &row.MessageTime); err != nil {
-		return nil, fmt.Errorf("failed to scan quote row: %w", err)
-	}
-
-	return &row, nil
+	return nil, nil
 }
 
 func (p *Plugin) handlePluginResponse(event framework.Event) error {
@@ -432,6 +440,48 @@ func isSelfTarget(target, botUsername string) bool {
 	}
 
 	return t == b
+}
+
+func isSystemUsername(username string) bool {
+	name := strings.ToLower(strings.TrimSpace(username))
+	if name == "" {
+		return true
+	}
+
+	switch name {
+	case "system", "server", "cytube":
+		return true
+	default:
+		return false
+	}
+}
+
+func isExcludedQuoteUsername(username, botUsername string) bool {
+	normalized := normalizeQuoteUsername(username)
+	if normalized == "" {
+		return true
+	}
+
+	if normalized == "dazza" {
+		return true
+	}
+
+	if isSystemUsername(normalized) {
+		return true
+	}
+
+	bot := normalizeQuoteUsername(botUsername)
+	if bot != "" && normalized == bot {
+		return true
+	}
+
+	return false
+}
+
+func normalizeQuoteUsername(username string) string {
+	name := strings.ToLower(strings.TrimSpace(username))
+	name = strings.Trim(name, "[](){}<>\"'`")
+	return strings.TrimSpace(name)
 }
 
 func formatSince(messageTime int64) string {

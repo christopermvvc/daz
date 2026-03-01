@@ -77,8 +77,9 @@ func (p *Plugin) Start() error {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "8ball,eightball,coinflip,flip,rps",
-					"min_rank": "0",
+					"commands":    "8ball,eightball,coinflip,flip,rps",
+					"min_rank":    "0",
+					"description": "ask the magic 8-ball a question",
 				},
 			},
 		},

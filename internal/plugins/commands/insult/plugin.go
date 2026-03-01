@@ -131,8 +131,9 @@ func (p *Plugin) registerCommands() {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "insult,roast,burn",
-					"min_rank": "0",
+					"commands":    "insult,roast,burn",
+					"min_rank":    "0",
+					"description": "fire off an Aussie-style roast",
 				},
 			},
 		},

@@ -65,8 +65,9 @@ func (p *Plugin) Start() error {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "random,rand,r",
-					"min_rank": "0",
+					"commands":    "random,rand,r",
+					"min_rank":    "0",
+					"description": "roll a random number up to a max",
 				},
 			},
 		},

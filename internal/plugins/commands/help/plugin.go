@@ -159,8 +159,9 @@ func (p *Plugin) registerCommand() {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "help,h,commands",
-					"min_rank": "0",
+					"commands":    "help,h,commands",
+					"min_rank":    "0",
+					"description": "list available commands",
 				},
 			},
 		},
@@ -247,16 +248,24 @@ func (p *Plugin) handleCommandHelp(req *framework.PluginRequest, command string)
 		aliasText = strings.Join(aliases, ", ")
 	}
 
-	message := fmt.Sprintf("!%s (plugin: %s, min rank: %d, aliases: %s)", info.Primary, info.PluginName, info.MinRank, aliasText)
+	description := strings.TrimSpace(info.Description)
+	if description == "" {
+		description = "no description yet"
+	}
+	message := fmt.Sprintf("!%s - %s", info.Primary, description)
+	if p.config.ShowAliases && aliasText != "none" {
+		message = fmt.Sprintf("%s (aliases: %s)", message, aliasText)
+	}
 	p.sendResponse(req, p.limit(message))
 }
 
 type commandEntry struct {
-	Primary    string
-	PluginName string
-	MinRank    int
-	Aliases    []string
-	AdminOnly  bool
+	Primary     string
+	PluginName  string
+	MinRank     int
+	Aliases     []string
+	AdminOnly   bool
+	Description string
 }
 
 func (p *Plugin) buildCommandList(req *framework.PluginRequest) ([]string, error) {
@@ -279,11 +288,7 @@ func (p *Plugin) buildCommandList(req *framework.PluginRequest) ([]string, error
 
 	lines := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		aliasText := ""
-		if p.config.ShowAliases && len(entry.Aliases) > 0 {
-			aliasText = fmt.Sprintf(" (aliases: %s)", strings.Join(entry.Aliases, ", "))
-		}
-		line := fmt.Sprintf("!%s - plugin: %s, min rank: %d%s", entry.Primary, entry.PluginName, entry.MinRank, aliasText)
+		line := fmt.Sprintf("!%s - %s", entry.Primary, entry.Description)
 		lines = append(lines, line)
 	}
 
@@ -343,6 +348,9 @@ func (p *Plugin) snapshotEntries(userRank int, isAdmin bool) []*commandEntry {
 	p.cacheMu.RLock()
 	entries := make([]*commandEntry, 0, len(p.commandCache))
 	for _, entry := range p.commandCache {
+		if entry.Primary == "help" || entry.Primary == "greeter" || entry.PluginName == "greeter" {
+			continue
+		}
 		if entry.MinRank > userRank {
 			continue
 		}
@@ -351,6 +359,9 @@ func (p *Plugin) snapshotEntries(userRank int, isAdmin bool) []*commandEntry {
 		}
 		clone := *entry
 		clone.Aliases = append([]string(nil), entry.Aliases...)
+		if strings.TrimSpace(clone.Description) == "" {
+			clone.Description = "no description yet"
+		}
 		entries = append(entries, &clone)
 	}
 	p.cacheMu.RUnlock()
@@ -411,6 +422,12 @@ func (p *Plugin) handleRegisterEvent(event framework.Event) error {
 		entry.PluginName = req.From
 		entry.MinRank = minRank
 		entry.AdminOnly = adminOnly
+		if !isAlias {
+			desc := strings.TrimSpace(req.Data.KeyValue["description"])
+			if desc != "" {
+				entry.Description = desc
+			}
+		}
 		if isAlias && cmd != cmdPrimary {
 			p.aliasIndex[cmd] = cmdPrimary
 			if !contains(entry.Aliases, cmd) {
@@ -431,6 +448,35 @@ func (p *Plugin) loadCacheFromDB() error {
 	defer cancel()
 
 	query := `
+		SELECT command, plugin_name, is_alias, COALESCE(primary_command, ''), min_rank, enabled, admin_only, description
+		FROM daz_eventfilter_commands
+		WHERE enabled = true
+	`
+
+	rows, err := p.sqlClient.QueryContext(ctx, query)
+	if err != nil {
+		if isMissingDescriptionError(err) {
+			return p.loadCacheFromDBLegacy(ctx)
+		}
+		return err
+	}
+	defer rows.Close()
+
+	cache, aliasIndex, err := p.scanCommandRows(rows, true)
+	if err != nil {
+		return err
+	}
+
+	p.cacheMu.Lock()
+	p.commandCache = cache
+	p.aliasIndex = aliasIndex
+	p.cacheMu.Unlock()
+
+	return rows.Err()
+}
+
+func (p *Plugin) loadCacheFromDBLegacy(ctx context.Context) error {
+	query := `
 		SELECT command, plugin_name, is_alias, COALESCE(primary_command, ''), min_rank, enabled, admin_only
 		FROM daz_eventfilter_commands
 		WHERE enabled = true
@@ -442,22 +488,43 @@ func (p *Plugin) loadCacheFromDB() error {
 	}
 	defer rows.Close()
 
+	cache, aliasIndex, err := p.scanCommandRows(rows, false)
+	if err != nil {
+		return err
+	}
+
+	p.cacheMu.Lock()
+	p.commandCache = cache
+	p.aliasIndex = aliasIndex
+	p.cacheMu.Unlock()
+
+	return rows.Err()
+}
+
+func (p *Plugin) scanCommandRows(rows *framework.QueryRows, hasDescription bool) (map[string]*commandEntry, map[string]string, error) {
 	cache := make(map[string]*commandEntry)
 	aliasIndex := make(map[string]string)
 
 	for rows.Next() {
 		var (
-			command    string
-			pluginName string
-			isAlias    bool
-			primary    string
-			minRank    int
-			enabled    bool
-			adminOnly  bool
+			command     string
+			pluginName  string
+			isAlias     bool
+			primary     string
+			minRank     int
+			enabled     bool
+			adminOnly   bool
+			description string
 		)
 
-		if err := rows.Scan(&command, &pluginName, &isAlias, &primary, &minRank, &enabled, &adminOnly); err != nil {
-			return err
+		if hasDescription {
+			if err := rows.Scan(&command, &pluginName, &isAlias, &primary, &minRank, &enabled, &adminOnly, &description); err != nil {
+				return nil, nil, err
+			}
+		} else {
+			if err := rows.Scan(&command, &pluginName, &isAlias, &primary, &minRank, &enabled, &adminOnly); err != nil {
+				return nil, nil, err
+			}
 		}
 		if !enabled {
 			continue
@@ -473,7 +540,7 @@ func (p *Plugin) loadCacheFromDB() error {
 
 		entry, ok := cache[primary]
 		if !ok {
-			entry = &commandEntry{Primary: primary, PluginName: pluginName, MinRank: minRank, AdminOnly: adminOnly}
+			entry = &commandEntry{Primary: primary, PluginName: pluginName, MinRank: minRank, AdminOnly: adminOnly, Description: description}
 			cache[primary] = entry
 		}
 		if isAlias && command != primary {
@@ -488,12 +555,18 @@ func (p *Plugin) loadCacheFromDB() error {
 		sort.Strings(entry.Aliases)
 	}
 
-	p.cacheMu.Lock()
-	p.commandCache = cache
-	p.aliasIndex = aliasIndex
-	p.cacheMu.Unlock()
+	return cache, aliasIndex, nil
+}
 
-	return rows.Err()
+func isMissingDescriptionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "description") {
+		return false
+	}
+	return strings.Contains(msg, "column") || strings.Contains(msg, "does not exist")
 }
 
 func parseAdminOnly(raw string) (map[string]bool, bool) {
@@ -539,10 +612,16 @@ func splitMessages(header string, lines []string, maxLen int) []string {
 	}
 
 	header = strings.TrimSpace(header)
-	current := header
-	if current != "" {
-		current += "\n"
+	if header != "" {
+		header += "\n"
 	}
+
+	full := header + strings.Join(lines, "\n")
+	if len([]rune(full)) <= maxLen {
+		return []string{strings.TrimSpace(full)}
+	}
+
+	current := header
 
 	var messages []string
 	for _, line := range lines {
@@ -600,33 +679,24 @@ func (p *Plugin) checkHelpCooldown(channel, username string) (time.Duration, boo
 }
 
 func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
-	// Send response via plugin response system
 	username := req.Data.Command.Params["username"]
 	channel := req.Data.Command.Params["channel"]
 
-	response := &framework.EventData{
-		PluginResponse: &framework.PluginResponse{
-			ID:      req.ID,
-			From:    p.name,
-			Success: true,
-			Data: &framework.ResponseData{
-				CommandResult: &framework.CommandResultData{
-					Success: true,
-					Output:  message,
-				},
-				KeyValue: map[string]string{
-					"username": username,
-					"channel":  channel,
-				},
-			},
+	if username == "" {
+		return
+	}
+
+	pmData := &framework.EventData{
+		PrivateMessage: &framework.PrivateMessageData{
+			ToUser:  username,
+			Message: message,
+			Channel: channel,
 		},
 	}
 
-	// Broadcast to plugin.response event for routing
-	if err := p.eventBus.Broadcast("plugin.response", response); err != nil {
-		logger.Error(p.name, "Failed to send help plugin response: %v", err)
-		// Emit failure event for retry
-		p.emitFailureEvent("command.help.failed", req.ID, "response_delivery", err)
+	if err := p.eventBus.Broadcast("cytube.send.pm", pmData); err != nil {
+		logger.Error(p.name, "Failed to send help PM: %v", err)
+		p.emitFailureEvent("command.help.failed", req.ID, "pm_delivery", err)
 	}
 }
 
