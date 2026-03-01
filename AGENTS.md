@@ -96,6 +96,7 @@
 - Close `rows` and `db` handles with deferred cleanup.
 - Use `sql.Open` and `db.Ping` when connectivity must be verified.
 - Wrap SQL errors with context and preserve original error.
+- Any schema change (new table/column/index/constraint) MUST include an explicit migration path in the same PR (migration SQL and runtime wiring if needed); do not rely on ad-hoc startup DDL alone.
 
 ## Tests Style
 - Use the standard `testing` package.

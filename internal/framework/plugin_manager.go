@@ -18,18 +18,20 @@ type PluginWithDependencies interface {
 
 // PluginManager manages plugin lifecycle and dependencies
 type PluginManager struct {
-	plugins      map[string]Plugin
-	startOrder   []string
-	dependencies map[string][]string
-	ready        map[string]bool
+	plugins       map[string]Plugin
+	registerOrder []string
+	startOrder    []string
+	dependencies  map[string][]string
+	ready         map[string]bool
 }
 
 // NewPluginManager creates a new plugin manager
 func NewPluginManager() *PluginManager {
 	return &PluginManager{
-		plugins:      make(map[string]Plugin),
-		dependencies: make(map[string][]string),
-		ready:        make(map[string]bool),
+		plugins:       make(map[string]Plugin),
+		registerOrder: []string{},
+		dependencies:  make(map[string][]string),
+		ready:         make(map[string]bool),
 	}
 }
 
@@ -40,6 +42,7 @@ func (pm *PluginManager) RegisterPlugin(name string, plugin Plugin) error {
 	}
 
 	pm.plugins[name] = plugin
+	pm.registerOrder = append(pm.registerOrder, name)
 
 	// Check if plugin supports dependencies
 	if depPlugin, ok := plugin.(PluginWithDependencies); ok {
@@ -152,8 +155,7 @@ func (pm *PluginManager) resolveStartupOrder() error {
 		return nil
 	}
 
-	// Visit all plugins
-	for name := range pm.plugins {
+	for _, name := range pm.registerOrder {
 		if !visited[name] {
 			if err := visit(name); err != nil {
 				return err
