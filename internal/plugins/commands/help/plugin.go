@@ -612,10 +612,16 @@ func splitMessages(header string, lines []string, maxLen int) []string {
 	}
 
 	header = strings.TrimSpace(header)
-	current := header
-	if current != "" {
-		current += "\n"
+	if header != "" {
+		header += "\n"
 	}
+
+	full := header + strings.Join(lines, "\n")
+	if len([]rune(full)) <= maxLen {
+		return []string{strings.TrimSpace(full)}
+	}
+
+	current := header
 
 	var messages []string
 	for _, line := range lines {
