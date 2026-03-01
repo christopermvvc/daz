@@ -173,7 +173,13 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		return nil
 	}
 
-	if remaining, ok := p.checkCooldown(channel, username); !ok {
+	remaining, ok, err := p.checkCooldown(channel, username)
+	if err != nil {
+		logger.Error(p.name, "Cooldown check failed: %v", err)
+		p.sendResponse(channel, username, "couch ledger's down right now. try again later", isPM)
+		return nil
+	}
+	if !ok {
 		message := waitMessage(username, remaining)
 		p.sendResponse(channel, username, message, isPM)
 		return nil
@@ -205,7 +211,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	}
 
 	location := locations[rand.Intn(len(locations))]
-	if rand.Float64() < badEventChance {
+	if couchBadEventRoll() < badEventChance {
 		badEvent := badEvents[rand.Intn(len(badEvents))]
 		cost := rand.Intn(badEvent.MaxCost-badEvent.MinCost+1) + badEvent.MinCost
 		actualCost := int64(cost)
@@ -225,12 +231,14 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 			}
 		}
 
-		p.updateStats(channel, username, couchStatsUpdate{
+		if err := p.updateStats(channel, username, couchStatsUpdate{
 			Dives:         1,
 			Injuries:      1,
 			HospitalTrips: 1,
 			LastPlayed:    time.Now(),
-		})
+		}); err != nil {
+			logger.Error(p.name, "Failed to update couch stats: %v", err)
+		}
 
 		message := fmt.Sprintf("❌ FUCKIN DISASTER! %s", strings.ReplaceAll(badEvent.Message, "-amount", fmt.Sprintf("$%d", actualCost)))
 		if actualCost == 0 {
@@ -240,17 +248,19 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		return nil
 	}
 
-	amount := rollFindAmount(isDesperate)
+	amount := rollFindAmountFunc(isDesperate)
 	messageType := messageTypeForAmount(amount)
 	message := ""
 	publicAnnouncement := false
 
 	if amount == 0 {
 		message = fmt.Sprintf("❌ EMPTY HANDED! Searched %s... %s", location, randomChoice(successMessagesNothing))
-		p.updateStats(channel, username, couchStatsUpdate{
+		if err := p.updateStats(channel, username, couchStatsUpdate{
 			Dives:      1,
 			LastPlayed: time.Now(),
-		})
+		}); err != nil {
+			logger.Error(p.name, "Failed to update couch stats: %v", err)
+		}
 	} else {
 		_, err := p.economyClient.Credit(ctx, framework.CreditRequest{
 			Channel:  channel,
@@ -290,7 +300,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		p.sendResponse(channel, username, message, false)
 		if publicAnnouncement {
 			announcement := fmt.Sprintf("🚨 COUCH JACKPOT! %s just found $%d %s! Lucky bastard!", username, amount, location)
-			time.AfterFunc(2*time.Second, func() {
+			couchAfterFunc(couchAnnouncementDelay, func() {
 				select {
 				case <-p.ctx.Done():
 					return
@@ -304,7 +314,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	return nil
 }
 
-func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool) {
+func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
@@ -317,25 +327,25 @@ func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool) {
 
 	rows, err := p.sqlClient.QueryContext(ctx, query, channel, username)
 	if err != nil {
-		return 0, true
+		return 0, false, err
 	}
 	defer rows.Close()
 
 	if !rows.Next() {
-		return 0, true
+		return 0, true, nil
 	}
 	var lastPlayed time.Time
 	if err := rows.Scan(&lastPlayed); err != nil {
-		return 0, true
+		return 0, false, err
 	}
 	if lastPlayed.IsZero() {
-		return 0, true
+		return 0, true, nil
 	}
 	until := lastPlayed.Add(p.cooldown)
 	if time.Now().Before(until) {
-		return until.Sub(time.Now()), false
+		return until.Sub(time.Now()), false, nil
 	}
-	return 0, true
+	return 0, true, nil
 }
 
 type couchStatsUpdate struct {
@@ -440,6 +450,16 @@ func rollFindAmount(isDesperate bool) int {
 		return rand.Intn(5) + 1
 	}
 }
+
+var rollFindAmountFunc = rollFindAmount
+
+var couchBadEventRoll = func() float64 {
+	return rand.Float64()
+}
+
+var couchAnnouncementDelay = 2 * time.Second
+
+var couchAfterFunc = time.AfterFunc
 
 func messageTypeForAmount(amount int) string {
 	switch {
