@@ -795,8 +795,9 @@ func (p *Plugin) registerCommands() {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "nowplaying,np,stats,mediastats",
-					"min_rank": "0",
+					"commands":    "nowplaying,np,stats,mediastats",
+					"min_rank":    "0",
+					"description": "show what's playing now",
 				},
 			},
 		},
