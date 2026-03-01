@@ -78,8 +78,9 @@ func (p *Plugin) Start() error {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "fortune",
-					"min_rank": "0",
+					"commands":    "fortune",
+					"min_rank":    "0",
+					"description": "get a fortune cookie saying",
 				},
 			},
 		},

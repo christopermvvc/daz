@@ -115,8 +115,9 @@ func (p *Plugin) registerCommand() {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "seen",
-					"min_rank": "0",
+					"commands":    "seen",
+					"min_rank":    "0",
+					"description": "check when someone was last seen",
 				},
 			},
 		},

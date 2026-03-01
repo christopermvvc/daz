@@ -212,9 +212,10 @@ func (p *Plugin) registerCommands() error {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands":   "gallery,gallery_lock,gallery_unlock,gallery_check",
-					"min_rank":   "0", // Allow all users, we'll check permissions in handler
-					"admin_only": "gallery_check",
+					"commands":    "gallery,gallery_lock,gallery_unlock,gallery_check",
+					"min_rank":    "0", // Allow all users, we'll check permissions in handler
+					"admin_only":  "gallery_check",
+					"description": "show your gallery link",
 				},
 			},
 		},

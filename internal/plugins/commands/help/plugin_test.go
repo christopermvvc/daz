@@ -399,14 +399,14 @@ func TestHandleCommand(t *testing.T) {
 	}()
 	<-handlerFinish
 
-	// Check that a response was broadcast
+	// Check that a PM was broadcast
 	bus.mu.Lock()
 	broadcastCount := len(bus.broadcasts)
-	// Find the plugin.response broadcast
+	// Find the cytube.send.pm broadcast
 	var broadcast broadcastCall
 	found := false
 	for _, b := range bus.broadcasts {
-		if b.eventType == "plugin.response" {
+		if b.eventType == "cytube.send.pm" {
 			broadcast = b
 			found = true
 			break
@@ -414,23 +414,14 @@ func TestHandleCommand(t *testing.T) {
 	}
 	bus.mu.Unlock()
 	if !found {
-		t.Errorf("Expected plugin.response broadcast not found in %d broadcasts", broadcastCount)
+		t.Errorf("Expected cytube.send.pm broadcast not found in %d broadcasts", broadcastCount)
 		return
 	}
-	if broadcast.data.PluginResponse == nil {
-		t.Error("Expected PluginResponse data")
+	if broadcast.data.PrivateMessage == nil {
+		t.Fatal("Expected PrivateMessage data")
 	}
-	// Verify response is from the help plugin
-	if broadcast.data.PluginResponse.From != "help" {
-		t.Errorf("Expected response from 'help', got '%s'", broadcast.data.PluginResponse.From)
-	}
-	// Verify response contains user information
-	if broadcast.data.PluginResponse.Data == nil || broadcast.data.PluginResponse.Data.KeyValue == nil {
-		t.Fatal("Expected KeyValue data in response")
-	}
-	username := broadcast.data.PluginResponse.Data.KeyValue["username"]
-	if username != "testuser" {
-		t.Errorf("Expected username 'testuser', got '%s'", username)
+	if broadcast.data.PrivateMessage.ToUser != "testuser" {
+		t.Errorf("Expected ToUser 'testuser', got '%s'", broadcast.data.PrivateMessage.ToUser)
 	}
 }
 
@@ -524,6 +515,18 @@ func TestCheckHelpCooldown(t *testing.T) {
 
 	if wait, ok := plugin.checkHelpCooldown("test", "user"); ok || wait <= 0 {
 		t.Fatalf("second cooldown check should block request, got ok=%v wait=%v", ok, wait)
+	}
+}
+
+func TestIsMissingDescriptionError(t *testing.T) {
+	if !isMissingDescriptionError(fmt.Errorf("column \"description\" does not exist")) {
+		t.Fatalf("expected missing description column error")
+	}
+	if !isMissingDescriptionError(fmt.Errorf("pq: column description does not exist")) {
+		t.Fatalf("expected missing description column error")
+	}
+	if isMissingDescriptionError(fmt.Errorf("some other error")) {
+		t.Fatalf("did not expect unrelated error to match")
 	}
 }
 

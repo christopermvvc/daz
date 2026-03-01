@@ -216,8 +216,9 @@ func (p *Plugin) registerCommand() error {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "tell",
-					"min_rank": "0",
+					"commands":    "tell",
+					"min_rank":    "0",
+					"description": "leave a message for someone",
 				},
 			},
 		},
