@@ -194,6 +194,10 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 			return nil
 		}
 		target := sanitizeTarget(cmd.Args[0])
+		if isSystemUsername(target) {
+			p.sendResponse(req, fmt.Sprintf("No quote found for %s.", strings.TrimSpace(cmd.Args[0])))
+			return nil
+		}
 		logger.Debug(p.name, "Quote self-target check: target=%q bot=%q channel=%q", target, botUsername, channel)
 		if isSelfTarget(target, botUsername) {
 			p.sendResponse(req, "Nope. I won't quote myself.")
@@ -238,6 +242,8 @@ func (p *Plugin) getRandomQuote(ctx context.Context, channel, username, botUsern
 		  AND message IS NOT NULL
 		  AND LENGTH(TRIM(message)) > 0
 		  AND message NOT LIKE '!%'
+		  AND LOWER(username) NOT IN ('system', 'server', 'cytube')
+		  AND LENGTH(TRIM(username)) > 0
 	`
 
 	args := []interface{}{channel}
@@ -433,6 +439,20 @@ func isSelfTarget(target, botUsername string) bool {
 	}
 
 	return t == b
+}
+
+func isSystemUsername(username string) bool {
+	name := strings.ToLower(strings.TrimSpace(username))
+	if name == "" {
+		return true
+	}
+
+	switch name {
+	case "system", "server", "cytube":
+		return true
+	default:
+		return false
+	}
 }
 
 func formatSince(messageTime int64) string {

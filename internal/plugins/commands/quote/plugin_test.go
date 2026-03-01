@@ -191,6 +191,18 @@ func TestIsSelfTarget(t *testing.T) {
 	}
 }
 
+func TestIsSystemUsername(t *testing.T) {
+	if !isSystemUsername("System") {
+		t.Fatalf("expected System to be treated as system username")
+	}
+	if !isSystemUsername("server") {
+		t.Fatalf("expected server to be treated as system username")
+	}
+	if isSystemUsername("dazza") {
+		t.Fatalf("did not expect normal user to be treated as system username")
+	}
+}
+
 func TestSanitizeQuoteMessage(t *testing.T) {
 	raw := `<span class="quote">&gt;dip my nuts in ink </span>`
 	got := sanitizeQuoteMessage(raw)
