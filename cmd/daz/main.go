@@ -26,10 +26,13 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/games"
 	"github.com/hildolfr/daz/internal/plugins/commands/help"
 	"github.com/hildolfr/daz/internal/plugins/commands/insult"
+	"github.com/hildolfr/daz/internal/plugins/commands/mysterybox"
+	"github.com/hildolfr/daz/internal/plugins/commands/oddjob"
 	"github.com/hildolfr/daz/internal/plugins/commands/ping"
 	"github.com/hildolfr/daz/internal/plugins/commands/quote"
 	"github.com/hildolfr/daz/internal/plugins/commands/random"
 	"github.com/hildolfr/daz/internal/plugins/commands/remind"
+	"github.com/hildolfr/daz/internal/plugins/commands/scratchie"
 	"github.com/hildolfr/daz/internal/plugins/commands/seen"
 	"github.com/hildolfr/daz/internal/plugins/commands/tell"
 	"github.com/hildolfr/daz/internal/plugins/commands/uptime"
@@ -228,6 +231,8 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"games", games.New()},
 		{"help", help.New()},
 		{"insult", insult.New()},
+		{"mysterybox", mysterybox.New()},
+		{"oddjob", oddjob.New()},
 		{"ping", ping.New()},
 		{"quote", quote.New()},
 		{"uptime", uptime.New()},
@@ -238,6 +243,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"seen", seen.New()},
 		{"playlist", playlist.New()},
 		{"ollama", ollama.New()},
+		{"scratchie", scratchie.New()},
 	}
 
 	// Register all plugins with the manager
@@ -260,6 +266,8 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["bong"] = cfg.GetPluginConfig("bong")
 	pluginConfigs["clap"] = cfg.GetPluginConfig("clap")
 	pluginConfigs["insult"] = cfg.GetPluginConfig("insult")
+	pluginConfigs["mysterybox"] = cfg.GetPluginConfig("mysterybox")
+	pluginConfigs["oddjob"] = cfg.GetPluginConfig("oddjob")
 	pluginConfigs["ping"] = cfg.GetPluginConfig("ping")
 	pluginConfigs["fortune"] = cfg.GetPluginConfig("fortune")
 	pluginConfigs["games"] = cfg.GetPluginConfig("games")
@@ -275,6 +283,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["playlist"] = cfg.GetPluginConfig("playlist")
 	pluginConfigs["gallery"] = cfg.GetPluginConfig("gallery")
 	pluginConfigs["ollama"] = cfg.GetPluginConfig("ollama")
+	pluginConfigs["scratchie"] = cfg.GetPluginConfig("scratchie")
 
 	// Initialize all plugins (respects dependencies)
 	if err := pluginManager.InitializeAll(pluginConfigs, bus); err != nil {
