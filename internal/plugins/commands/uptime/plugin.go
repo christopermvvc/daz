@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -151,15 +152,25 @@ func (p *Plugin) handleUptimeCommand(req *framework.PluginRequest) {
 	uptime := time.Since(p.startTime)
 	p.mu.RUnlock()
 
+	shortMode := false
+	if req.Data != nil && req.Data.Command != nil {
+		if req.Data.Command.Params["is_pm"] == "true" {
+			shortMode = true
+		}
+		if hasShortArg(req.Data.Command.Args) {
+			shortMode = true
+		}
+	}
+
 	// Format uptime message
-	message := formatUptime(uptime)
+	message := formatUptime(uptime, shortMode)
 
 	// Skip database query for now due to sync query limitations
 
 	p.sendResponse(req, message)
 }
 
-func formatUptime(d time.Duration) string {
+func formatUptime(d time.Duration, shortMode bool) string {
 	days := int(d.Hours()) / 24
 	hours := int(d.Hours()) % 24
 	minutes := int(d.Minutes()) % 60
@@ -167,43 +178,33 @@ func formatUptime(d time.Duration) string {
 
 	parts := []string{}
 	if days > 0 {
-		parts = append(parts, fmt.Sprintf("%d day", days))
-		if days > 1 {
-			parts[len(parts)-1] += "s"
-		}
+		parts = append(parts, fmt.Sprintf("%dd", days))
 	}
 	if hours > 0 {
-		parts = append(parts, fmt.Sprintf("%d hour", hours))
-		if hours > 1 {
-			parts[len(parts)-1] += "s"
-		}
+		parts = append(parts, fmt.Sprintf("%dh", hours))
 	}
 	if minutes > 0 {
-		parts = append(parts, fmt.Sprintf("%d minute", minutes))
-		if minutes > 1 {
-			parts[len(parts)-1] += "s"
-		}
+		parts = append(parts, fmt.Sprintf("%dm", minutes))
 	}
-	if seconds > 0 || len(parts) == 0 {
-		parts = append(parts, fmt.Sprintf("%d second", seconds))
-		if seconds != 1 {
-			parts[len(parts)-1] += "s"
+	if !shortMode {
+		if seconds > 0 || len(parts) == 0 {
+			parts = append(parts, fmt.Sprintf("%ds", seconds))
 		}
+	} else if len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%ds", seconds))
 	}
 
-	result := "Bot uptime: "
-	for i, part := range parts {
-		if i > 0 {
-			if i == len(parts)-1 {
-				result += " and "
-			} else {
-				result += ", "
-			}
-		}
-		result += part
-	}
+	return "Bot uptime: " + strings.Join(parts, " ")
+}
 
-	return result
+func hasShortArg(args []string) bool {
+	for _, arg := range args {
+		arg = strings.ToLower(strings.TrimSpace(arg))
+		if arg == "short" || arg == "brief" || arg == "s" {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
