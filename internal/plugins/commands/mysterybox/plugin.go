@@ -92,7 +92,7 @@ func (p *Plugin) Start() error {
 		}
 	}
 
-	rand.Seed(time.Now().UnixNano())
+	framework.SeedMathRand()
 	logger.Debug(p.name, "Started")
 	return nil
 }
@@ -210,7 +210,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 			case <-p.ctx.Done():
 				return
 			default:
-				p.sendResponse(channel, username, announcement, isPM)
+				p.sendResponse(channel, username, announcement, false)
 			}
 		})
 	}
@@ -233,10 +233,16 @@ func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool, e
 	}
 	defer rows.Close()
 	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return 0, false, err
+		}
 		return 0, true, nil
 	}
 	var lastPlayed time.Time
 	if err := rows.Scan(&lastPlayed); err != nil {
+		return 0, false, err
+	}
+	if err := rows.Err(); err != nil {
 		return 0, false, err
 	}
 	if lastPlayed.IsZero() {

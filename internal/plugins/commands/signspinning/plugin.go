@@ -87,7 +87,7 @@ func (p *Plugin) Start() error {
 		return err
 	}
 
-	rand.Seed(time.Now().UnixNano())
+	framework.SeedMathRand()
 
 	for _, cmd := range []string{"sign_spinning", "sign", "spin", "signspinning", "signspin"} {
 		eventName := fmt.Sprintf("command.%s.execute", cmd)
@@ -262,10 +262,16 @@ func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool, e
 	}
 	defer rows.Close()
 	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return 0, false, err
+		}
 		return 0, true, nil
 	}
 	var lastPlayed time.Time
 	if err := rows.Scan(&lastPlayed); err != nil {
+		return 0, false, err
+	}
+	if err := rows.Err(); err != nil {
 		return 0, false, err
 	}
 	if lastPlayed.IsZero() {

@@ -92,7 +92,7 @@ func (p *Plugin) Start() error {
 		}
 	}
 
-	rand.Seed(time.Now().UnixNano())
+	framework.SeedMathRand()
 	logger.Debug(p.name, "Started")
 	return nil
 }

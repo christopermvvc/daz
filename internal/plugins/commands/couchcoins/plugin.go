@@ -92,7 +92,7 @@ func (p *Plugin) Start() error {
 		}
 	}
 
-	rand.Seed(time.Now().UnixNano())
+	framework.SeedMathRand()
 	logger.Debug(p.name, "Started")
 	return nil
 }
@@ -215,6 +215,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		badEvent := badEvents[rand.Intn(len(badEvents))]
 		cost := rand.Intn(badEvent.MaxCost-badEvent.MinCost+1) + badEvent.MinCost
 		actualCost := int64(cost)
+		debitApplied := false
 		if balance < actualCost {
 			actualCost = balance
 		}
@@ -228,6 +229,9 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 			})
 			if err != nil {
 				logger.Error(p.name, "Failed to debit bad event cost: %v", err)
+				actualCost = 0
+			} else {
+				debitApplied = true
 			}
 		}
 
@@ -241,7 +245,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		}
 
 		message := fmt.Sprintf("❌ FUCKIN DISASTER! %s", strings.ReplaceAll(badEvent.Message, "-amount", fmt.Sprintf("$%d", actualCost)))
-		if actualCost == 0 {
+		if !debitApplied {
 			message += " Lucky you're broke or that woulda cost ya!"
 		}
 		p.sendResponse(channel, username, message, isPM)
@@ -332,10 +336,16 @@ func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool, e
 	defer rows.Close()
 
 	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return 0, false, err
+		}
 		return 0, true, nil
 	}
 	var lastPlayed time.Time
 	if err := rows.Scan(&lastPlayed); err != nil {
+		return 0, false, err
+	}
+	if err := rows.Err(); err != nil {
 		return 0, false, err
 	}
 	if lastPlayed.IsZero() {
