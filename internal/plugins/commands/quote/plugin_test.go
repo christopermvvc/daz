@@ -203,6 +203,49 @@ func TestIsSystemUsername(t *testing.T) {
 	}
 }
 
+func TestNormalizeQuoteUsername(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: " [server] ", want: "server"},
+		{input: "<Dazza>", want: "dazza"},
+		{input: "(UserA)", want: "usera"},
+		{input: "hildolfr", want: "hildolfr"},
+	}
+
+	for _, tc := range tests {
+		got := normalizeQuoteUsername(tc.input)
+		if got != tc.want {
+			t.Fatalf("normalizeQuoteUsername(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestIsExcludedQuoteUsername(t *testing.T) {
+	tests := []struct {
+		name     string
+		username string
+		bot      string
+		excluded bool
+	}{
+		{name: "server with brackets", username: "[server]", bot: "", excluded: true},
+		{name: "system username", username: "system", bot: "", excluded: true},
+		{name: "explicit dazza", username: "dazza", bot: "", excluded: true},
+		{name: "bot username", username: "mybot", bot: "mybot", excluded: true},
+		{name: "normal user", username: "hildolfr", bot: "mybot", excluded: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isExcludedQuoteUsername(tc.username, tc.bot)
+			if got != tc.excluded {
+				t.Fatalf("isExcludedQuoteUsername(%q, %q) = %v, want %v", tc.username, tc.bot, got, tc.excluded)
+			}
+		})
+	}
+}
+
 func TestSanitizeQuoteMessage(t *testing.T) {
 	raw := `<span class="quote">&gt;dip my nuts in ink </span>`
 	got := sanitizeQuoteMessage(raw)

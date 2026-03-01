@@ -194,13 +194,13 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 			return nil
 		}
 		target := sanitizeTarget(cmd.Args[0])
-		if isSystemUsername(target) {
-			p.sendResponse(req, fmt.Sprintf("No quote found for %s.", strings.TrimSpace(cmd.Args[0])))
-			return nil
-		}
 		logger.Debug(p.name, "Quote self-target check: target=%q bot=%q channel=%q", target, botUsername, channel)
 		if isSelfTarget(target, botUsername) {
 			p.sendResponse(req, "Nope. I won't quote myself.")
+			return nil
+		}
+		if isExcludedQuoteUsername(target, botUsername) {
+			p.sendResponse(req, fmt.Sprintf("No quote found for %s.", strings.TrimSpace(cmd.Args[0])))
 			return nil
 		}
 		row, err = p.getRandomQuote(ctx, channel, target, botUsername)
@@ -255,7 +255,7 @@ func (p *Plugin) getRandomQuote(ctx context.Context, channel, username, botUsern
 		args = append(args, botUsername)
 	}
 
-	query += " ORDER BY RANDOM() LIMIT 1"
+	query += " ORDER BY RANDOM() LIMIT 32"
 
 	rows, err := helper.SlowQuery(ctx, query, args...)
 	if err != nil {
@@ -267,16 +267,17 @@ func (p *Plugin) getRandomQuote(ctx context.Context, channel, username, botUsern
 		}
 	}()
 
-	if !rows.Next() {
-		return nil, nil
+	for rows.Next() {
+		var row quoteRow
+		if err := rows.Scan(&row.Username, &row.Message, &row.MessageTime); err != nil {
+			return nil, fmt.Errorf("failed to scan quote row: %w", err)
+		}
+		if !isExcludedQuoteUsername(row.Username, botUsername) {
+			return &row, nil
+		}
 	}
 
-	var row quoteRow
-	if err := rows.Scan(&row.Username, &row.Message, &row.MessageTime); err != nil {
-		return nil, fmt.Errorf("failed to scan quote row: %w", err)
-	}
-
-	return &row, nil
+	return nil, nil
 }
 
 func (p *Plugin) handlePluginResponse(event framework.Event) error {
@@ -453,6 +454,34 @@ func isSystemUsername(username string) bool {
 	default:
 		return false
 	}
+}
+
+func isExcludedQuoteUsername(username, botUsername string) bool {
+	normalized := normalizeQuoteUsername(username)
+	if normalized == "" {
+		return true
+	}
+
+	if normalized == "dazza" {
+		return true
+	}
+
+	if isSystemUsername(normalized) {
+		return true
+	}
+
+	bot := normalizeQuoteUsername(botUsername)
+	if bot != "" && normalized == bot {
+		return true
+	}
+
+	return false
+}
+
+func normalizeQuoteUsername(username string) string {
+	name := strings.ToLower(strings.TrimSpace(username))
+	name = strings.Trim(name, "[](){}<>\"'`")
+	return strings.TrimSpace(name)
 }
 
 func formatSince(messageTime int64) string {
