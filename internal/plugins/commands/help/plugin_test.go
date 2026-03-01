@@ -518,6 +518,18 @@ func TestCheckHelpCooldown(t *testing.T) {
 	}
 }
 
+func TestIsMissingDescriptionError(t *testing.T) {
+	if !isMissingDescriptionError(fmt.Errorf("column \"description\" does not exist")) {
+		t.Fatalf("expected missing description column error")
+	}
+	if !isMissingDescriptionError(fmt.Errorf("pq: column description does not exist")) {
+		t.Fatalf("expected missing description column error")
+	}
+	if isMissingDescriptionError(fmt.Errorf("some other error")) {
+		t.Fatalf("did not expect unrelated error to match")
+	}
+}
+
 func makeHelpReq(username, channel string, rank int, isAdmin bool) *framework.PluginRequest {
 	return &framework.PluginRequest{
 		Data: &framework.RequestData{

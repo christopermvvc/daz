@@ -455,27 +455,76 @@ func (p *Plugin) loadCacheFromDB() error {
 
 	rows, err := p.sqlClient.QueryContext(ctx, query)
 	if err != nil {
+		if isMissingDescriptionError(err) {
+			return p.loadCacheFromDBLegacy(ctx)
+		}
 		return err
 	}
 	defer rows.Close()
 
+	cache, aliasIndex, err := p.scanCommandRows(rows, true)
+	if err != nil {
+		return err
+	}
+
+	p.cacheMu.Lock()
+	p.commandCache = cache
+	p.aliasIndex = aliasIndex
+	p.cacheMu.Unlock()
+
+	return rows.Err()
+}
+
+func (p *Plugin) loadCacheFromDBLegacy(ctx context.Context) error {
+	query := `
+		SELECT command, plugin_name, is_alias, COALESCE(primary_command, ''), min_rank, enabled, admin_only
+		FROM daz_eventfilter_commands
+		WHERE enabled = true
+	`
+
+	rows, err := p.sqlClient.QueryContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	cache, aliasIndex, err := p.scanCommandRows(rows, false)
+	if err != nil {
+		return err
+	}
+
+	p.cacheMu.Lock()
+	p.commandCache = cache
+	p.aliasIndex = aliasIndex
+	p.cacheMu.Unlock()
+
+	return rows.Err()
+}
+
+func (p *Plugin) scanCommandRows(rows *framework.QueryRows, hasDescription bool) (map[string]*commandEntry, map[string]string, error) {
 	cache := make(map[string]*commandEntry)
 	aliasIndex := make(map[string]string)
 
 	for rows.Next() {
 		var (
-			command    string
-			pluginName string
-			isAlias    bool
-			primary    string
-			minRank    int
-			enabled    bool
-			adminOnly  bool
+			command     string
+			pluginName  string
+			isAlias     bool
+			primary     string
+			minRank     int
+			enabled     bool
+			adminOnly   bool
+			description string
 		)
 
-		var description string
-		if err := rows.Scan(&command, &pluginName, &isAlias, &primary, &minRank, &enabled, &adminOnly, &description); err != nil {
-			return err
+		if hasDescription {
+			if err := rows.Scan(&command, &pluginName, &isAlias, &primary, &minRank, &enabled, &adminOnly, &description); err != nil {
+				return nil, nil, err
+			}
+		} else {
+			if err := rows.Scan(&command, &pluginName, &isAlias, &primary, &minRank, &enabled, &adminOnly); err != nil {
+				return nil, nil, err
+			}
 		}
 		if !enabled {
 			continue
@@ -506,12 +555,18 @@ func (p *Plugin) loadCacheFromDB() error {
 		sort.Strings(entry.Aliases)
 	}
 
-	p.cacheMu.Lock()
-	p.commandCache = cache
-	p.aliasIndex = aliasIndex
-	p.cacheMu.Unlock()
+	return cache, aliasIndex, nil
+}
 
-	return rows.Err()
+func isMissingDescriptionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "description") {
+		return false
+	}
+	return strings.Contains(msg, "column") || strings.Contains(msg, "does not exist")
 }
 
 func parseAdminOnly(raw string) (map[string]bool, bool) {
