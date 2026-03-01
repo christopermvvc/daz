@@ -171,12 +171,19 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	params := req.Data.Command.Params
 	username := strings.TrimSpace(params["username"])
 	channel := strings.TrimSpace(params["channel"])
+	isPM := params["is_pm"] == "true"
 	if username == "" || channel == "" {
 		return nil
 	}
 
-	if remaining, ok := p.checkCooldown(channel, username); !ok {
-		p.sendChannelMessage(channel, waitMessage(username, remaining))
+	remaining, ok, err := p.checkCooldown(channel, username)
+	if err != nil {
+		logger.Error(p.name, "Cooldown check failed: %v", err)
+		p.sendResponse(channel, username, "sign spinning roster's down. try again later mate.", isPM)
+		return nil
+	}
+	if !ok {
+		p.sendResponse(channel, username, waitMessage(username, remaining), isPM)
 		return nil
 	}
 
@@ -187,7 +194,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		fmt.Sprintf("-%s is about to show these signs who's boss", username),
 	}
 	if len(publicMsgs) > 0 {
-		p.sendChannelMessage(channel, publicMsgs[rand.Intn(len(publicMsgs))])
+		p.sendResponse(channel, username, publicMsgs[rand.Intn(len(publicMsgs))], isPM)
 	}
 
 	result := rollShift()
@@ -204,7 +211,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		"injury_cost": result.injuryCost,
 	}
 	metaJSON, _ := json.Marshal(metadata)
-	_, err := p.economyClient.Credit(ctx, framework.CreditRequest{
+	_, err = p.economyClient.Credit(ctx, framework.CreditRequest{
 		Channel:  channel,
 		Username: username,
 		Amount:   int64(result.finalPay),
@@ -213,7 +220,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	})
 	if err != nil {
 		logger.Error(p.name, "Failed to credit sign spinning earnings: %v", err)
-		p.sendChannelMessage(channel, "sign spinning agency system crashed. try again later mate.")
+		p.sendResponse(channel, username, "sign spinning agency system crashed. try again later mate.", isPM)
 		return nil
 	}
 
@@ -221,7 +228,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		logger.Error(p.name, "Failed to update sign spinning stats: %v", err)
 	}
 
-	p.sendChannelMessage(channel, result.summaryMessage())
+	p.sendResponse(channel, username, result.summaryMessage(), isPM)
 
 	if result.injured || result.finalPay >= 60 {
 		message := result.announcement(username)
@@ -230,7 +237,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 			case <-p.ctx.Done():
 				return
 			default:
-				p.sendChannelMessage(channel, message)
+				p.sendResponse(channel, username, message, false)
 			}
 		})
 	}
@@ -238,7 +245,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	return nil
 }
 
-func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool) {
+func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
 
@@ -251,25 +258,25 @@ func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool) {
 
 	rows, err := p.sqlClient.QueryContext(ctx, query, channel, username)
 	if err != nil {
-		return 0, true
+		return 0, false, err
 	}
 	defer rows.Close()
 	if !rows.Next() {
-		return 0, true
+		return 0, true, nil
 	}
 	var lastPlayed time.Time
 	if err := rows.Scan(&lastPlayed); err != nil {
-		return 0, true
+		return 0, false, err
 	}
 	if lastPlayed.IsZero() {
-		return 0, true
+		return 0, true, nil
 	}
 
 	until := lastPlayed.Add(p.cooldown)
 	if time.Now().Before(until) {
-		return until.Sub(time.Now()), false
+		return until.Sub(time.Now()), false, nil
 	}
-	return 0, true
+	return 0, true, nil
 }
 
 func (p *Plugin) updateStats(channel, username string, result signResult) error {
@@ -317,8 +324,19 @@ func (p *Plugin) updateStats(channel, username string, result signResult) error 
 	return err
 }
 
-func (p *Plugin) sendChannelMessage(channel, message string) {
+func (p *Plugin) sendResponse(channel, username, message string, isPM bool) {
 	if strings.TrimSpace(channel) == "" || strings.TrimSpace(message) == "" {
+		return
+	}
+	if isPM {
+		pm := &framework.EventData{
+			PrivateMessage: &framework.PrivateMessageData{
+				ToUser:  username,
+				Message: message,
+				Channel: channel,
+			},
+		}
+		_ = p.eventBus.Broadcast("cytube.send.pm", pm)
 		return
 	}
 	chat := &framework.EventData{
