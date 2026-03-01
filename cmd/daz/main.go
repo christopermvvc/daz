@@ -34,6 +34,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/tell"
 	"github.com/hildolfr/daz/internal/plugins/commands/uptime"
 	"github.com/hildolfr/daz/internal/plugins/commands/weather"
+	"github.com/hildolfr/daz/internal/plugins/economy"
 	"github.com/hildolfr/daz/internal/plugins/eventfilter"
 	"github.com/hildolfr/daz/internal/plugins/gallery"
 	"github.com/hildolfr/daz/internal/plugins/greeter"
@@ -217,6 +218,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"usertracker", usertracker.New()},
 		{"mediatracker", mediatracker.New()},
 		{"analytics", analytics.New()},
+		{"economy", economy.New()},
 		{"greeter", greeter.New()},
 		{"gallery", gallery.New()},
 		{"about", about.New()},
@@ -265,6 +267,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["quote"] = cfg.GetPluginConfig("quote")
 	pluginConfigs["uptime"] = cfg.GetPluginConfig("uptime")
 	pluginConfigs["tell"] = cfg.GetPluginConfig("tell")
+	pluginConfigs["economy"] = cfg.GetPluginConfig("economy")
 	pluginConfigs["greeter"] = cfg.GetPluginConfig("greeter")
 	pluginConfigs["weather"] = cfg.GetPluginConfig("weather")
 	pluginConfigs["random"] = cfg.GetPluginConfig("random")

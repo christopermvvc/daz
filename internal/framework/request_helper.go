@@ -207,6 +207,9 @@ func (h *RequestHelper) requestWithRetry(
 
 	// Generate correlation ID
 	correlationID := fmt.Sprintf("%s-%d", h.source, time.Now().UnixNano())
+	if data != nil && data.PluginRequest != nil && data.PluginRequest.ID != "" {
+		correlationID = data.PluginRequest.ID
+	}
 
 	// Create metadata
 	metadata := &EventMetadata{
@@ -228,6 +231,9 @@ func (h *RequestHelper) requestWithRetry(
 		}
 		if data.SQLBatchRequest != nil {
 			data.SQLBatchRequest.CorrelationID = correlationID
+		}
+		if data.PluginRequest != nil {
+			data.PluginRequest.ID = correlationID
 		}
 	}
 
