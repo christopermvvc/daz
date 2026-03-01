@@ -66,6 +66,7 @@ type CommandInfo struct {
 	IsAlias        bool
 	MinRank        int
 	Enabled        bool
+	AdminOnly      bool
 }
 
 // New creates a new eventfilter plugin instance
@@ -309,6 +310,7 @@ func (p *Plugin) createSchema() error {
 			primary_command VARCHAR(100),
 			min_rank INT DEFAULT 0,
 			enabled BOOLEAN DEFAULT TRUE,
+			admin_only BOOLEAN DEFAULT FALSE,
 			created_at TIMESTAMP DEFAULT NOW(),
 			UNIQUE(command)
 		);
@@ -332,6 +334,11 @@ func (p *Plugin) createSchema() error {
 	if err := p.sqlClient.Exec(schema); err != nil {
 		// Emit failure event for retry
 		p.emitFailureEvent("eventfilter.database.failed", "schema-creation", "database_schema", err)
+		return err
+	}
+
+	if err := p.sqlClient.Exec(`ALTER TABLE daz_eventfilter_commands ADD COLUMN IF NOT EXISTS admin_only BOOLEAN DEFAULT FALSE`); err != nil {
+		p.emitFailureEvent("eventfilter.database.failed", "schema-alter", "database_schema", err)
 		return err
 	}
 	return nil
@@ -424,6 +431,7 @@ func (p *Plugin) handleRegisterEvent(event framework.Event) error {
 	commands := req.Data.KeyValue["commands"]
 	pluginName := req.From
 	minRankStr := req.Data.KeyValue["min_rank"]
+	adminOnlyRaw := req.Data.KeyValue["admin_only"]
 
 	if commands == "" || pluginName == "" {
 		return nil
@@ -438,8 +446,14 @@ func (p *Plugin) handleRegisterEvent(event framework.Event) error {
 		}
 	}
 
+	adminOnlySet, adminOnlyAll := parseAdminOnly(adminOnlyRaw)
+
 	// Register each command
 	cmdList := strings.Split(commands, ",")
+	primary := ""
+	if len(cmdList) > 0 {
+		primary = strings.TrimSpace(cmdList[0])
+	}
 	for i, cmd := range cmdList {
 		cmd = strings.TrimSpace(cmd)
 		if cmd == "" {
@@ -455,8 +469,14 @@ func (p *Plugin) handleRegisterEvent(event framework.Event) error {
 		// First command is primary, rest are aliases
 		if i > 0 {
 			info.IsAlias = true
-			info.PrimaryCommand = strings.TrimSpace(cmdList[0])
+			info.PrimaryCommand = primary
 		}
+
+		adminOnly := adminOnlyAll || adminOnlySet[strings.ToLower(cmd)]
+		if primary != "" && adminOnlySet[strings.ToLower(primary)] {
+			adminOnly = true
+		}
+		info.AdminOnly = adminOnly
 
 		p.mu.Lock()
 		p.commandRegistry[cmd] = info
@@ -473,6 +493,24 @@ func (p *Plugin) handleRegisterEvent(event framework.Event) error {
 	}
 
 	return nil
+}
+
+func parseAdminOnly(raw string) (map[string]bool, bool) {
+	result := make(map[string]bool)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return result, false
+	}
+	if strings.EqualFold(raw, "true") {
+		return result, true
+	}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry != "" {
+			result[entry] = true
+		}
+	}
+	return result, false
 }
 
 // routeToPlugin forwards an event to a specific plugin
@@ -508,14 +546,15 @@ func (p *Plugin) routeToPlugin(targetPlugin string, event *framework.DataEvent) 
 
 func (p *Plugin) saveCommand(command string, info *CommandInfo) error {
 	query := `
-		INSERT INTO daz_eventfilter_commands (command, plugin_name, is_alias, primary_command, min_rank, enabled)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO daz_eventfilter_commands (command, plugin_name, is_alias, primary_command, min_rank, enabled, admin_only)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (command) DO UPDATE SET
 			plugin_name = EXCLUDED.plugin_name,
 			is_alias = EXCLUDED.is_alias,
 			primary_command = EXCLUDED.primary_command,
 			min_rank = EXCLUDED.min_rank,
-			enabled = EXCLUDED.enabled
+			enabled = EXCLUDED.enabled,
+			admin_only = EXCLUDED.admin_only
 	`
 
 	primaryCmd := sql.NullString{
@@ -529,7 +568,8 @@ func (p *Plugin) saveCommand(command string, info *CommandInfo) error {
 		info.IsAlias,
 		primaryCmd,
 		info.MinRank,
-		info.Enabled)
+		info.Enabled,
+		info.AdminOnly)
 }
 
 func (p *Plugin) logCommand(command, username, channel string, args []string, success bool, errorMessage string) error {

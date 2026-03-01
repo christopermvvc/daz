@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,14 +19,19 @@ type Config struct {
 }
 
 type Plugin struct {
-	name     string
-	eventBus framework.EventBus
-	config   *Config
-	mu       sync.RWMutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	running  bool
+	name      string
+	eventBus  framework.EventBus
+	sqlClient *framework.SQLClient
+	config    *Config
+	mu        sync.RWMutex
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	running   bool
+
+	cacheMu      sync.RWMutex
+	commandCache map[string]*commandEntry
+	aliasIndex   map[string]string
 }
 
 func New() framework.Plugin {
@@ -32,8 +40,21 @@ func New() framework.Plugin {
 	}
 }
 
+func (p *Plugin) Dependencies() []string {
+	return []string{"sql"}
+}
+
+func (p *Plugin) Ready() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.running
+}
+
 func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.eventBus = bus
+	p.sqlClient = framework.NewSQLClient(bus, p.name)
+	p.commandCache = make(map[string]*commandEntry)
+	p.aliasIndex = make(map[string]string)
 
 	if len(config) > 0 {
 		if err := json.Unmarshal(config, &p.config); err != nil {
@@ -68,6 +89,15 @@ func (p *Plugin) Start() error {
 
 	// Register our command with the command router
 	p.registerCommand()
+
+	if err := p.eventBus.Subscribe("command.register", p.handleRegisterEvent); err != nil {
+		p.emitFailureEvent("command.help.failed", "subscription", "event_subscription", err)
+		return fmt.Errorf("failed to subscribe to command.register: %w", err)
+	}
+
+	if err := p.loadCacheFromDB(); err != nil {
+		logger.Error(p.name, "Failed to load command cache: %v", err)
+	}
 
 	logger.Debug(p.name, "Started")
 	return nil
@@ -160,8 +190,368 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 }
 
 func (p *Plugin) handleHelpCommand(req *framework.PluginRequest) {
-	message := "In development"
-	p.sendResponse(req, message)
+	if req.Data == nil || req.Data.Command == nil {
+		return
+	}
+
+	commandArgs := req.Data.Command.Args
+	if len(commandArgs) > 0 {
+		p.handleCommandHelp(req, strings.ToLower(commandArgs[0]))
+		return
+	}
+
+	messageBatches, err := p.buildCommandList(req)
+	if err != nil {
+		logger.Error(p.name, "Failed to build help list: %v", err)
+		p.sendResponse(req, "sorry mate, help list is crook right now")
+		return
+	}
+
+	for _, msg := range messageBatches {
+		p.sendResponse(req, msg)
+	}
+}
+
+func (p *Plugin) handleCommandHelp(req *framework.PluginRequest, command string) {
+	command = strings.TrimPrefix(command, "!")
+	if command == "" {
+		p.sendResponse(req, "tell us the command name ya pelican")
+		return
+	}
+
+	info, aliases, err := p.lookupCommand(req, command)
+	if err != nil {
+		logger.Error(p.name, "Failed to load command info: %v", err)
+		p.sendResponse(req, "sorry mate, help is crook right now")
+		return
+	}
+	if info == nil {
+		p.sendResponse(req, fmt.Sprintf("no idea about '%s'", command))
+		return
+	}
+
+	aliasText := "none"
+	if len(aliases) > 0 {
+		aliasText = strings.Join(aliases, ", ")
+	}
+
+	message := fmt.Sprintf("!%s (plugin: %s, min rank: %d, aliases: %s)", info.Primary, info.PluginName, info.MinRank, aliasText)
+	p.sendResponse(req, p.limit(message))
+}
+
+type commandEntry struct {
+	Primary    string
+	PluginName string
+	MinRank    int
+	Aliases    []string
+	AdminOnly  bool
+}
+
+func (p *Plugin) buildCommandList(req *framework.PluginRequest) ([]string, error) {
+	userRank := 0
+	isAdmin := false
+	if req.Data != nil && req.Data.Command != nil {
+		if rankStr := req.Data.Command.Params["rank"]; rankStr != "" {
+			if parsed, err := strconv.Atoi(rankStr); err == nil {
+				userRank = parsed
+			}
+		}
+		isAdmin = req.Data.Command.Params["is_admin"] == "true"
+	}
+
+	entries := p.snapshotEntries(userRank, isAdmin)
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Primary < entries[j].Primary
+	})
+
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		aliasText := ""
+		if p.config.ShowAliases && len(entry.Aliases) > 0 {
+			aliasText = fmt.Sprintf(" (aliases: %s)", strings.Join(entry.Aliases, ", "))
+		}
+		line := fmt.Sprintf("!%s - plugin: %s, min rank: %d%s", entry.Primary, entry.PluginName, entry.MinRank, aliasText)
+		lines = append(lines, line)
+	}
+
+	if len(lines) == 0 {
+		return []string{"no commands available"}, nil
+	}
+
+	return splitMessages("Commands:", lines, 450), nil
+}
+
+func (p *Plugin) lookupCommand(req *framework.PluginRequest, command string) (*commandEntry, []string, error) {
+	command = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(command, "!")))
+	if command == "" {
+		return nil, nil, nil
+	}
+
+	userRank := 0
+	isAdmin := false
+	if req.Data != nil && req.Data.Command != nil {
+		if rankStr := req.Data.Command.Params["rank"]; rankStr != "" {
+			if parsed, err := strconv.Atoi(rankStr); err == nil {
+				userRank = parsed
+			}
+		}
+		isAdmin = req.Data.Command.Params["is_admin"] == "true"
+	}
+
+	entry := p.lookupEntry(command)
+	if entry == nil {
+		return nil, nil, nil
+	}
+	if entry.MinRank > userRank || (entry.AdminOnly && !isAdmin) {
+		return nil, nil, nil
+	}
+
+	return entry, entry.Aliases, nil
+}
+
+func (p *Plugin) lookupEntry(command string) *commandEntry {
+	p.cacheMu.RLock()
+	primary, ok := p.aliasIndex[command]
+	if !ok {
+		primary = command
+	}
+	entry := p.commandCache[primary]
+	if entry == nil {
+		p.cacheMu.RUnlock()
+		return nil
+	}
+	clone := *entry
+	clone.Aliases = append([]string(nil), entry.Aliases...)
+	p.cacheMu.RUnlock()
+	return &clone
+}
+
+func (p *Plugin) snapshotEntries(userRank int, isAdmin bool) []*commandEntry {
+	p.cacheMu.RLock()
+	entries := make([]*commandEntry, 0, len(p.commandCache))
+	for _, entry := range p.commandCache {
+		if entry.MinRank > userRank {
+			continue
+		}
+		if entry.AdminOnly && !isAdmin {
+			continue
+		}
+		clone := *entry
+		clone.Aliases = append([]string(nil), entry.Aliases...)
+		entries = append(entries, &clone)
+	}
+	p.cacheMu.RUnlock()
+	return entries
+}
+
+func (p *Plugin) handleRegisterEvent(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil || dataEvent.Data.PluginRequest == nil {
+		return nil
+	}
+
+	req := dataEvent.Data.PluginRequest
+	if req.Data == nil || req.Data.KeyValue == nil {
+		return nil
+	}
+
+	commandsRaw := strings.TrimSpace(req.Data.KeyValue["commands"])
+	if commandsRaw == "" {
+		return nil
+	}
+
+	minRank := 0
+	if minRankStr := strings.TrimSpace(req.Data.KeyValue["min_rank"]); minRankStr != "" {
+		if parsed, err := strconv.Atoi(minRankStr); err == nil {
+			minRank = parsed
+		}
+	}
+
+	adminOnlySet, adminOnlyAll := parseAdminOnly(req.Data.KeyValue["admin_only"])
+	commands := strings.Split(commandsRaw, ",")
+	primary := ""
+	if len(commands) > 0 {
+		primary = strings.ToLower(strings.TrimSpace(commands[0]))
+	}
+
+	p.cacheMu.Lock()
+	for i, command := range commands {
+		cmd := strings.ToLower(strings.TrimSpace(command))
+		if cmd == "" {
+			continue
+		}
+		isAlias := i > 0
+		cmdPrimary := primary
+		if !isAlias || cmdPrimary == "" {
+			cmdPrimary = cmd
+		}
+		adminOnly := adminOnlyAll || adminOnlySet[cmd]
+		if cmdPrimary != "" && adminOnlySet[cmdPrimary] {
+			adminOnly = true
+		}
+
+		entry, ok := p.commandCache[cmdPrimary]
+		if !ok {
+			entry = &commandEntry{Primary: cmdPrimary}
+			p.commandCache[cmdPrimary] = entry
+		}
+		entry.PluginName = req.From
+		entry.MinRank = minRank
+		entry.AdminOnly = adminOnly
+		if isAlias && cmd != cmdPrimary {
+			p.aliasIndex[cmd] = cmdPrimary
+			if !contains(entry.Aliases, cmd) {
+				entry.Aliases = append(entry.Aliases, cmd)
+			}
+		}
+	}
+	for _, entry := range p.commandCache {
+		sort.Strings(entry.Aliases)
+	}
+	p.cacheMu.Unlock()
+
+	return nil
+}
+
+func (p *Plugin) loadCacheFromDB() error {
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT command, plugin_name, is_alias, COALESCE(primary_command, ''), min_rank, enabled, admin_only
+		FROM daz_eventfilter_commands
+		WHERE enabled = true
+	`
+
+	rows, err := p.sqlClient.QueryContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	cache := make(map[string]*commandEntry)
+	aliasIndex := make(map[string]string)
+
+	for rows.Next() {
+		var (
+			command    string
+			pluginName string
+			isAlias    bool
+			primary    string
+			minRank    int
+			enabled    bool
+			adminOnly  bool
+		)
+
+		if err := rows.Scan(&command, &pluginName, &isAlias, &primary, &minRank, &enabled, &adminOnly); err != nil {
+			return err
+		}
+		if !enabled {
+			continue
+		}
+		command = strings.ToLower(strings.TrimSpace(command))
+		primary = strings.ToLower(strings.TrimSpace(primary))
+		if command == "" {
+			continue
+		}
+		if !isAlias || primary == "" {
+			primary = command
+		}
+
+		entry, ok := cache[primary]
+		if !ok {
+			entry = &commandEntry{Primary: primary, PluginName: pluginName, MinRank: minRank, AdminOnly: adminOnly}
+			cache[primary] = entry
+		}
+		if isAlias && command != primary {
+			aliasIndex[command] = primary
+			if !contains(entry.Aliases, command) {
+				entry.Aliases = append(entry.Aliases, command)
+			}
+		}
+	}
+
+	for _, entry := range cache {
+		sort.Strings(entry.Aliases)
+	}
+
+	p.cacheMu.Lock()
+	p.commandCache = cache
+	p.aliasIndex = aliasIndex
+	p.cacheMu.Unlock()
+
+	return rows.Err()
+}
+
+func parseAdminOnly(raw string) (map[string]bool, bool) {
+	result := make(map[string]bool)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return result, false
+	}
+	if strings.EqualFold(raw, "true") {
+		return result, true
+	}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry != "" {
+			result[entry] = true
+		}
+	}
+	return result, false
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Plugin) limit(message string) string {
+	const maxRunes = 500
+	message = strings.TrimSpace(message)
+	runes := []rune(message)
+	if len(runes) <= maxRunes {
+		return message
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
+func splitMessages(header string, lines []string, maxLen int) []string {
+	if maxLen <= 0 {
+		maxLen = 450
+	}
+
+	header = strings.TrimSpace(header)
+	current := header
+	if current != "" {
+		current += "\n"
+	}
+
+	var messages []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		candidate := current + line
+		if len([]rune(candidate)) > maxLen && current != "" {
+			messages = append(messages, strings.TrimSpace(current))
+			current = line + "\n"
+			continue
+		}
+		current = candidate + "\n"
+	}
+
+	if strings.TrimSpace(current) != "" {
+		messages = append(messages, strings.TrimSpace(current))
+	}
+
+	return messages
 }
 
 func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {

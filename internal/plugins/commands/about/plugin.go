@@ -132,8 +132,9 @@ func (p *Plugin) registerCommand() {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "about,version,info",
-					"min_rank": "0",
+					"commands":   "about,version,info",
+					"min_rank":   "0",
+					"admin_only": "true",
 				},
 			},
 		},
