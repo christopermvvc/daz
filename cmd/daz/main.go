@@ -31,6 +31,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/random"
 	"github.com/hildolfr/daz/internal/plugins/commands/remind"
 	"github.com/hildolfr/daz/internal/plugins/commands/seen"
+	"github.com/hildolfr/daz/internal/plugins/commands/signspinning"
 	"github.com/hildolfr/daz/internal/plugins/commands/tell"
 	"github.com/hildolfr/daz/internal/plugins/commands/uptime"
 	"github.com/hildolfr/daz/internal/plugins/commands/weather"
@@ -236,6 +237,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"remind", remind.New()},
 		{"tell", tell.New()},
 		{"seen", seen.New()},
+		{"signspinning", signspinning.New()},
 		{"playlist", playlist.New()},
 		{"ollama", ollama.New()},
 	}
@@ -275,6 +277,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["playlist"] = cfg.GetPluginConfig("playlist")
 	pluginConfigs["gallery"] = cfg.GetPluginConfig("gallery")
 	pluginConfigs["ollama"] = cfg.GetPluginConfig("ollama")
+	pluginConfigs["signspinning"] = cfg.GetPluginConfig("signspinning")
 
 	// Initialize all plugins (respects dependencies)
 	if err := pluginManager.InitializeAll(pluginConfigs, bus); err != nil {
