@@ -492,12 +492,16 @@ func (p *Plugin) handleRegisterEvent(event framework.Event) error {
 		p.commandRegistry[cmd] = info
 		p.mu.Unlock()
 
-		// Save to database
-		if err := p.saveCommand(cmd, info); err != nil {
-			logger.Error("EventFilter", "Failed to save command %s: %v", cmd, err)
-			// Emit failure event for retry
-			p.emitFailureEvent("eventfilter.database.failed", req.ID, "command_registration", err)
-		}
+		cmdCopy := cmd
+		infoCopy := *info
+		reqID := req.ID
+		go func() {
+			if err := p.saveCommand(cmdCopy, &infoCopy); err != nil {
+				logger.Error("EventFilter", "Failed to save command %s: %v", cmdCopy, err)
+				// Emit failure event for retry
+				p.emitFailureEvent("eventfilter.database.failed", reqID, "command_registration", err)
+			}
+		}()
 
 		logger.Info("EventFilter", "Registered command '%s' for plugin '%s'", cmd, pluginName)
 	}

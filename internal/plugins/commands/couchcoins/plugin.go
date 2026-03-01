@@ -85,7 +85,7 @@ func (p *Plugin) Start() error {
 		return err
 	}
 
-	for _, cmd := range []string{"couch_coins", "couch", "couchsearch", "searchcouch"} {
+	for _, cmd := range []string{"couchcoins", "couch_coins", "couch", "couchsearch", "searchcouch"} {
 		eventName := fmt.Sprintf("command.%s.execute", cmd)
 		if err := p.eventBus.Subscribe(eventName, p.handleCommand); err != nil {
 			return fmt.Errorf("failed to subscribe to %s: %w", eventName, err)
@@ -140,7 +140,7 @@ func (p *Plugin) registerCommands() error {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands":    "couch_coins,couch,couchsearch,searchcouch",
+					"commands":    "couchcoins,couch_coins,couch,couchsearch,searchcouch",
 					"min_rank":    "0",
 					"description": "search the couch for coins",
 				},
