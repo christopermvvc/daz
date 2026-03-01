@@ -305,46 +305,92 @@ func parseTimeString(value string) (time.Duration, bool) {
 		return time.Duration(minutes) * time.Minute, true
 	}
 
-	var total time.Duration
-	var number strings.Builder
-	for _, r := range value {
-		if r >= '0' && r <= '9' {
-			number.WriteRune(r)
-			continue
-		}
-
-		if number.Len() == 0 {
-			return 0, false
-		}
-
-		amount, err := strconv.Atoi(number.String())
-		if err != nil {
-			return 0, false
-		}
-		number.Reset()
-
-		switch r {
-		case 's':
-			total += time.Duration(amount) * time.Second
-		case 'm':
-			total += time.Duration(amount) * time.Minute
-		case 'h':
-			total += time.Duration(amount) * time.Hour
-		case 'd':
-			total += time.Duration(amount) * 24 * time.Hour
-		default:
-			return 0, false
-		}
+	value = strings.ReplaceAll(value, " ", "")
+	if value == "" {
+		return 0, false
 	}
 
-	if number.Len() != 0 {
-		return 0, false
+	var total time.Duration
+	remaining := value
+	for len(remaining) > 0 {
+		amount, unit, rest, ok := parseTimeToken(remaining)
+		if !ok {
+			return 0, false
+		}
+		total += durationForUnit(amount, unit)
+		remaining = rest
 	}
 
 	if total <= 0 {
 		return 0, false
 	}
 	return total, true
+}
+
+func parseTimeToken(value string) (int, string, string, bool) {
+	if value == "" {
+		return 0, "", "", false
+	}
+
+	idx := 0
+	for idx < len(value) && value[idx] >= '0' && value[idx] <= '9' {
+		idx++
+	}
+	if idx == 0 {
+		return 0, "", "", false
+	}
+
+	amount, err := strconv.Atoi(value[:idx])
+	if err != nil || amount < 0 {
+		return 0, "", "", false
+	}
+
+	unit, rest := parseUnitToken(value[idx:])
+	if unit == "" {
+		return 0, "", "", false
+	}
+
+	return amount, unit, rest, true
+}
+
+func parseUnitToken(value string) (string, string) {
+	value = strings.TrimSpace(value)
+	for _, unit := range []string{"seconds", "second", "secs", "sec", "s"} {
+		if strings.HasPrefix(value, unit) {
+			return "s", value[len(unit):]
+		}
+	}
+	for _, unit := range []string{"minutes", "minute", "mins", "min", "m"} {
+		if strings.HasPrefix(value, unit) {
+			return "m", value[len(unit):]
+		}
+	}
+	for _, unit := range []string{"hours", "hour", "hrs", "hr", "h"} {
+		if strings.HasPrefix(value, unit) {
+			return "h", value[len(unit):]
+		}
+	}
+	for _, unit := range []string{"days", "day", "d"} {
+		if strings.HasPrefix(value, unit) {
+			return "d", value[len(unit):]
+		}
+	}
+	return "", value
+}
+
+func durationForUnit(amount int, unit string) time.Duration {
+	switch unit {
+	case "s":
+		return time.Duration(amount) * time.Second
+	case "m":
+		return time.Duration(amount) * time.Minute
+	case "h":
+		return time.Duration(amount) * time.Hour
+	case "d":
+		return time.Duration(amount) * 24 * time.Hour
+	default:
+		return 0
+	}
 }
 
 func isDigitsOnly(value string) bool {
