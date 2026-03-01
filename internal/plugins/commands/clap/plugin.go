@@ -121,8 +121,9 @@ func (p *Plugin) registerCommands() {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "clap,clapback,👏",
-					"min_rank": "0",
+					"commands":    "clap,clapback,👏",
+					"min_rank":    "0",
+					"description": "add clap emojis between words",
 				},
 			},
 		},

@@ -65,8 +65,9 @@ func (p *Plugin) Start() error {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "weather,w",
-					"min_rank": "0",
+					"commands":    "weather,w",
+					"min_rank":    "0",
+					"description": "check the weather",
 				},
 			},
 		},

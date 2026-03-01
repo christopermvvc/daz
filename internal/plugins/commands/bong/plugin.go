@@ -153,8 +153,9 @@ func (p *Plugin) registerCommands() {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "bong,rip,cone,billy",
-					"min_rank": "0",
+					"commands":    "bong,rip,cone,billy",
+					"min_rank":    "0",
+					"description": "rip a bong and tally your count",
 				},
 			},
 		},

@@ -153,8 +153,9 @@ func (p *Plugin) registerCommands() {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "remind,reminder,remindme",
-					"min_rank": "0",
+					"commands":    "remind,reminder,remindme",
+					"min_rank":    "0",
+					"description": "set a reminder timer",
 				},
 			},
 		},

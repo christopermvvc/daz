@@ -219,6 +219,7 @@ func (p *Plugin) registerCommand() error {
 						}
 						return ""
 					}(),
+					"description": "manage playlist items",
 				},
 			},
 		},
