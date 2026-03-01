@@ -216,3 +216,162 @@ func TestCouchCoinsAnnouncementThreshold(t *testing.T) {
 		t.Fatalf("expected couch jackpot announcement")
 	}
 }
+
+func TestBalanceCommandPM(t *testing.T) {
+	bus := &couchEventBus{}
+	bus.requestHandler = func(eventType string, data *framework.EventData) (*framework.EventData, error) {
+		switch eventType {
+		case "plugin.request":
+			if data.PluginRequest != nil && data.PluginRequest.Type == "economy.get_balance" {
+				payload, _ := json.Marshal(framework.GetBalanceResponse{Channel: "chan", Username: "dazza", Balance: 420})
+				return &framework.EventData{PluginResponse: &framework.PluginResponse{Success: true, Data: &framework.ResponseData{RawJSON: payload}}}, nil
+			}
+			return nil, nil
+		default:
+			return nil, nil
+		}
+	}
+
+	p := New().(*Plugin)
+	if err := p.Init(json.RawMessage("{}"), bus); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	req := &framework.PluginRequest{Data: &framework.RequestData{Command: &framework.CommandData{Name: "balance", Params: map[string]string{"channel": "chan", "username": "dazza", "is_pm": "true"}}}}
+	event := &framework.DataEvent{Data: &framework.EventData{PluginRequest: req}}
+	if err := p.handleCommand(event); err != nil {
+		t.Fatalf("handleCommand failed: %v", err)
+	}
+
+	if len(bus.broadcasts) != 1 {
+		t.Fatalf("expected exactly one response, got %d", len(bus.broadcasts))
+	}
+	if bus.broadcasts[0].eventType != "cytube.send.pm" {
+		t.Fatalf("expected PM response, got %s", bus.broadcasts[0].eventType)
+	}
+	if !strings.Contains(bus.broadcasts[0].data.PrivateMessage.Message, "$420") {
+		t.Fatalf("unexpected balance response: %s", bus.broadcasts[0].data.PrivateMessage.Message)
+	}
+}
+
+func TestBalanceCommandCooldown(t *testing.T) {
+	bus := &couchEventBus{}
+	bus.requestHandler = func(eventType string, data *framework.EventData) (*framework.EventData, error) {
+		switch eventType {
+		case "plugin.request":
+			if data.PluginRequest != nil && data.PluginRequest.Type == "economy.get_balance" {
+				payload, _ := json.Marshal(framework.GetBalanceResponse{Channel: "chan", Username: "dazza", Balance: 15})
+				return &framework.EventData{PluginResponse: &framework.PluginResponse{Success: true, Data: &framework.ResponseData{RawJSON: payload}}}, nil
+			}
+			return nil, nil
+		default:
+			return nil, nil
+		}
+	}
+
+	p := New().(*Plugin)
+	if err := p.Init(json.RawMessage("{}"), bus); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	p.balanceCooldown = 20 * time.Second
+
+	req := &framework.PluginRequest{Data: &framework.RequestData{Command: &framework.CommandData{Name: "balance", Params: map[string]string{"channel": "chan", "username": "dazza"}}}}
+	event := &framework.DataEvent{Data: &framework.EventData{PluginRequest: req}}
+	if err := p.handleCommand(event); err != nil {
+		t.Fatalf("first handleCommand failed: %v", err)
+	}
+	if err := p.handleCommand(event); err != nil {
+		t.Fatalf("second handleCommand failed: %v", err)
+	}
+
+	if len(bus.broadcasts) != 2 {
+		t.Fatalf("expected two responses, got %d", len(bus.broadcasts))
+	}
+	if !strings.Contains(strings.ToLower(bus.broadcasts[1].data.RawMessage.Message), "cooldown") {
+		t.Fatalf("unexpected cooldown response: %s", bus.broadcasts[1].data.RawMessage.Message)
+	}
+}
+
+func TestAddFundsRequiresAdmin(t *testing.T) {
+	bus := &couchEventBus{}
+	p := New().(*Plugin)
+	if err := p.Init(json.RawMessage("{}"), bus); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	req := &framework.PluginRequest{Data: &framework.RequestData{Command: &framework.CommandData{Name: "addfunds", Args: []string{"alice", "100"}, Params: map[string]string{"channel": "chan", "username": "dazza", "is_admin": "false"}}}}
+	event := &framework.DataEvent{Data: &framework.EventData{PluginRequest: req}}
+	if err := p.handleCommand(event); err != nil {
+		t.Fatalf("handleCommand failed: %v", err)
+	}
+
+	if len(bus.broadcasts) != 1 {
+		t.Fatalf("expected one response, got %d", len(bus.broadcasts))
+	}
+	if !strings.Contains(strings.ToLower(bus.broadcasts[0].data.RawMessage.Message), "admin only") {
+		t.Fatalf("unexpected response: %s", bus.broadcasts[0].data.RawMessage.Message)
+	}
+}
+
+func TestAddFundsSuccess(t *testing.T) {
+	bus := &couchEventBus{}
+	bus.requestHandler = func(eventType string, data *framework.EventData) (*framework.EventData, error) {
+		if eventType == "plugin.request" && data.PluginRequest != nil && data.PluginRequest.Type == "economy.credit" {
+			payload, _ := json.Marshal(framework.CreditResponse{Channel: "chan", Username: "alice", Amount: 100, BalanceBefore: 50, BalanceAfter: 150})
+			return &framework.EventData{PluginResponse: &framework.PluginResponse{Success: true, Data: &framework.ResponseData{RawJSON: payload}}}, nil
+		}
+		return nil, nil
+	}
+
+	p := New().(*Plugin)
+	if err := p.Init(json.RawMessage("{}"), bus); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	req := &framework.PluginRequest{Data: &framework.RequestData{Command: &framework.CommandData{Name: "addfunds", Args: []string{"alice", "100"}, Params: map[string]string{"channel": "chan", "username": "dazza", "is_admin": "true"}}}}
+	event := &framework.DataEvent{Data: &framework.EventData{PluginRequest: req}}
+	if err := p.handleCommand(event); err != nil {
+		t.Fatalf("handleCommand failed: %v", err)
+	}
+
+	if len(bus.broadcasts) != 1 {
+		t.Fatalf("expected one response, got %d", len(bus.broadcasts))
+	}
+	msg := strings.ToLower(bus.broadcasts[0].data.RawMessage.Message)
+	if !strings.Contains(msg, "alice") || !strings.Contains(msg, "$100") || !strings.Contains(msg, "$150") {
+		t.Fatalf("unexpected addfunds response: %s", bus.broadcasts[0].data.RawMessage.Message)
+	}
+}
+
+func TestAddFundsCooldown(t *testing.T) {
+	bus := &couchEventBus{}
+	bus.requestHandler = func(eventType string, data *framework.EventData) (*framework.EventData, error) {
+		if eventType == "plugin.request" && data.PluginRequest != nil && data.PluginRequest.Type == "economy.credit" {
+			payload, _ := json.Marshal(framework.CreditResponse{Channel: "chan", Username: "alice", Amount: 10, BalanceBefore: 0, BalanceAfter: 10})
+			return &framework.EventData{PluginResponse: &framework.PluginResponse{Success: true, Data: &framework.ResponseData{RawJSON: payload}}}, nil
+		}
+		return nil, nil
+	}
+
+	p := New().(*Plugin)
+	if err := p.Init(json.RawMessage("{}"), bus); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	p.addFundsCooldown = 20 * time.Second
+
+	req := &framework.PluginRequest{Data: &framework.RequestData{Command: &framework.CommandData{Name: "addfunds", Args: []string{"alice", "10"}, Params: map[string]string{"channel": "chan", "username": "dazza", "is_admin": "true"}}}}
+	event := &framework.DataEvent{Data: &framework.EventData{PluginRequest: req}}
+	if err := p.handleCommand(event); err != nil {
+		t.Fatalf("first handleCommand failed: %v", err)
+	}
+	if err := p.handleCommand(event); err != nil {
+		t.Fatalf("second handleCommand failed: %v", err)
+	}
+
+	if len(bus.broadcasts) != 2 {
+		t.Fatalf("expected two responses, got %d", len(bus.broadcasts))
+	}
+	if !strings.Contains(strings.ToLower(bus.broadcasts[1].data.RawMessage.Message), "cooldown") {
+		t.Fatalf("unexpected cooldown response: %s", bus.broadcasts[1].data.RawMessage.Message)
+	}
+}
