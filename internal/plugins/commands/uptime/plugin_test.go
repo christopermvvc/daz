@@ -421,7 +421,7 @@ func TestHandleCommand(t *testing.T) {
 			}
 
 			// For admin users, also check for time units
-			if tc.isAdmin == "true" && !strings.Contains(message, "second") {
+			if tc.isAdmin == "true" && !containsAny(message, []string{"s", "m", "h", "d"}) {
 				t.Error("Admin uptime message should contain time units")
 			}
 
@@ -433,6 +433,15 @@ func TestHandleCommand(t *testing.T) {
 	}
 }
 
+func containsAny(value string, options []string) bool {
+	for _, option := range options {
+		if strings.Contains(value, option) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestFormatUptime(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -442,41 +451,53 @@ func TestFormatUptime(t *testing.T) {
 		{
 			name:     "seconds only",
 			duration: 45 * time.Second,
-			expected: "Bot uptime: 45 seconds",
+			expected: "Bot uptime: 45s",
 		},
 		{
 			name:     "minutes and seconds",
 			duration: 2*time.Minute + 30*time.Second,
-			expected: "Bot uptime: 2 minutes and 30 seconds",
+			expected: "Bot uptime: 2m 30s",
 		},
 		{
 			name:     "hours minutes seconds",
 			duration: 3*time.Hour + 15*time.Minute + 45*time.Second,
-			expected: "Bot uptime: 3 hours, 15 minutes and 45 seconds",
+			expected: "Bot uptime: 3h 15m 45s",
 		},
 		{
 			name:     "days hours minutes",
 			duration: 2*24*time.Hour + 5*time.Hour + 30*time.Minute + 10*time.Second,
-			expected: "Bot uptime: 2 days, 5 hours, 30 minutes and 10 seconds",
+			expected: "Bot uptime: 2d 5h 30m 10s",
 		},
 		{
 			name:     "singular units",
 			duration: 1*24*time.Hour + 1*time.Hour + 1*time.Minute + 1*time.Second,
-			expected: "Bot uptime: 1 day, 1 hour, 1 minute and 1 second",
+			expected: "Bot uptime: 1d 1h 1m 1s",
 		},
 		{
 			name:     "zero seconds",
 			duration: 0,
-			expected: "Bot uptime: 0 seconds",
+			expected: "Bot uptime: 0s",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := formatUptime(tt.duration)
+			result := formatUptime(tt.duration, false)
 			if result != tt.expected {
 				t.Errorf("formatUptime(%v) = %s, want %s", tt.duration, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestFormatUptimeShort(t *testing.T) {
+	got := formatUptime(2*time.Hour+5*time.Minute+10*time.Second, true)
+	if got != "Bot uptime: 2h 5m" {
+		t.Fatalf("formatUptime(short) = %s", got)
+	}
+
+	got = formatUptime(45*time.Second, true)
+	if got != "Bot uptime: 45s" {
+		t.Fatalf("formatUptime(short seconds) = %s", got)
 	}
 }
