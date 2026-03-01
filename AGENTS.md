@@ -86,6 +86,112 @@
 - Use `eventbus` constants for core Cytube events.
 - Keep plugin names stable; they are used in logs and routing.
 
+## Economy API Guide
+
+The economy API is an EventBus request/reply contract for reading and mutating per-channel user balances. When present, the stable contract is documented in `docs/economy.md`. Callers should prefer the Go wrapper in `internal/framework/economy_client.go`.
+
+### Implementation Locations
+- Plugin handler and routing: `internal/plugins/economy/plugin.go`
+- Store interface and SQL-backed store: `internal/plugins/economy/store.go`
+- Caller wrapper client: `internal/framework/economy_client.go`
+- SQL schema, functions, and ledger table: `scripts/sql/033_economy_api.sql`
+- Migration application: `internal/plugins/sql/plugin.go` (`applyExternalMigrations`)
+- Plugin registration: `cmd/daz/main.go`
+- Example config stub: `config.json.example` (`"plugins": { "economy": {} }`)
+
+### Request/Response Contract Basics
+- Event type: `plugin.request`
+- Request envelope: `framework.EventData.PluginRequest` (serialized as `plugin_request`)
+- Response envelope: `framework.EventData.PluginResponse` (serialized as `plugin_response`)
+- Required operation names (`PluginRequest.Type`):
+  - `economy.get_balance`
+  - `economy.credit`
+  - `economy.debit`
+  - `economy.transfer`
+
+The economy plugin routes and validates using the payload only. Handlers do not receive `EventMetadata`.
+
+### Correlation and Response Delivery (Required)
+- `PluginRequest.ID` is the only handler-visible correlation identifier.
+- If you use `eventBus.Request(...)`, set `EventMetadata.CorrelationID` to the same value as `PluginRequest.ID`, otherwise the caller will wait on an ID the handler cannot see.
+- The economy plugin delivers responses via `eventBus.DeliverResponse(req.ID, resp, err)` and no-ops if `req.ID` is empty.
+
+### Idempotency Rules (credit, debit, transfer)
+- Mutations are idempotent per `(channel, idempotency_key)`.
+- If `idempotency_key` is missing or empty, the server defaults it to `PluginRequest.ID`.
+- Retrying the same idempotency key with an identical payload returns `already_applied=true`.
+- Retrying the same idempotency key with a different payload fails with `error_code=IDEMPOTENCY_CONFLICT`.
+- Clients should retry by re-sending identical JSON fields and values.
+
+### Error Codes
+- `INVALID_ARGUMENT`: missing required fields, invalid types, invalid JSON for `data.raw_json`, unknown operation name
+- `INVALID_AMOUNT`: `amount` missing, not an integer, or less than or equal to 0
+- `INSUFFICIENT_FUNDS`: debit or transfer would make the sender balance negative
+- `IDEMPOTENCY_CONFLICT`: duplicate idempotency key with a different payload
+- `DB_UNAVAILABLE`: DB layer not ready (for example SQL plugin down) or requests cannot be executed
+- `DB_ERROR`: DB operation failed after the DB layer was available
+- `INTERNAL`: unexpected error
+
+### Quick Start (Go)
+
+```go
+client := framework.NewEconomyClient(bus, "myplugin")
+
+bal, err := client.GetBalance(ctx, channel, username)
+if err != nil {
+    // handle err
+}
+_ = bal
+
+_, err = client.Credit(ctx, framework.CreditRequest{
+    Channel:  channel,
+    Username: username,
+    Amount:   250,
+    Reason:   "daily_reward",
+})
+
+_, err = client.Debit(ctx, framework.DebitRequest{
+    Channel:        channel,
+    Username:       username,
+    Amount:         50,
+    IdempotencyKey: "purchase-123",
+    Reason:         "shop_purchase",
+})
+
+_, err = client.Transfer(ctx, framework.TransferRequest{
+    Channel:      channel,
+    FromUsername: "alice",
+    ToUsername:   "bob",
+    Amount:       10,
+    Reason:       "tip",
+})
+```
+
+Notes:
+- `EconomyClient` generates a correlation ID per call and mirrors it into `PluginRequest.ID`. For mutations it also defaults `idempotency_key` to that same value, unless you set one explicitly.
+- Structured failures map to `*framework.EconomyError` (`ErrorCode`, `Message`, optional `Details`).
+
+### SQL Surface Area
+- Ledger table: `daz_economy_ledger` (credits, debits, transfers) with optional `idempotency_key` and `metadata`
+- Functions:
+  - `daz_economy_get_balance(channel, username)`
+  - `daz_economy_credit(channel, username, amount, idempotency_key, actor, reason, metadata)`
+  - `daz_economy_debit(channel, username, amount, idempotency_key, actor, reason, metadata)`
+  - `daz_economy_transfer(channel, from_username, to_username, amount, idempotency_key, actor, reason, metadata)`
+
+### Testing
+- Unit tests: `go test ./internal/plugins/economy -count=1`
+- Integration tests (build tag `integration`, requires PostgreSQL):
+  - Env vars: `DAZ_DB_HOST`, `DAZ_DB_PORT`, `DAZ_DB_NAME`, `DAZ_DB_USER`, `DAZ_DB_PASSWORD`
+  - Run: `go test -tags=integration ./internal/plugins/economy -run TestTransfer -count=1`
+
+### Extending The API
+1. Update contract docs: add the new operation to `docs/economy.md` with request/response payload shape and error semantics.
+2. Add plugin routing: define a stable operation name constant in `internal/plugins/economy/plugin.go`, extend the `switch req.Type`, implement a handler that validates and normalizes inputs.
+3. Add store and SQL function: extend `internal/plugins/economy/store.go` and implement a new SQL function in a migration under `scripts/sql/` (including explicit grants).
+4. Wire the migration: ensure `internal/plugins/sql/plugin.go` applies the new migration on startup.
+5. Add tests: unit tests for payload validation and error mapping, plus integration tests for idempotency and ledger effects.
+
 ## Configuration
 - Load config via `config.LoadFromFile` (supports env overrides).
 - Validate config with `cfg.Validate()` before use.
