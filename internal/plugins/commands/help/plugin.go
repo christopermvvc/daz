@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,14 +19,15 @@ type Config struct {
 }
 
 type Plugin struct {
-	name     string
-	eventBus framework.EventBus
-	config   *Config
-	mu       sync.RWMutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	running  bool
+	name      string
+	eventBus  framework.EventBus
+	sqlClient *framework.SQLClient
+	config    *Config
+	mu        sync.RWMutex
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	running   bool
 }
 
 func New() framework.Plugin {
@@ -32,8 +36,19 @@ func New() framework.Plugin {
 	}
 }
 
+func (p *Plugin) Dependencies() []string {
+	return []string{"sql"}
+}
+
+func (p *Plugin) Ready() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.running
+}
+
 func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.eventBus = bus
+	p.sqlClient = framework.NewSQLClient(bus, p.name)
 
 	if len(config) > 0 {
 		if err := json.Unmarshal(config, &p.config); err != nil {
@@ -160,8 +175,291 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 }
 
 func (p *Plugin) handleHelpCommand(req *framework.PluginRequest) {
-	message := "In development"
-	p.sendResponse(req, message)
+	if req.Data == nil || req.Data.Command == nil {
+		return
+	}
+
+	commandArgs := req.Data.Command.Args
+	if len(commandArgs) > 0 {
+		p.handleCommandHelp(req, strings.ToLower(commandArgs[0]))
+		return
+	}
+
+	messageBatches, err := p.buildCommandList(req)
+	if err != nil {
+		logger.Error(p.name, "Failed to build help list: %v", err)
+		p.sendResponse(req, "sorry mate, help list is crook right now")
+		return
+	}
+
+	for _, msg := range messageBatches {
+		p.sendResponse(req, msg)
+	}
+}
+
+func (p *Plugin) handleCommandHelp(req *framework.PluginRequest, command string) {
+	command = strings.TrimPrefix(command, "!")
+	if command == "" {
+		p.sendResponse(req, "tell us the command name ya pelican")
+		return
+	}
+
+	info, aliases, err := p.lookupCommand(req, command)
+	if err != nil {
+		logger.Error(p.name, "Failed to load command info: %v", err)
+		p.sendResponse(req, "sorry mate, help is crook right now")
+		return
+	}
+	if info == nil {
+		p.sendResponse(req, fmt.Sprintf("no idea about '%s'", command))
+		return
+	}
+
+	aliasText := "none"
+	if len(aliases) > 0 {
+		aliasText = strings.Join(aliases, ", ")
+	}
+
+	message := fmt.Sprintf("!%s (plugin: %s, min rank: %d, aliases: %s)", info.Primary, info.PluginName, info.MinRank, aliasText)
+	p.sendResponse(req, p.limit(message))
+}
+
+type commandEntry struct {
+	Primary    string
+	PluginName string
+	MinRank    int
+	Aliases    []string
+}
+
+func (p *Plugin) buildCommandList(req *framework.PluginRequest) ([]string, error) {
+	userRank := 0
+	if req.Data != nil && req.Data.Command != nil {
+		if rankStr := req.Data.Command.Params["rank"]; rankStr != "" {
+			if parsed, err := strconv.Atoi(rankStr); err == nil {
+				userRank = parsed
+			}
+		}
+	}
+
+	commands, err := p.fetchCommands(userRank)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]*commandEntry, 0, len(commands))
+	for _, entry := range commands {
+		entries = append(entries, entry)
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Primary < entries[j].Primary
+	})
+
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		aliasText := ""
+		if p.config.ShowAliases && len(entry.Aliases) > 0 {
+			aliasText = fmt.Sprintf(" (aliases: %s)", strings.Join(entry.Aliases, ", "))
+		}
+		line := fmt.Sprintf("!%s - plugin: %s, min rank: %d%s", entry.Primary, entry.PluginName, entry.MinRank, aliasText)
+		lines = append(lines, line)
+	}
+
+	if len(lines) == 0 {
+		return []string{"no commands available"}, nil
+	}
+
+	return splitMessages("Commands:", lines, 450), nil
+}
+
+func (p *Plugin) fetchCommands(userRank int) (map[string]*commandEntry, error) {
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT command, plugin_name, is_alias, COALESCE(primary_command, ''), min_rank, enabled
+		FROM daz_eventfilter_commands
+		WHERE enabled = true AND min_rank <= $1
+	`
+
+	rows, err := p.sqlClient.QueryContext(ctx, query, userRank)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	commands := make(map[string]*commandEntry)
+	for rows.Next() {
+		var (
+			command    string
+			pluginName string
+			isAlias    bool
+			primary    string
+			minRank    int
+			enabled    bool
+		)
+
+		if err := rows.Scan(&command, &pluginName, &isAlias, &primary, &minRank, &enabled); err != nil {
+			return nil, err
+		}
+		if !enabled {
+			continue
+		}
+
+		command = strings.ToLower(strings.TrimSpace(command))
+		primary = strings.ToLower(strings.TrimSpace(primary))
+		if command == "" {
+			continue
+		}
+		if !isAlias || primary == "" {
+			primary = command
+		}
+
+		entry, ok := commands[primary]
+		if !ok {
+			entry = &commandEntry{Primary: primary, PluginName: pluginName, MinRank: minRank}
+			commands[primary] = entry
+		}
+		if isAlias && command != primary {
+			entry.Aliases = append(entry.Aliases, command)
+		}
+	}
+
+	for _, entry := range commands {
+		sort.Strings(entry.Aliases)
+	}
+
+	return commands, rows.Err()
+}
+
+func (p *Plugin) lookupCommand(req *framework.PluginRequest, command string) (*commandEntry, []string, error) {
+	command = strings.ToLower(strings.TrimSpace(command))
+	if command == "" {
+		return nil, nil, nil
+	}
+
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT command, plugin_name, is_alias, COALESCE(primary_command, ''), min_rank, enabled
+		FROM daz_eventfilter_commands
+		WHERE command = $1 AND enabled = true
+		LIMIT 1
+	`
+
+	rows, err := p.sqlClient.QueryContext(ctx, query, command)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return nil, nil, nil
+	}
+
+	var (
+		cmd        string
+		pluginName string
+		isAlias    bool
+		primary    string
+		minRank    int
+		enabled    bool
+	)
+
+	if err := rows.Scan(&cmd, &pluginName, &isAlias, &primary, &minRank, &enabled); err != nil {
+		return nil, nil, err
+	}
+	if !enabled {
+		return nil, nil, nil
+	}
+
+	cmd = strings.ToLower(strings.TrimSpace(cmd))
+	primary = strings.ToLower(strings.TrimSpace(primary))
+	if cmd == "" {
+		return nil, nil, nil
+	}
+	if !isAlias || primary == "" {
+		primary = cmd
+	}
+
+	aliases, err := p.fetchAliases(ctx, primary)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &commandEntry{Primary: primary, PluginName: pluginName, MinRank: minRank, Aliases: aliases}, aliases, nil
+}
+
+func (p *Plugin) fetchAliases(ctx context.Context, primary string) ([]string, error) {
+	query := `
+		SELECT command
+		FROM daz_eventfilter_commands
+		WHERE enabled = true AND is_alias = true AND primary_command = $1
+		ORDER BY command ASC
+	`
+
+	rows, err := p.sqlClient.QueryContext(ctx, query, primary)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	aliases := []string{}
+	for rows.Next() {
+		var cmd string
+		if err := rows.Scan(&cmd); err != nil {
+			return nil, err
+		}
+		cmd = strings.ToLower(strings.TrimSpace(cmd))
+		if cmd != "" {
+			aliases = append(aliases, cmd)
+		}
+	}
+
+	return aliases, rows.Err()
+}
+
+func (p *Plugin) limit(message string) string {
+	const maxRunes = 500
+	message = strings.TrimSpace(message)
+	runes := []rune(message)
+	if len(runes) <= maxRunes {
+		return message
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
+func splitMessages(header string, lines []string, maxLen int) []string {
+	if maxLen <= 0 {
+		maxLen = 450
+	}
+
+	header = strings.TrimSpace(header)
+	current := header
+	if current != "" {
+		current += "\n"
+	}
+
+	var messages []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		candidate := current + line
+		if len([]rune(candidate)) > maxLen && current != "" {
+			messages = append(messages, strings.TrimSpace(current))
+			current = line + "\n"
+			continue
+		}
+		current = candidate + "\n"
+	}
+
+	if strings.TrimSpace(current) != "" {
+		messages = append(messages, strings.TrimSpace(current))
+	}
+
+	return messages
 }
 
 func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
