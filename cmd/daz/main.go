@@ -22,6 +22,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/about"
 	"github.com/hildolfr/daz/internal/plugins/commands/bong"
 	"github.com/hildolfr/daz/internal/plugins/commands/clap"
+	"github.com/hildolfr/daz/internal/plugins/commands/fishing"
 	"github.com/hildolfr/daz/internal/plugins/commands/fortune"
 	"github.com/hildolfr/daz/internal/plugins/commands/games"
 	"github.com/hildolfr/daz/internal/plugins/commands/help"
@@ -227,6 +228,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"about", about.New()},
 		{"bong", bong.New()},
 		{"clap", clap.New()},
+		{"fishing", fishing.New()},
 		{"fortune", fortune.New()},
 		{"games", games.New()},
 		{"help", help.New()},
@@ -266,6 +268,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["bong"] = cfg.GetPluginConfig("bong")
 	pluginConfigs["clap"] = cfg.GetPluginConfig("clap")
 	pluginConfigs["insult"] = cfg.GetPluginConfig("insult")
+	pluginConfigs["fishing"] = cfg.GetPluginConfig("fishing")
 	pluginConfigs["mysterybox"] = cfg.GetPluginConfig("mysterybox")
 	pluginConfigs["oddjob"] = cfg.GetPluginConfig("oddjob")
 	pluginConfigs["ping"] = cfg.GetPluginConfig("ping")
