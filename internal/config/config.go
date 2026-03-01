@@ -12,7 +12,7 @@ import (
 type Config struct {
 	Core     CoreConfig              `json:"core"`
 	EventBus EventBusConfig          `json:"event_bus"`
-	Plugins  map[string]PluginConfig `json:"plugins"`
+	Plugins  map[string]PluginConfig `json:"plugins"` // e.g., "economy", "sql", "eventfilter"
 }
 
 // CoreConfig contains configuration for the core plugin
