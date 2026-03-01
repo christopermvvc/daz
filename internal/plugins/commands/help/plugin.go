@@ -32,7 +32,12 @@ type Plugin struct {
 	cacheMu      sync.RWMutex
 	commandCache map[string]*commandEntry
 	aliasIndex   map[string]string
+
+	cooldownMu    sync.Mutex
+	lastHelpByKey map[string]time.Time
 }
+
+const helpCommandCooldown = 2 * time.Second
 
 func New() framework.Plugin {
 	return &Plugin{
@@ -55,6 +60,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.commandCache = make(map[string]*commandEntry)
 	p.aliasIndex = make(map[string]string)
+	p.lastHelpByKey = make(map[string]time.Time)
 
 	if len(config) > 0 {
 		if err := json.Unmarshal(config, &p.config); err != nil {
@@ -191,6 +197,12 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 
 func (p *Plugin) handleHelpCommand(req *framework.PluginRequest) {
 	if req.Data == nil || req.Data.Command == nil {
+		return
+	}
+
+	params := req.Data.Command.Params
+	if wait, ok := p.checkHelpCooldown(params["channel"], params["username"]); !ok {
+		p.sendResponse(req, fmt.Sprintf("steady on mate, try again in %ds", int(wait.Seconds())+1))
 		return
 	}
 
@@ -552,6 +564,39 @@ func splitMessages(header string, lines []string, maxLen int) []string {
 	}
 
 	return messages
+}
+
+func (p *Plugin) checkHelpCooldown(channel, username string) (time.Duration, bool) {
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	username = strings.ToLower(strings.TrimSpace(username))
+	if channel == "" || username == "" {
+		return 0, true
+	}
+
+	now := time.Now()
+	key := channel + ":" + username
+
+	p.cooldownMu.Lock()
+	defer p.cooldownMu.Unlock()
+
+	if last, ok := p.lastHelpByKey[key]; ok {
+		until := last.Add(helpCommandCooldown)
+		if now.Before(until) {
+			return until.Sub(now), false
+		}
+	}
+
+	p.lastHelpByKey[key] = now
+	if len(p.lastHelpByKey) > 10000 {
+		cutoff := now.Add(-2 * helpCommandCooldown)
+		for k, last := range p.lastHelpByKey {
+			if last.Before(cutoff) {
+				delete(p.lastHelpByKey, k)
+			}
+		}
+	}
+
+	return 0, true
 }
 
 func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {

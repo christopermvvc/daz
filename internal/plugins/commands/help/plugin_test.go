@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -430,5 +431,113 @@ func TestHandleCommand(t *testing.T) {
 	username := broadcast.data.PluginResponse.Data.KeyValue["username"]
 	if username != "testuser" {
 		t.Errorf("Expected username 'testuser', got '%s'", username)
+	}
+}
+
+func TestHelpVisibilityParityListAndDetail(t *testing.T) {
+	plugin := New().(*Plugin)
+	bus := newMockEventBus()
+
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	plugin.cacheMu.Lock()
+	plugin.commandCache = map[string]*commandEntry{
+		"ping": {
+			Primary:    "ping",
+			PluginName: "ping",
+			MinRank:    0,
+			AdminOnly:  false,
+		},
+		"uptime": {
+			Primary:    "uptime",
+			PluginName: "uptime",
+			MinRank:    0,
+			Aliases:    []string{"up"},
+			AdminOnly:  true,
+		},
+		"modcmd": {
+			Primary:    "modcmd",
+			PluginName: "mod",
+			MinRank:    2,
+			AdminOnly:  false,
+		},
+	}
+	plugin.aliasIndex = map[string]string{"up": "uptime"}
+	plugin.cacheMu.Unlock()
+
+	nonAdminReq := makeHelpReq("bob", "test", 0, false)
+	nonAdminList, err := plugin.buildCommandList(nonAdminReq)
+	if err != nil {
+		t.Fatalf("buildCommandList() error = %v", err)
+	}
+	joinedNonAdmin := strings.Join(nonAdminList, "\n")
+	if !strings.Contains(joinedNonAdmin, "!ping") {
+		t.Fatalf("expected !ping in non-admin list: %s", joinedNonAdmin)
+	}
+	if strings.Contains(joinedNonAdmin, "!uptime") {
+		t.Fatalf("did not expect !uptime in non-admin list: %s", joinedNonAdmin)
+	}
+	if strings.Contains(joinedNonAdmin, "!modcmd") {
+		t.Fatalf("did not expect !modcmd in non-admin list: %s", joinedNonAdmin)
+	}
+
+	nonAdminDetail, _, err := plugin.lookupCommand(nonAdminReq, "uptime")
+	if err != nil {
+		t.Fatalf("lookupCommand(non-admin) error = %v", err)
+	}
+	if nonAdminDetail != nil {
+		t.Fatal("expected non-admin detail lookup for uptime to be hidden")
+	}
+
+	adminReq := makeHelpReq("alice", "test", 0, true)
+	adminList, err := plugin.buildCommandList(adminReq)
+	if err != nil {
+		t.Fatalf("buildCommandList(admin) error = %v", err)
+	}
+	joinedAdmin := strings.Join(adminList, "\n")
+	if !strings.Contains(joinedAdmin, "!uptime") {
+		t.Fatalf("expected !uptime in admin list: %s", joinedAdmin)
+	}
+
+	adminDetail, _, err := plugin.lookupCommand(adminReq, "up")
+	if err != nil {
+		t.Fatalf("lookupCommand(admin alias) error = %v", err)
+	}
+	if adminDetail == nil || adminDetail.Primary != "uptime" {
+		t.Fatal("expected admin alias lookup for up to resolve to uptime")
+	}
+}
+
+func TestCheckHelpCooldown(t *testing.T) {
+	plugin := New().(*Plugin)
+	bus := newMockEventBus()
+
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if wait, ok := plugin.checkHelpCooldown("test", "user"); !ok || wait != 0 {
+		t.Fatalf("first cooldown check should allow request, got ok=%v wait=%v", ok, wait)
+	}
+
+	if wait, ok := plugin.checkHelpCooldown("test", "user"); ok || wait <= 0 {
+		t.Fatalf("second cooldown check should block request, got ok=%v wait=%v", ok, wait)
+	}
+}
+
+func makeHelpReq(username, channel string, rank int, isAdmin bool) *framework.PluginRequest {
+	return &framework.PluginRequest{
+		Data: &framework.RequestData{
+			Command: &framework.CommandData{
+				Params: map[string]string{
+					"username": username,
+					"channel":  channel,
+					"rank":     fmt.Sprintf("%d", rank),
+					"is_admin": fmt.Sprintf("%t", isAdmin),
+				},
+			},
+		},
 	}
 }

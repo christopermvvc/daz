@@ -297,6 +297,14 @@ func parseTimeString(value string) (time.Duration, bool) {
 		return 0, false
 	}
 
+	if isDigitsOnly(value) {
+		minutes, err := strconv.Atoi(value)
+		if err != nil || minutes <= 0 {
+			return 0, false
+		}
+		return time.Duration(minutes) * time.Minute, true
+	}
+
 	var total time.Duration
 	var number strings.Builder
 	for _, r := range value {
@@ -337,4 +345,13 @@ func parseTimeString(value string) (time.Duration, bool) {
 		return 0, false
 	}
 	return total, true
+}
+
+func isDigitsOnly(value string) bool {
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return value != ""
 }
