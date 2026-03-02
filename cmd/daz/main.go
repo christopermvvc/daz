@@ -29,6 +29,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/help"
 	"github.com/hildolfr/daz/internal/plugins/commands/insult"
 	"github.com/hildolfr/daz/internal/plugins/commands/mysterybox"
+	"github.com/hildolfr/daz/internal/plugins/commands/needs"
 	"github.com/hildolfr/daz/internal/plugins/commands/oddjob"
 	"github.com/hildolfr/daz/internal/plugins/commands/ping"
 	"github.com/hildolfr/daz/internal/plugins/commands/pissingcontest"
@@ -240,6 +241,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"insult", insult.New()},
 		{"mysterybox", mysterybox.New()},
 		{"oddjob", oddjob.New()},
+		{"needs", needs.New()},
 		{"pissingcontest", pissingcontest.New()},
 		{"ping", ping.New()},
 		{"playerstate", playerstate.New()},
