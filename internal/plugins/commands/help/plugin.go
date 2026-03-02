@@ -16,10 +16,11 @@ import (
 )
 
 type Config struct {
-	ShowAliases    bool   `json:"show_aliases"`
-	GenerateHTML   bool   `json:"generate_html"`
-	HTMLOutputPath string `json:"html_output_path"`
-	HelpBaseURL    string `json:"help_base_url"`
+	ShowAliases       bool   `json:"show_aliases"`
+	GenerateHTML      bool   `json:"generate_html"`
+	HTMLOutputPath    string `json:"html_output_path"`
+	HelpBaseURL       string `json:"help_base_url"`
+	IncludeRestricted bool   `json:"include_restricted"`
 }
 
 type Plugin struct {
@@ -72,20 +73,22 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 
 	if len(config) > 0 {
 		p.config = &Config{
-			ShowAliases:    true,
-			GenerateHTML:   true,
-			HTMLOutputPath: defaultHelpOutputPath,
-			HelpBaseURL:    defaultHelpBaseURL,
+			ShowAliases:       true,
+			GenerateHTML:      true,
+			HTMLOutputPath:    defaultHelpOutputPath,
+			HelpBaseURL:       defaultHelpBaseURL,
+			IncludeRestricted: true,
 		}
 		if err := json.Unmarshal(config, &p.config); err != nil {
 			return fmt.Errorf("failed to unmarshal config: %w", err)
 		}
 	} else {
 		p.config = &Config{
-			ShowAliases:    true,
-			GenerateHTML:   true,
-			HTMLOutputPath: defaultHelpOutputPath,
-			HelpBaseURL:    defaultHelpBaseURL,
+			ShowAliases:       true,
+			GenerateHTML:      true,
+			HTMLOutputPath:    defaultHelpOutputPath,
+			HelpBaseURL:       defaultHelpBaseURL,
+			IncludeRestricted: true,
 		}
 	}
 	p.config.HTMLOutputPath = normalizeHelpOutputPath(p.config.HTMLOutputPath)
@@ -125,7 +128,13 @@ func (p *Plugin) Start() error {
 		logger.Error(p.name, "Failed to load command cache: %v", err)
 	}
 	if p.config.GenerateHTML {
-		p.generator = NewHTMLGenerator(p.config, p.snapshotAllEntries, p.config.ShowAliases)
+		entryProvider := p.snapshotAllEntries
+		if !p.config.IncludeRestricted {
+			entryProvider = func() []*commandEntry {
+				return p.snapshotEntries(0, false)
+			}
+		}
+		p.generator = NewHTMLGenerator(p.config, entryProvider, p.config.ShowAliases, p.config.IncludeRestricted)
 		p.markHTMLDirty()
 		p.wg.Add(1)
 		go p.runHTMLGenerator()

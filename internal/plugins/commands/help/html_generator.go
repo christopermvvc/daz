@@ -22,18 +22,66 @@ const (
 )
 
 type HTMLGenerator struct {
-	config        *Config
-	entryProvider func() []*commandEntry
-	showAliases   bool
-	mu            sync.Mutex
+	config            *Config
+	entryProvider     func() []*commandEntry
+	showAliases       bool
+	includeRestricted bool
+	mu                sync.Mutex
+
+	gitRunner         gitRunner
+	deployKeyResolver func() (string, error)
 }
 
-func NewHTMLGenerator(config *Config, entryProvider func() []*commandEntry, showAliases bool) *HTMLGenerator {
+type gitRunner func(ctx context.Context, dir string, env []string, args ...string) (string, error)
+
+func NewHTMLGenerator(config *Config, entryProvider func() []*commandEntry, showAliases bool, includeRestricted bool) *HTMLGenerator {
 	return &HTMLGenerator{
-		config:        config,
-		entryProvider: entryProvider,
-		showAliases:   showAliases,
+		config:            config,
+		entryProvider:     entryProvider,
+		showAliases:       showAliases,
+		includeRestricted: includeRestricted,
+		gitRunner:         defaultGitRunner,
+		deployKeyResolver: defaultDeployKeyResolver,
 	}
+}
+
+func defaultGitRunner(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), err
+	}
+	return string(output), nil
+}
+
+func defaultDeployKeyResolver() (string, error) {
+	candidates := []string{
+		"dazza_deploy_key",
+	}
+	cwd, err := os.Getwd()
+	if err == nil {
+		candidates = append([]string{filepath.Join(cwd, "dazza_deploy_key")}, candidates...)
+	}
+	executablePath, err := os.Executable()
+	if err == nil {
+		execDir := filepath.Dir(executablePath)
+		candidates = append(candidates, filepath.Join(execDir, "dazza_deploy_key"))
+	}
+
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+
+	return "", fmt.Errorf("deploy key not found")
 }
 
 func normalizeHelpBaseURL(raw string) string {
@@ -155,8 +203,9 @@ type helpEntryView struct {
 }
 
 type helpIndexView struct {
-	GeneratedAt string
-	Entries     []helpEntryView
+	GeneratedAt       string
+	Entries           []helpEntryView
+	IncludeRestricted bool
 }
 
 func (g *HTMLGenerator) renderIndex(entries []*commandEntry) (string, error) {
@@ -166,9 +215,17 @@ func (g *HTMLGenerator) renderIndex(entries []*commandEntry) (string, error) {
 		if g.showAliases && len(entry.Aliases) > 0 {
 			aliases = strings.Join(entry.Aliases, ", ")
 		}
+		description := entry.Description
+		if g.includeRestricted {
+			if entry.AdminOnly {
+				description = description + " (admin only)"
+			} else if entry.MinRank > 0 {
+				description = fmt.Sprintf("%s (min rank %d)", description, entry.MinRank)
+			}
+		}
 		views = append(views, helpEntryView{
 			Primary:     entry.Primary,
-			Description: entry.Description,
+			Description: description,
 			Aliases:     aliases,
 			MinRank:     entry.MinRank,
 			AdminOnly:   entry.AdminOnly,
@@ -176,8 +233,9 @@ func (g *HTMLGenerator) renderIndex(entries []*commandEntry) (string, error) {
 	}
 
 	data := helpIndexView{
-		GeneratedAt: time.Now().Format(time.RFC1123),
-		Entries:     views,
+		GeneratedAt:       time.Now().Format(time.RFC1123),
+		Entries:           views,
+		IncludeRestricted: g.includeRestricted,
 	}
 
 	tmpl, err := template.New("help_index").Parse(helpIndexTemplate)
@@ -260,15 +318,11 @@ func (g *HTMLGenerator) resetGitState() {
 		return
 	}
 
-	cmd := exec.Command("git", "reset", "--hard", "HEAD")
-	cmd.Dir = g.config.HTMLOutputPath
-	if err := cmd.Run(); err != nil {
+	if _, err := g.runGit(context.Background(), nil, "reset", "--hard", "HEAD"); err != nil {
 		logger.Error("help", "Failed to reset git state: %v", err)
 	}
 
-	cmd = exec.Command("git", "clean", "-fd")
-	cmd.Dir = g.config.HTMLOutputPath
-	if err := cmd.Run(); err != nil {
+	if _, err := g.runGit(context.Background(), nil, "clean", "-fd"); err != nil {
 		logger.Error("help", "Failed to clean git directory: %v", err)
 	}
 }
@@ -304,82 +358,37 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 
 	githubToken := os.Getenv("GITHUB_TOKEN")
 
-	runGitCmd := func(args ...string) error {
-		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Dir = g.config.HTMLOutputPath
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("git %v failed: %w, output: %s", args, err, string(output))
-		}
-		return nil
-	}
-
-	resolveDeployKey := func() (string, error) {
-		candidates := []string{
-			"dazza_deploy_key",
-		}
-		cwd, err := os.Getwd()
-		if err == nil {
-			candidates = append([]string{filepath.Join(cwd, "dazza_deploy_key")}, candidates...)
-		}
-		executablePath, err := os.Executable()
-		if err == nil {
-			execDir := filepath.Dir(executablePath)
-			candidates = append(candidates, filepath.Join(execDir, "dazza_deploy_key"))
-		}
-
-		for _, candidate := range candidates {
-			if candidate == "" {
-				continue
-			}
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate, nil
-			}
-		}
-		return "", fmt.Errorf("deploy key not found")
-	}
-
 	runAuthPush := func() error {
 		if githubToken == "" {
-			deployKey, err := resolveDeployKey()
+			deployKey, err := g.deployKeyResolver()
 			if err != nil {
 				return fmt.Errorf("no GitHub token configured")
 			}
-			cmd := exec.CommandContext(ctx, "git", "push", "origin", "gh-pages", "--force")
-			cmd.Dir = g.config.HTMLOutputPath
-			cmd.Env = append(os.Environ(),
+			if _, err := g.runGit(ctx, []string{
 				"GIT_TERMINAL_PROMPT=0",
-				"GIT_SSH_COMMAND=ssh -i "+deployKey+" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new",
-			)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
+				"GIT_SSH_COMMAND=ssh -i " + deployKey + " -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new",
+			}, "push", "origin", "gh-pages", "--force"); err != nil {
 				return fmt.Errorf("push failed: %w", err)
 			}
-			logger.Debug("help", "Push output: %s", string(output))
 			return nil
 		}
 
 		authURL := fmt.Sprintf("https://x-access-token:%s@github.com/hildolfr/daz.git", githubToken)
-		cmd := exec.CommandContext(ctx, "git", "push", authURL, "gh-pages", "--force")
-		cmd.Dir = g.config.HTMLOutputPath
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-		output, err := cmd.CombinedOutput()
-		if err != nil {
+		if _, err := g.runGit(ctx, []string{"GIT_TERMINAL_PROMPT=0"}, "push", authURL, "gh-pages", "--force"); err != nil {
 			return fmt.Errorf("push failed: %w", err)
 		}
-		logger.Debug("help", "Push output: %s", string(output))
 		return nil
 	}
 
 	gitDir := filepath.Join(g.config.HTMLOutputPath, ".git")
 	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-		if err := runGitCmd("init"); err != nil {
+		if _, err := g.runGit(ctx, nil, "init"); err != nil {
 			return fmt.Errorf("failed to init git repo: %w", err)
 		}
-		if err := runGitCmd("config", "user.name", "hildolfr"); err != nil {
+		if _, err := g.runGit(ctx, nil, "config", "user.name", "hildolfr"); err != nil {
 			return fmt.Errorf("failed to set git user: %w", err)
 		}
-		if err := runGitCmd("config", "user.email", "svhildolfr@gmail.com"); err != nil {
+		if _, err := g.runGit(ctx, nil, "config", "user.email", "svhildolfr@gmail.com"); err != nil {
 			return fmt.Errorf("failed to set git email: %w", err)
 		}
 	}
@@ -388,19 +397,19 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 	if githubToken == "" {
 		remoteURL = "git@github.com:hildolfr/daz.git"
 	}
-	if err := runGitCmd("remote", "add", "origin", remoteURL); err != nil {
+	if _, err := g.runGit(ctx, nil, "remote", "add", "origin", remoteURL); err != nil {
 		if !strings.Contains(err.Error(), "remote origin already exists") {
 			logger.Warn("help", "Failed to add remote: %v", err)
 		}
 	}
 
-	if err := runGitCmd("checkout", "-B", "gh-pages"); err != nil {
+	if _, err := g.runGit(ctx, nil, "checkout", "-B", "gh-pages"); err != nil {
 		return fmt.Errorf("failed to checkout gh-pages: %w", err)
 	}
-	if err := runGitCmd("add", "."); err != nil {
+	if _, err := g.runGit(ctx, nil, "add", "."); err != nil {
 		return fmt.Errorf("failed to add files: %w", err)
 	}
-	if err := runGitCmd("commit", "-m", "Update help pages"); err != nil {
+	if _, err := g.runGit(ctx, nil, "commit", "-m", "Update help pages"); err != nil {
 		if !strings.Contains(err.Error(), "nothing to commit") {
 			needsRecovery = true
 			return fmt.Errorf("failed to commit help pages: %w", err)
@@ -412,6 +421,17 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (g *HTMLGenerator) runGit(ctx context.Context, env []string, args ...string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	output, err := g.gitRunner(ctx, g.config.HTMLOutputPath, env, args...)
+	if err != nil {
+		return output, fmt.Errorf("git %v failed: %w, output: %s", args, err, output)
+	}
+	return output, nil
 }
 
 const helpIndexTemplate = `<!doctype html>
@@ -503,6 +523,7 @@ const helpIndexTemplate = `<!doctype html>
   <header>
     <h1>Daz Command Help</h1>
     <p>Last updated: {{.GeneratedAt}}</p>
+    {{if .IncludeRestricted}}<p style="color: var(--muted);">Some commands require admin or higher rank.</p>{{end}}
   </header>
   <section class="grid">
     {{range .Entries}}

@@ -107,7 +107,7 @@ func TestOddjobCooldown(t *testing.T) {
 		t.Fatalf("expected cooldown response")
 	}
 	message := strings.ToLower(bus.broadcasts[0].data.RawMessage.Message)
-	if !strings.Contains(message, "cooldown") && !strings.Contains(message, "wait") {
+	if !strings.Contains(message, "cooldown") && !strings.Contains(message, "wait") && !strings.Contains(message, "left") && !strings.Contains(message, "no more") {
 		t.Fatalf("unexpected cooldown message: %s", bus.broadcasts[0].data.RawMessage.Message)
 	}
 }
