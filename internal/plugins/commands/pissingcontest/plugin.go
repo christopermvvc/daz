@@ -815,6 +815,9 @@ func (p *Plugin) resolveContest(ch *activeChallenge) {
 	ch.ChallengerFailMsg = firstNonEmpty(challengerFailMsg, ch.ChallengerFailMsg)
 	ch.ChallengedFailMsg = firstNonEmpty(challengedFailMsg, ch.ChallengedFailMsg)
 	winner, loser := determineWinner(challengerFail, challengedFail, ch.Challenger, ch.Challenged, ch.ChallengerScore, ch.ChallengedScore)
+	if !p.waitForContestSpecialEvents(ch) {
+		return
+	}
 
 	if challengerFail || challengedFail {
 		p.resolveFailure(ch, winner, loser)
@@ -824,7 +827,6 @@ func (p *Plugin) resolveContest(ch *activeChallenge) {
 	if ch.ChallengerScore == ch.ChallengedScore {
 		p.sendPublic(ch.Room, "No winner! Both of you put in the same amount of crap.")
 		p.sendPublic(ch.Room, p.tieFlavorLine(ch))
-		p.announceSpecialEvents(ch)
 		p.sendRibbonTaunt(ch.Room, ch.ChallengerStats, ch.Challenger)
 		p.sendPublic(ch.Room, formatDualStats(ch))
 		p.sendRibbonTaunt(ch.Room, ch.ChallengedStats, ch.Challenged)
@@ -858,7 +860,6 @@ func (p *Plugin) resolveContest(ch *activeChallenge) {
 			p.sendPublic(ch.Room, fmt.Sprintf("💰 -%s wins $%d from -%s!", winner, ch.Amount, loser))
 		}
 	}
-	p.announceSpecialEvents(ch)
 
 	p.recordOutcome(ch, winner, loser, true)
 	p.sendRibbonTaunt(ch.Room, ch.ChallengerStats, ch.Challenger)
@@ -898,7 +899,6 @@ func (p *Plugin) conditionFromName(name string) condition {
 }
 
 func (p *Plugin) resolveFailure(ch *activeChallenge, winner, loser string) {
-	p.announceSpecialEvents(ch)
 	challengerMessage := firstNonEmpty(ch.ChallengerFailMsg, ch.ChallengerCond.Message)
 	challengedMessage := firstNonEmpty(ch.ChallengedFailMsg, ch.ChallengedCond.Message)
 	if challengerMessage == "" {
@@ -1014,16 +1014,55 @@ func (p *Plugin) announceSpecialEvents(ch *activeChallenge) {
 
 	for idx, message := range events {
 		msg := p.formatAttributedEventLine(ch, message)
-		delay := time.Duration(4+idx) * time.Second
-		time.AfterFunc(delay, func() {
-			select {
-			case <-p.ctx.Done():
-				return
-			default:
-				p.sendPublic(ch.Room, msg)
+		if msg == "" {
+			continue
+		}
+		delay := contestEventBaseDelay + time.Duration(idx)*contestEventStepDelay
+		time.AfterFunc(delay, func(out string) func() {
+			return func() {
+				select {
+				case <-p.ctx.Done():
+					return
+				default:
+					p.sendPublic(ch.Room, out)
+				}
 			}
-		})
+		}(msg))
 	}
+}
+
+func (p *Plugin) waitForContestSpecialEvents(ch *activeChallenge) bool {
+	delay := p.contestEventSpan(ch)
+	if delay <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-p.ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (p *Plugin) contestEventSpan(ch *activeChallenge) time.Duration {
+	locationMessages := ch.locationEvents
+	weatherMessages := ch.weatherEvents
+	if len(locationMessages) == 0 {
+		locationMessages = checkLocationEvents(ch.Location)
+	}
+	if len(weatherMessages) == 0 {
+		weatherMessages = checkWeatherEvents(ch.Weather)
+	}
+
+	total := len(locationMessages) + len(weatherMessages)
+	if total == 0 {
+		return 0
+	}
+	return contestEventBaseDelay + time.Duration(total-1)*contestEventStepDelay
 }
 
 func (p *Plugin) formatAttributedEventLine(ch *activeChallenge, message contestEvent) string {

@@ -12,6 +12,8 @@ const (
 	completedChallengeStat = "completed"
 	challengeTimeout       = 30 * time.Second
 	defaultCooldown        = 5 * time.Minute
+	contestEventBaseDelay  = 4 * time.Second
+	contestEventStepDelay  = 1 * time.Second
 )
 
 type Config struct {
