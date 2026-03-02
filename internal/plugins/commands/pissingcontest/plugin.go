@@ -743,7 +743,6 @@ func (p *Plugin) runContest(ch *activeChallenge) {
 	ch.ChallengedScore = challengedScore
 
 	p.sendPublic(ch.Room, fmt.Sprintf("💦 -%s '%s' vs -%s '%s' @ %s", ch.Challenger, ch.ChallengerChar.Name, ch.Challenged, ch.ChallengedChar.Name, ch.Location.Name))
-	p.sendPublic(ch.Room, formatWeather(ch.Weather))
 	if ch.ChallengerCond.Name != "" && ch.ChallengedCond.Name != "" {
 		p.sendPublic(ch.Room, fmt.Sprintf("Conditions: -%s [*%s*], -%s [*%s*]", ch.Challenger, ch.ChallengerCond.Name, ch.Challenged, ch.ChallengedCond.Name))
 	}
@@ -827,9 +826,8 @@ func (p *Plugin) resolveContest(ch *activeChallenge) {
 		p.sendPublic(ch.Room, p.tieFlavorLine(ch))
 		p.announceSpecialEvents(ch)
 		p.sendRibbonTaunt(ch.Room, ch.ChallengerStats, ch.Challenger)
-		p.sendPublic(ch.Room, formatStats(ch.ChallengerStats, ch.ChallengerScore, ch.Challenger))
+		p.sendPublic(ch.Room, formatDualStats(ch))
 		p.sendRibbonTaunt(ch.Room, ch.ChallengedStats, ch.Challenged)
-		p.sendPublic(ch.Room, formatStats(ch.ChallengedStats, ch.ChallengedScore, ch.Challenged))
 		p.recordOutcome(ch, "", "", true)
 		ctx, cancel := p.withTimeout(10 * time.Second)
 		defer cancel()
@@ -864,9 +862,8 @@ func (p *Plugin) resolveContest(ch *activeChallenge) {
 
 	p.recordOutcome(ch, winner, loser, true)
 	p.sendRibbonTaunt(ch.Room, ch.ChallengerStats, ch.Challenger)
-	p.sendPublic(ch.Room, formatStats(ch.ChallengerStats, ch.ChallengerScore, ch.Challenger))
+	p.sendPublic(ch.Room, formatDualStats(ch))
 	p.sendRibbonTaunt(ch.Room, ch.ChallengedStats, ch.Challenged)
-	p.sendPublic(ch.Room, formatStats(ch.ChallengedStats, ch.ChallengedScore, ch.Challenged))
 	ctx, cancel := p.withTimeout(10 * time.Second)
 	defer cancel()
 	_ = p.store.saveCompletedMatch(ctx, ch)
@@ -930,11 +927,24 @@ func (p *Plugin) resolveFailure(ch *activeChallenge, winner, loser string) {
 	}
 	p.sendPublic(ch.Room, failureFlavorLine())
 	p.sendRibbonTaunt(ch.Room, ch.ChallengerStats, ch.Challenger)
-	p.sendPublic(ch.Room, formatStats(ch.ChallengerStats, ch.ChallengerScore, ch.Challenger))
+	p.sendPublic(ch.Room, formatDualStats(ch))
 	p.sendRibbonTaunt(ch.Room, ch.ChallengedStats, ch.Challenged)
-	p.sendPublic(ch.Room, formatStats(ch.ChallengedStats, ch.ChallengedScore, ch.Challenged))
 	p.recordOutcome(ch, winner, loser, false)
 	p.applyFines(ch, winner, loser)
+}
+
+func formatDualStats(ch *activeChallenge) string {
+	if ch == nil {
+		return ""
+	}
+	if ch.Challenger == "" || ch.Challenged == "" {
+		return ""
+	}
+	return fmt.Sprintf(
+		"📊 %s || %s",
+		formatStats(ch.ChallengerStats, ch.ChallengerScore, ch.Challenger),
+		formatStats(ch.ChallengedStats, ch.ChallengedScore, ch.Challenged),
+	)
 }
 
 func (p *Plugin) sendRibbonTaunt(room string, stats contestResult, username string) {
