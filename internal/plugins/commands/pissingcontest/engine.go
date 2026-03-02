@@ -270,13 +270,43 @@ func targetBounds(stats *contestResult) {
 	}
 }
 
+func highlightContestStat(stats contestResult) string {
+	if stats.aim >= 90 {
+		return "pinpoint aim"
+	}
+	if stats.distance >= 6 {
+		return "long-range arseplunger"
+	}
+	if stats.volume >= 1500 {
+		return "high-pressure cannon"
+	}
+	if stats.duration >= 90 {
+		return "marathon mode"
+	}
+
+	switch {
+	case stats.wrongDirection:
+		return "wrong-way special"
+	case stats.straightUp:
+		return "the fountain of shame"
+	case stats.duration <= 4:
+		return "instant blast"
+	case stats.volume <= 300:
+		return "stingy stream"
+	default:
+		return "steady flow"
+	}
+}
+
 func formatStats(stats contestResult, score int, user string) string {
-	return fmt.Sprintf("📏%.1fm 💧%dml 🎯%.0f%% ⏱️%.0fs [%d] -%s",
+	return fmt.Sprintf(
+		"📏%.1fm 💧%dml 🎯%.0f%% ⏱️%.0fs [%d] -%s // %s",
 		stats.distance,
 		int(math.Round(stats.volume)),
 		stats.aim,
 		stats.duration,
 		score,
 		user,
+		highlightContestStat(stats),
 	)
 }
