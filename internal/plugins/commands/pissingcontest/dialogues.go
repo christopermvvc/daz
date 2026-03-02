@@ -36,16 +36,16 @@ var (
 		"bravado hit the wall hard",
 	}
 	ribbonTaunts = []string{
-		"Dazza hangs a giant ribbon on %s's dick like a champion at the finish line.",
-		"big respect all around as %s gets a ceremonial ribbon on that prize cock.",
-		"that length? damn, Dazza nails a flag-and-ribbon ceremony on %s.",
-		"Dazza lifts the ribbon to the sky: %s just got the gold-plated dick medal.",
-		"the room goes wild while Dazza tags %s with a massive 'best member' ribbon.",
-		"look at that and don't blink — Dazza puts a ribbon on %s for raw, unholy output.",
-		"%s's display earns the loudest cheer and a ribbon straight from Dazza's trophy rack.",
-		"Dazza isn't subtle today: ribbon on %s's thunder-rod for this run.",
-		"crowd goes silent, then cheering — %s got ribboned for an oversized achievement.",
-		"if there’s a hall of fame, Dazza adds %s's stat and hangs a giant ribbon there.",
+		"Dazza loops a giant ribbon round %s's dick like it's the main event flag.",
+		"big respect all around as dazza strings a winner ribbon around %s's full-size member.",
+		"that member could carry a flag — dazza ties a thick ribbon around %s's prized pole.",
+		"Dazza hoists a ribbon up and loops it around %s's absurdly long dick for a medal.",
+		"the room erupts while dazza slips a giant 'best member' ribbon over %s's entire package.",
+		"look at that and don't blink: dazza straps a trophy ribbon to %s's bloated rod like ceremony.",
+		"%s's load earned the room's loudest cheer and a fresh ribbon draped right on that meat.",
+		"Dazza isn't subtle — he wraps %s's huge cock in a champion's ribbon for the whole room to see.",
+		"silence, then chaos: dazza ties a victory ribbon onto %s's oversized shaft before anyone can blink.",
+		"if there's a hall of fame, dazza pins %s's stat and hangs an extra ribbon on that glorious member.",
 	}
 	acceptPhrases = []string{
 		"yes",
