@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -210,6 +211,9 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 }
 
 const maxNeedValue int64 = 100
+const needsProgressBarWidth = 8
+const needsProgressBarFill = "█"
+const needsProgressBarEmpty = "░"
 
 var hungerTiers = []string{
 	"Stuffed like a corpse",
@@ -283,20 +287,14 @@ func formatNeedsMessage(player string, state framework.PlayerState, buffs []stri
 	horny := clampNeed(state.Lust)
 	bladder := clampNeed(state.Bladder)
 
-	base := fmt.Sprintf(
-		"%s: %d Hunger (%s), %d Drunk (%s), %d High (%s), %d Horny (%s), %d Bladder (%s)",
-		player,
-		hunger,
-		needTier(hunger, hungerTiers),
-		drunk,
-		needTier(drunk, drunkTiers),
-		high,
-		needTier(high, highTiers),
-		horny,
-		needTier(horny, lustTiers),
-		bladder,
-		needTier(bladder, bladderTiers),
-	)
+	sections := []string{
+		formatNeedLine("🍽", "Hunger", hunger, needTier(hunger, hungerTiers)),
+		formatNeedLine("🍺", "Drunk", drunk, needTier(drunk, drunkTiers)),
+		formatNeedLine("🍃", "High", high, needTier(high, highTiers)),
+		formatNeedLine("🌶", "Horny", horny, needTier(horny, lustTiers)),
+		formatNeedLine("🚽", "Bladder", bladder, needTier(bladder, bladderTiers)),
+	}
+	base := fmt.Sprintf("%s: %s", player, strings.Join(sections, " | "))
 
 	if !showBuffs {
 		return base
@@ -308,7 +306,38 @@ func formatNeedsMessage(player string, state framework.PlayerState, buffs []stri
 
 	buffText := formatEffectList("none", buffs, maxEffectListSize)
 	debuffText := formatEffectList("none", debuffs, maxEffectListSize)
-	return fmt.Sprintf("%s, Buffs: %s, Debuffs: %s", base, buffText, debuffText)
+	return fmt.Sprintf("%s | Buffs: %s | Debuffs: %s", base, buffText, debuffText)
+}
+
+func formatNeedLine(icon, label string, value int64, tier string) string {
+	labelWithColon := label + ":"
+	return fmt.Sprintf(
+		"%s %s %s %s (%s)",
+		icon, labelWithColon, renderNeedBar(value), formatNeedValue(value), tier,
+	)
+}
+
+func formatNeedValue(value int64) string {
+	return fmt.Sprintf("%s/100", strconv.FormatInt(value, 10))
+}
+
+func renderNeedBar(value int64) string {
+	filled := int(value * needsProgressBarWidth / maxNeedValue)
+	if value%maxNeedValue != 0 && value*needsProgressBarWidth%maxNeedValue*2 >= maxNeedValue {
+		filled++
+	}
+	if filled > needsProgressBarWidth {
+		filled = needsProgressBarWidth
+	}
+	if filled < 0 {
+		filled = 0
+	}
+
+	return fmt.Sprintf(
+		"[%s%s]",
+		strings.Repeat(needsProgressBarFill, filled),
+		strings.Repeat(needsProgressBarEmpty, needsProgressBarWidth-filled),
+	)
 }
 
 func clampNeed(value int64) int64 {
