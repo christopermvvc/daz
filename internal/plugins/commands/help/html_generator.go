@@ -176,11 +176,11 @@ func (g *HTMLGenerator) generateAll(ctx context.Context, publish bool) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if err := g.ensureMarkerFile(); err != nil {
-		return err
-	}
 	if err := os.MkdirAll(g.config.HTMLOutputPath, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+	if err := g.ensureMarkerFile(); err != nil {
+		return err
 	}
 
 	entries := g.entryProvider()

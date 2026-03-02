@@ -534,8 +534,8 @@ func (p *Plugin) generateHelpHTML() {
 
 func (p *Plugin) generateInitialHelpHTML() {
 	defer p.wg.Done()
-	p.generateHelpForGenerator(p.generator, false)
-	p.generateHelpForGenerator(p.adminGenerator, false)
+	p.generateHelpForGenerator(p.generator, true)
+	p.generateHelpForGenerator(p.adminGenerator, true)
 }
 
 func (p *Plugin) generateHelpForGenerator(generator *HTMLGenerator, publish bool) {
