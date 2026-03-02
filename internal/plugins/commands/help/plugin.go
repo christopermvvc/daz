@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
@@ -15,7 +16,10 @@ import (
 )
 
 type Config struct {
-	ShowAliases bool `json:"show_aliases"`
+	ShowAliases    bool   `json:"show_aliases"`
+	GenerateHTML   bool   `json:"generate_html"`
+	HTMLOutputPath string `json:"html_output_path"`
+	HelpBaseURL    string `json:"help_base_url"`
 }
 
 type Plugin struct {
@@ -32,6 +36,10 @@ type Plugin struct {
 	cacheMu      sync.RWMutex
 	commandCache map[string]*commandEntry
 	aliasIndex   map[string]string
+
+	htmlDirty   atomic.Bool
+	htmlDirtyCh chan struct{}
+	generator   *HTMLGenerator
 
 	cooldownMu    sync.Mutex
 	lastHelpByKey map[string]time.Time
@@ -63,16 +71,28 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.lastHelpByKey = make(map[string]time.Time)
 
 	if len(config) > 0 {
+		p.config = &Config{
+			ShowAliases:    true,
+			GenerateHTML:   true,
+			HTMLOutputPath: defaultHelpOutputPath,
+			HelpBaseURL:    defaultHelpBaseURL,
+		}
 		if err := json.Unmarshal(config, &p.config); err != nil {
 			return fmt.Errorf("failed to unmarshal config: %w", err)
 		}
 	} else {
 		p.config = &Config{
-			ShowAliases: true,
+			ShowAliases:    true,
+			GenerateHTML:   true,
+			HTMLOutputPath: defaultHelpOutputPath,
+			HelpBaseURL:    defaultHelpBaseURL,
 		}
 	}
+	p.config.HTMLOutputPath = normalizeHelpOutputPath(p.config.HTMLOutputPath)
+	p.config.HelpBaseURL = normalizeHelpBaseURL(p.config.HelpBaseURL)
 
 	p.ctx, p.cancel = context.WithCancel(context.Background())
+	p.htmlDirtyCh = make(chan struct{}, 1)
 
 	return nil
 }
@@ -103,6 +123,12 @@ func (p *Plugin) Start() error {
 
 	if err := p.loadCacheFromDB(); err != nil {
 		logger.Error(p.name, "Failed to load command cache: %v", err)
+	}
+	if p.config.GenerateHTML {
+		p.generator = NewHTMLGenerator(p.config, p.snapshotAllEntries, p.config.ShowAliases)
+		p.markHTMLDirty()
+		p.wg.Add(1)
+		go p.runHTMLGenerator()
 	}
 
 	logger.Debug(p.name, "Started")
@@ -212,17 +238,7 @@ func (p *Plugin) handleHelpCommand(req *framework.PluginRequest) {
 		p.handleCommandHelp(req, strings.ToLower(commandArgs[0]))
 		return
 	}
-
-	messageBatches, err := p.buildCommandList(req)
-	if err != nil {
-		logger.Error(p.name, "Failed to build help list: %v", err)
-		p.sendResponse(req, "sorry mate, help list is crook right now")
-		return
-	}
-
-	for _, msg := range messageBatches {
-		p.sendResponse(req, msg)
-	}
+	p.sendResponse(req, fmt.Sprintf("Help: %s", p.config.HelpBaseURL))
 }
 
 func (p *Plugin) handleCommandHelp(req *framework.PluginRequest, command string) {
@@ -243,20 +259,8 @@ func (p *Plugin) handleCommandHelp(req *framework.PluginRequest, command string)
 		return
 	}
 
-	aliasText := "none"
-	if len(aliases) > 0 {
-		aliasText = strings.Join(aliases, ", ")
-	}
-
-	description := strings.TrimSpace(info.Description)
-	if description == "" {
-		description = "no description yet"
-	}
-	message := fmt.Sprintf("!%s - %s", info.Primary, description)
-	if p.config.ShowAliases && aliasText != "none" {
-		message = fmt.Sprintf("%s (aliases: %s)", message, aliasText)
-	}
-	p.sendResponse(req, p.limit(message))
+	_ = aliases
+	p.sendResponse(req, fmt.Sprintf("Help: %s#%s", p.config.HelpBaseURL, info.Primary))
 }
 
 type commandEntry struct {
@@ -368,6 +372,24 @@ func (p *Plugin) snapshotEntries(userRank int, isAdmin bool) []*commandEntry {
 	return entries
 }
 
+func (p *Plugin) snapshotAllEntries() []*commandEntry {
+	p.cacheMu.RLock()
+	entries := make([]*commandEntry, 0, len(p.commandCache))
+	for _, entry := range p.commandCache {
+		if entry.Primary == "help" || entry.Primary == "greeter" || entry.PluginName == "greeter" {
+			continue
+		}
+		clone := *entry
+		clone.Aliases = append([]string(nil), entry.Aliases...)
+		if strings.TrimSpace(clone.Description) == "" {
+			clone.Description = "no description yet"
+		}
+		entries = append(entries, &clone)
+	}
+	p.cacheMu.RUnlock()
+	return entries
+}
+
 func (p *Plugin) handleRegisterEvent(event framework.Event) error {
 	dataEvent, ok := event.(*framework.DataEvent)
 	if !ok || dataEvent.Data == nil || dataEvent.Data.PluginRequest == nil {
@@ -439,8 +461,61 @@ func (p *Plugin) handleRegisterEvent(event framework.Event) error {
 		sort.Strings(entry.Aliases)
 	}
 	p.cacheMu.Unlock()
+	if p.config.GenerateHTML {
+		p.markHTMLDirty()
+	}
 
 	return nil
+}
+
+func (p *Plugin) markHTMLDirty() {
+	p.htmlDirty.Store(true)
+	select {
+	case p.htmlDirtyCh <- struct{}{}:
+	default:
+	}
+}
+
+func (p *Plugin) runHTMLGenerator() {
+	defer p.wg.Done()
+	debounce := 2 * time.Second
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-p.htmlDirtyCh:
+			timer := time.NewTimer(debounce)
+			for {
+				select {
+				case <-p.ctx.Done():
+					timer.Stop()
+					return
+				case <-p.htmlDirtyCh:
+					if !timer.Stop() {
+						<-timer.C
+					}
+					timer.Reset(debounce)
+				case <-timer.C:
+					p.generateHelpHTML()
+					goto generated
+				}
+			}
+		}
+	generated:
+		continue
+	}
+}
+
+func (p *Plugin) generateHelpHTML() {
+	if p.generator == nil {
+		return
+	}
+	p.htmlDirty.Store(false)
+	ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
+	defer cancel()
+	if err := p.generator.GenerateAll(ctx); err != nil {
+		logger.Error(p.name, "Failed to generate help HTML: %v", err)
+	}
 }
 
 func (p *Plugin) loadCacheFromDB() error {
