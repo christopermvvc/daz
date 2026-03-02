@@ -393,6 +393,44 @@ func TestHandleMediaChange(t *testing.T) {
 	}
 }
 
+func TestHandleMediaChange_FromRawVideoChangeEvent(t *testing.T) {
+	p := NewPlugin(nil)
+	bus := newMockEventBus()
+
+	err := p.Initialize(bus)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Some event flows still send changeMedia as a raw VideoChangeEvent.
+	event := &framework.DataEvent{
+		EventType: eventbus.EventCytubeVideoChange,
+		Data: &framework.EventData{
+			RawEvent: &framework.VideoChangeEvent{
+				CytubeEvent: framework.CytubeEvent{
+					ChannelName: "raw-channel",
+				},
+				VideoID:   "raw123",
+				VideoType: "youtube",
+				Duration:  120,
+				Title:     "Raw Video",
+			},
+		},
+	}
+
+	err = p.handleMediaChange(event)
+	if err != nil {
+		t.Fatalf("handleMediaChange failed: %v", err)
+	}
+
+	if p.currentMedia == nil {
+		t.Fatal("Expected current media to be set from raw event")
+	}
+	if p.currentMedia.ID != "raw123" {
+		t.Errorf("Expected media ID to be 'raw123', got '%s'", p.currentMedia.ID)
+	}
+}
+
 func TestHandleNowPlayingCommand(t *testing.T) {
 	p := NewPlugin(nil)
 	bus := newMockEventBus()

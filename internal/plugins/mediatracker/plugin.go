@@ -414,7 +414,25 @@ func (p *Plugin) handleMediaUpdate(event framework.Event) error {
 func (p *Plugin) handleMediaChange(event framework.Event) error {
 	dataEvent, ok := event.(*framework.DataEvent)
 	if !ok || dataEvent.Data == nil || dataEvent.Data.VideoChange == nil {
-		return nil
+		if !ok || dataEvent.Data == nil {
+			return nil
+		}
+
+		rawEvent := dataEvent.Data.RawEvent
+
+		// Keep compatibility with older event shapes where room events are passed as raw events.
+		videoChangeEvent, ok := rawEvent.(*framework.VideoChangeEvent)
+		if !ok {
+			return nil
+		}
+
+		dataEvent.Data.VideoChange = &framework.VideoChangeData{
+			VideoID:   videoChangeEvent.VideoID,
+			VideoType: videoChangeEvent.VideoType,
+			Duration:  videoChangeEvent.Duration,
+			Title:     videoChangeEvent.Title,
+			Channel:   videoChangeEvent.ChannelName,
+		}
 	}
 
 	media := dataEvent.Data.VideoChange
