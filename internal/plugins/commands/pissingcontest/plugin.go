@@ -665,7 +665,10 @@ func (p *Plugin) startContest(ch *activeChallenge) {
 	room := ch.Room
 
 	p.sendPublic(room, fmt.Sprintf("%s -%s vs -%s", acceptAnnouncements[rand.Intn(len(acceptAnnouncements))], challenger, challenged))
-	p.sendPublic(room, p.contestKickoffLine(ch))
+	kickoffLine := p.contestKickoffLine(ch)
+	if strings.TrimSpace(kickoffLine) != "" {
+		p.sendPublic(room, kickoffLine)
+	}
 
 	go p.runContest(ch)
 }
@@ -757,6 +760,9 @@ func (p *Plugin) runContest(ch *activeChallenge) {
 }
 
 func (p *Plugin) contestKickoffLine(ch *activeChallenge) string {
+	if !enableContestOpeners() {
+		return ""
+	}
 	if ch == nil || ch.Challenger == "" || ch.Challenged == "" {
 		return "💬 The wall is lit and everybody is taking notes."
 	}
@@ -765,6 +771,10 @@ func (p *Plugin) contestKickoffLine(ch *activeChallenge) string {
 		return fmt.Sprintf("💸 %s put $%d on the board. %s", ch.Challenger, ch.Amount, base)
 	}
 	return "🤍 " + base
+}
+
+func enableContestOpeners() bool {
+	return false
 }
 
 func (p *Plugin) preContestFlavorLine(ch *activeChallenge) string {
