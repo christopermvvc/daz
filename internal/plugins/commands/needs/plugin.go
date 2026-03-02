@@ -155,16 +155,121 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	return nil
 }
 
+const maxNeedValue int64 = 100
+
+var hungerTiers = []string{
+	"Stuffed like a corpse",
+	"Satisfied",
+	"Little hungry",
+	"Getting peckish",
+	"Properly hungry",
+	"Ham-fisted hunger",
+	"I can smell food in the room",
+	"Your tongue is making prayers",
+	"Ravenous",
+	"Trespassingly starving",
+}
+
+var drunkTiers = []string{
+	"Sane as a nun",
+	"Just warm, barely",
+	"Tipsy",
+	"Lit",
+	"Already loud",
+	"Half-thorough",
+	"Pretty hammered",
+	"Blindly dancing",
+	"Seasick from your own piss",
+	"Absolutely coked out",
+}
+
+var highTiers = []string{
+	"Clear headed",
+	"Breezy",
+	"Slightly floaty",
+	"Head in the clouds",
+	"Cloudy",
+	"Fully glazed",
+	"High and horny",
+	"Lost in your own cinema",
+	"Spacey and loud",
+	"Too far gone to focus",
+}
+
+var lustTiers = []string{
+	"Chaste and polite",
+	"Curious",
+	"Feeling your vibe",
+	"Already thinking about it",
+	"On the edge",
+	"Needing attention",
+	"Getting needy",
+	"Riding hot currents",
+	"Unreasonably turn-on-able",
+	"Ready to break the internet",
+}
+
+var bladderTiers = []string{
+	"Dry as dust",
+	"Comfortably in control",
+	"Lightly full",
+	"Noticeably occupied",
+	"You feel it",
+	"Needs a run",
+	"Emergency mindset",
+	"One bad mistake away",
+	"Full and frantic",
+	"Fuller than a water balloon",
+}
+
 func formatNeedsMessage(player string, state framework.PlayerState) string {
+	hunger := clampNeed(state.Food)
+	drunk := clampNeed(state.Alcohol)
+	high := clampNeed(state.Weed)
+	horny := clampNeed(state.Lust)
+	bladder := clampNeed(state.Bladder)
+
 	return fmt.Sprintf(
-		"%s: %d Hunger, %d Drunk, %d High, %d Horny, %d Bladder",
+		"%s: %d Hunger (%s), %d Drunk (%s), %d High (%s), %d Horny (%s), %d Bladder (%s)",
 		player,
-		state.Food,
-		state.Alcohol,
-		state.Weed,
-		state.Lust,
-		state.Bladder,
+		hunger,
+		needTier(hunger, hungerTiers),
+		drunk,
+		needTier(drunk, drunkTiers),
+		high,
+		needTier(high, highTiers),
+		horny,
+		needTier(horny, lustTiers),
+		bladder,
+		needTier(bladder, bladderTiers),
 	)
+}
+
+func clampNeed(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	if value > maxNeedValue {
+		return maxNeedValue
+	}
+	return value
+}
+
+func needTier(value int64, labels []string) string {
+	idx := 0
+	switch {
+	case value >= maxNeedValue:
+		idx = len(labels) - 1
+	default:
+		idx = int(value / 10)
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(labels) {
+		idx = len(labels) - 1
+	}
+	return labels[idx]
 }
 
 func (p *Plugin) sendResponse(username, channel, message string) {
