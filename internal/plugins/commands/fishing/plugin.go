@@ -171,6 +171,12 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		return nil
 	}
 
+	bait, valid := baitFromArgs(req.Data.Command.Args)
+	if !valid {
+		p.sendResponse(channel, username, baitHelpMessage(), true)
+		return nil
+	}
+
 	remaining, ok, err := p.checkCooldown(channel, username)
 	if err != nil {
 		logger.Error(p.name, "Cooldown check failed: %v", err)
@@ -178,13 +184,11 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		return nil
 	}
 	if !ok {
-		p.sendResponse(channel, username, waitMessage(username, remaining), true)
-		return nil
-	}
-
-	bait, valid := baitFromArgs(req.Data.Command.Args)
-	if !valid {
-		p.sendResponse(channel, username, baitHelpMessage(), true)
+		message := waitMessage(username, remaining)
+		if bait.Cost == 0 {
+			message = waitMessageCiggie(username, remaining)
+		}
+		p.sendResponse(channel, username, message, true)
 		return nil
 	}
 
@@ -554,6 +558,17 @@ func waitMessage(username string, remaining time.Duration) string {
 		fmt.Sprintf("-%s mate, you just fished. %dh %dm left", username, hours, minutes),
 		fmt.Sprintf("give it a rest -%s, next cast in %dh %dm", username, hours, minutes),
 		fmt.Sprintf("-%s the tide ain't ready. %dh %dm to go", username, hours, minutes),
+	}
+	return responses[rand.Intn(len(responses))]
+}
+
+func waitMessageCiggie(username string, remaining time.Duration) string {
+	hours := int(remaining.Hours())
+	minutes := int(remaining.Minutes()) % 60
+	responses := []string{
+		fmt.Sprintf("-%s can't find any ciggies right now. try again in %dh %dm", username, hours, minutes),
+		fmt.Sprintf("-%s your ciggie stash is empty. %dh %dm til you score another", username, hours, minutes),
+		fmt.Sprintf("-%s no smokes for bait yet. %dh %dm to go", username, hours, minutes),
 	}
 	return responses[rand.Intn(len(responses))]
 }

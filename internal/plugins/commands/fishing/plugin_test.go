@@ -102,7 +102,7 @@ func TestFishingCooldown(t *testing.T) {
 		t.Fatalf("expected pm response")
 	}
 	message := strings.ToLower(bus.broadcasts[0].data.PrivateMessage.Message)
-	if !strings.Contains(message, "wait") && !strings.Contains(message, "tide") && !strings.Contains(message, "rest") && !strings.Contains(message, "left") {
+	if !strings.Contains(message, "wait") && !strings.Contains(message, "tide") && !strings.Contains(message, "rest") && !strings.Contains(message, "left") && !strings.Contains(message, "ciggie") && !strings.Contains(message, "smoke") {
 		t.Fatalf("unexpected cooldown message: %s", bus.broadcasts[0].data.PrivateMessage.Message)
 	}
 }
