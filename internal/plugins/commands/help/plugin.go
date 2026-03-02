@@ -141,9 +141,10 @@ func (p *Plugin) Start() error {
 		p.adminGenerator = NewHTMLGenerator(p.config, p.snapshotAllEntries, p.config.ShowAliases, p.config.IncludeRestricted)
 		p.adminGenerator.rootOutputFile = helpAdminOutputFile
 		p.adminGenerator.helpOutputFile = filepath.Join(helpAdminOutputDir, helpAdminHelpOutputFile)
-		p.markHTMLDirty()
 		p.wg.Add(1)
 		go p.runHTMLGenerator()
+		p.wg.Add(1)
+		go p.generateInitialHelpHTML()
 	}
 
 	logger.Debug(p.name, "Started")
@@ -527,18 +528,31 @@ func (p *Plugin) generateHelpHTML() {
 	if p.generator == nil {
 		return
 	}
-	p.generateHelpForGenerator(p.generator)
-	p.generateHelpForGenerator(p.adminGenerator)
+	p.generateHelpForGenerator(p.generator, true)
+	p.generateHelpForGenerator(p.adminGenerator, true)
 }
 
-func (p *Plugin) generateHelpForGenerator(generator *HTMLGenerator) {
+func (p *Plugin) generateInitialHelpHTML() {
+	defer p.wg.Done()
+	p.generateHelpForGenerator(p.generator, false)
+	p.generateHelpForGenerator(p.adminGenerator, false)
+}
+
+func (p *Plugin) generateHelpForGenerator(generator *HTMLGenerator, publish bool) {
 	if generator == nil {
 		return
 	}
 	p.htmlDirty.Store(false)
 	ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
 	defer cancel()
-	if err := generator.GenerateAll(ctx); err != nil {
+
+	var err error
+	if publish {
+		err = generator.GenerateAll(ctx)
+	} else {
+		err = generator.GenerateAllWithoutPublish(ctx)
+	}
+	if err != nil {
 		logger.Error(p.name, "Failed to generate help HTML: %v", err)
 	}
 }

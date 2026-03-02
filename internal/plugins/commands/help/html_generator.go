@@ -156,6 +156,14 @@ func mustResolveHelpFallbackPath() string {
 }
 
 func (g *HTMLGenerator) GenerateAll(ctx context.Context) error {
+	return g.generateAll(ctx, true)
+}
+
+func (g *HTMLGenerator) GenerateAllWithoutPublish(ctx context.Context) error {
+	return g.generateAll(ctx, false)
+}
+
+func (g *HTMLGenerator) generateAll(ctx context.Context, publish bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -199,9 +207,11 @@ func (g *HTMLGenerator) GenerateAll(ctx context.Context) error {
 		return fmt.Errorf("failed to write help HTML: %w", err)
 	}
 
-	if err := g.pushToGitHub(ctx); err != nil {
-		logger.Warn("help", "Help page generation completed locally but publish failed: %v", err)
-		logger.Warn("help", "Local page artifacts exist at:\n- %s\n- %s", rootOutputFile, helperOutputFile)
+	if publish {
+		if err := g.pushToGitHub(ctx); err != nil {
+			logger.Warn("help", "Help page generation completed locally but publish failed: %v", err)
+			logger.Warn("help", "Local page artifacts exist at:\n- %s\n- %s", rootOutputFile, helperOutputFile)
+		}
 	}
 
 	logger.Info("help", "Help HTML generation completed")

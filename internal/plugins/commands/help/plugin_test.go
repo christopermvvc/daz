@@ -639,6 +639,50 @@ func TestGenerateHelpHTMLFiltersAdminCommandsFromPublicPage(t *testing.T) {
 	}
 }
 
+func TestStartGeneratesInitialHelpHTML(t *testing.T) {
+	plugin := New().(*Plugin)
+	bus := newMockEventBus()
+
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	plugin.config.HTMLOutputPath = t.TempDir()
+	if err := plugin.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() {
+		if err := plugin.Stop(); err != nil {
+			t.Errorf("Stop() error = %v", err)
+		}
+	}()
+
+	waitForFile := func(path string) bool {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(path); err == nil {
+				return true
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		return false
+	}
+
+	publicHelp := filepath.Join(plugin.config.HTMLOutputPath, "index.html")
+	adminHelp := filepath.Join(plugin.config.HTMLOutputPath, helpAdminOutputFile)
+	adminCommandHelp := filepath.Join(plugin.config.HTMLOutputPath, helpAdminOutputDir, helpAdminHelpOutputFile)
+
+	if !waitForFile(publicHelp) {
+		t.Fatalf("expected startup public help file to be generated: %s", publicHelp)
+	}
+	if !waitForFile(adminHelp) {
+		t.Fatalf("expected startup admin help file to be generated: %s", adminHelp)
+	}
+	if !waitForFile(adminCommandHelp) {
+		t.Fatalf("expected startup admin command help file to be generated: %s", adminCommandHelp)
+	}
+}
+
 func TestCheckHelpCooldown(t *testing.T) {
 	plugin := New().(*Plugin)
 	bus := newMockEventBus()

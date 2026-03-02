@@ -153,3 +153,31 @@ func TestHelpGenerateAllUsesConfiguredOutputFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestHelpGenerateAllWithoutPublishSkipsGitPush(t *testing.T) {
+	outputDir := t.TempDir()
+	config := &Config{
+		ShowAliases:       true,
+		GenerateHTML:      true,
+		HTMLOutputPath:    outputDir,
+		HelpBaseURL:       defaultHelpBaseURL,
+		IncludeRestricted: true,
+	}
+	generator := NewHTMLGenerator(config, func() []*commandEntry {
+		return []*commandEntry{{Primary: "ping", Description: "ping the bot"}}
+	}, true, true)
+
+	called := false
+	generator.gitRunner = func(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+		called = true
+		return "", nil
+	}
+
+	if err := generator.GenerateAllWithoutPublish(context.Background()); err != nil {
+		t.Fatalf("GenerateAllWithoutPublish() error = %v", err)
+	}
+
+	if called {
+		t.Fatalf("expected GenerateAllWithoutPublish to avoid git calls")
+	}
+}
