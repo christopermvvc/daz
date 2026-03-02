@@ -196,7 +196,8 @@ func (g *HTMLGenerator) GenerateAll(ctx context.Context) error {
 	}
 
 	if err := g.pushToGitHub(ctx); err != nil {
-		logger.Warn("help", "Failed to push help HTML (continuing anyway): %v", err)
+		logger.Warn("help", "Help page generation completed locally but publish failed: %v", err)
+		logger.Warn("help", "Local page artifacts exist at:\n- %s\n- %s/help/index.html", rootOutputFile, g.config.HTMLOutputPath)
 	}
 
 	logger.Info("help", "Help HTML generation completed")
@@ -366,13 +367,15 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 	}()
 
 	githubToken := os.Getenv("GITHUB_TOKEN")
+	logger.Info("help", "Publishing help pages to GitHub Pages from %s (branch gh-pages)", g.config.HTMLOutputPath)
 
 	runAuthPush := func() error {
 		if githubToken == "" {
 			deployKey, err := g.deployKeyResolver()
 			if err != nil {
-				return fmt.Errorf("no GitHub token configured")
+				return fmt.Errorf("no GitHub token and no deploy key configured")
 			}
+			logger.Info("help", "Using SSH deploy key for help page publish: %s", deployKey)
 			if _, err := g.runGit(ctx, []string{
 				"GIT_TERMINAL_PROMPT=0",
 				"GIT_SSH_COMMAND=ssh -i " + deployKey + " -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new",
@@ -382,6 +385,7 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 			return nil
 		}
 
+		logger.Info("help", "Using GitHub token for help page publish")
 		authURL := fmt.Sprintf("https://x-access-token:%s@github.com/hildolfr/daz.git", githubToken)
 		if _, err := g.runGit(ctx, []string{"GIT_TERMINAL_PROMPT=0"}, "push", authURL, "gh-pages", "--force"); err != nil {
 			return fmt.Errorf("push failed: %w", err)
@@ -426,8 +430,10 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 	}
 	if err := runAuthPush(); err != nil {
 		needsRecovery = true
+		logger.Warn("help", "Help page publish failed during git push: %v", err)
 		return err
 	}
+	logger.Info("help", "Help pages successfully published to GitHub Pages (gh-pages)")
 
 	return nil
 }
