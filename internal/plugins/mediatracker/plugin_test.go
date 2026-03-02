@@ -315,6 +315,7 @@ func TestPluginStart(t *testing.T) {
 	// Check that it subscribed to the right events
 	expectedSubscriptions := []string{
 		eventbus.EventCytubeVideoChange,
+		"cytube.event.setCurrent",
 		"cytube.event.queue",
 		eventbus.EventCytubeMediaUpdate,
 		"cytube.event.playlist",

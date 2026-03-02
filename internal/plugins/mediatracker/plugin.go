@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/hildolfr/daz/internal/logger"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,9 @@ type Plugin struct {
 
 	// Deduplication tracking per channel
 	lastPlaylistInfo map[string]*playlistInfo
+
+	// Latest unresolved setCurrent index per channel (1:1 playlist index)
+	pendingSetCurrentIndexes map[string]int
 }
 
 type playlistInfo struct {
@@ -76,7 +80,8 @@ func New() framework.Plugin {
 			Name:  "mediatracker",
 			State: "initialized",
 		},
-		lastPlaylistInfo: make(map[string]*playlistInfo),
+		lastPlaylistInfo:         make(map[string]*playlistInfo),
+		pendingSetCurrentIndexes: make(map[string]int),
 	}
 }
 
@@ -112,7 +117,8 @@ func NewPlugin(config *Config) *Plugin {
 			Name:  "mediatracker",
 			State: "initialized",
 		},
-		lastPlaylistInfo: make(map[string]*playlistInfo),
+		lastPlaylistInfo:         make(map[string]*playlistInfo),
+		pendingSetCurrentIndexes: make(map[string]int),
 	}
 }
 
@@ -194,6 +200,10 @@ func (p *Plugin) Start() error {
 	if err := p.eventBus.Subscribe(eventbus.EventCytubeVideoChange, p.handleMediaChange); err != nil {
 		p.status.LastError = err
 		return fmt.Errorf("failed to subscribe to media change events: %w", err)
+	}
+	if err := p.eventBus.Subscribe("cytube.event.setCurrent", p.handleMediaChange); err != nil {
+		p.status.LastError = err
+		return fmt.Errorf("failed to subscribe to setCurrent events: %w", err)
 	}
 
 	// Subscribe to queue events
@@ -412,38 +422,100 @@ func (p *Plugin) handleMediaUpdate(event framework.Event) error {
 
 // handleMediaChange processes media change events
 func (p *Plugin) handleMediaChange(event framework.Event) error {
-	dataEvent, ok := event.(*framework.DataEvent)
-	if !ok || dataEvent.Data == nil || dataEvent.Data.VideoChange == nil {
-		if !ok || dataEvent.Data == nil {
+	var (
+		media           *framework.VideoChangeData
+		channel         string
+		setCurrentIndex string
+	)
+
+	switch e := event.(type) {
+	case *framework.DataEvent:
+		if e.Data == nil {
 			return nil
 		}
-
-		rawEvent := dataEvent.Data.RawEvent
-
-		// Keep compatibility with older event shapes where room events are passed as raw events.
-		videoChangeEvent, ok := rawEvent.(*framework.VideoChangeEvent)
-		if !ok {
-			return nil
+		if e.Data.VideoChange != nil {
+			media = e.Data.VideoChange
+			channel = media.Channel
 		}
 
-		dataEvent.Data.VideoChange = &framework.VideoChangeData{
-			VideoID:   videoChangeEvent.VideoID,
-			VideoType: videoChangeEvent.VideoType,
-			Duration:  videoChangeEvent.Duration,
-			Title:     videoChangeEvent.Title,
-			Channel:   videoChangeEvent.ChannelName,
+		rawEvent := e.Data.RawEvent
+		if media == nil && rawEvent != nil {
+			videoChangeEvent, ok := rawEvent.(*framework.VideoChangeEvent)
+			if !ok {
+				return nil
+			}
+			media = &framework.VideoChangeData{
+				VideoID:   videoChangeEvent.VideoID,
+				VideoType: videoChangeEvent.VideoType,
+				Duration:  videoChangeEvent.Duration,
+				Title:     videoChangeEvent.Title,
+				Channel:   videoChangeEvent.ChannelName,
+			}
+			setCurrentIndex = videoChangeEvent.Metadata["setCurrentIndex"]
+			channel = videoChangeEvent.ChannelName
 		}
-	}
-
-	media := dataEvent.Data.VideoChange
-	now := time.Now()
-
-	// Get channel from event (must be present)
-	channel := media.Channel
-	if channel == "" {
-		logger.Warn("MediaTracker", "Skipping video change event without channel information")
+	case *framework.VideoChangeEvent:
+		media = &framework.VideoChangeData{
+			VideoID:   e.VideoID,
+			VideoType: e.VideoType,
+			Duration:  e.Duration,
+			Title:     e.Title,
+			Channel:   e.ChannelName,
+		}
+		setCurrentIndex = e.Metadata["setCurrentIndex"]
+		channel = e.ChannelName
+	default:
 		return nil
 	}
+
+	if media == nil {
+		return nil
+	}
+
+	if channel == "" {
+		channel = media.Channel
+	}
+
+	// If only an index is provided (setCurrent payload), resolve from queue state.
+	if media.VideoID == "" && setCurrentIndex != "" && channel != "" {
+		resolved, err := p.resolveSetCurrentFromQueue(channel, setCurrentIndex)
+		if err != nil {
+			logger.Warn("MediaTracker", "Failed to resolve setCurrent index %s for channel %s: %v", setCurrentIndex, channel, err)
+		}
+		if resolved != nil {
+			media = &framework.VideoChangeData{
+				VideoID:   resolved.MediaID,
+				VideoType: resolved.MediaType,
+				Duration:  resolved.Duration,
+				Title:     resolved.Title,
+				Channel:   channel,
+			}
+		} else {
+			if idx, err := strconv.Atoi(setCurrentIndex); err == nil {
+				p.mu.Lock()
+				p.pendingSetCurrentIndexes[channel] = idx
+				p.mu.Unlock()
+			}
+			logger.Warn("MediaTracker", "Skipping setCurrent for channel %s: no media found for index %s", channel, setCurrentIndex)
+			return nil
+		}
+	}
+
+	if media.VideoID == "" || channel == "" {
+		logger.Warn("MediaTracker", "Skipping media change event without media or channel information")
+		return nil
+	}
+
+	// Persist queue-derived index info for next media update
+	if setCurrentIndex != "" {
+		p.mu.Lock()
+		delete(p.pendingSetCurrentIndexes, channel)
+		p.mu.Unlock()
+	}
+
+	now := time.Now()
+
+	channel = media.Channel
 
 	var previousMedia *MediaState
 	p.mu.Lock()
@@ -518,6 +590,152 @@ func (p *Plugin) handleMediaChange(event framework.Event) error {
 	logger.Info("MediaTracker", "Now playing: %s (%s, %ds)", media.Title, media.VideoType, media.Duration)
 	p.status.EventsHandled++
 	return nil
+}
+
+func (p *Plugin) resolveSetCurrentFromQueue(channel, setCurrentIndex string) (*framework.QueueItem, error) {
+	index, err := strconv.Atoi(setCurrentIndex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid setCurrent index: %w", err)
+	}
+
+	candidates := []int{index}
+	if index > 0 {
+		candidates = append(candidates, index-1)
+	}
+
+	for _, position := range candidates {
+		item, found, err := p.lookupQueueItemByPosition(channel, position)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return item, nil
+		}
+	}
+
+	itemByUID, found, err := p.lookupQueueItemByUID(channel, setCurrentIndex)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		return itemByUID, nil
+	}
+
+	return nil, nil
+}
+
+func (p *Plugin) lookupQueueItemByPosition(channel string, position int) (*framework.QueueItem, bool, error) {
+	query := `
+		SELECT media_id, media_type, title, duration, queued_by
+		FROM daz_mediatracker_queue
+		WHERE channel = $1 AND position = $2
+		ORDER BY id DESC
+		LIMIT 1
+	`
+
+	ctx, cancel := context.WithTimeout(p.ctx, 3*time.Second)
+	defer cancel()
+
+	rows, err := p.sqlClient.QueryContext(ctx, query, channel, position)
+	if err != nil {
+		return nil, false, fmt.Errorf("query queue by position: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error("MediaTracker", "Failed to close queue rows: %v", err)
+		}
+	}()
+
+	if !rows.Next() {
+		return nil, false, nil
+	}
+
+	var item framework.QueueItem
+	if err := rows.Scan(
+		&item.MediaID,
+		&item.MediaType,
+		&item.Title,
+		&item.Duration,
+		&item.QueuedBy,
+	); err != nil {
+		return nil, false, fmt.Errorf("scan queue item by position: %w", err)
+	}
+
+	return &item, true, nil
+}
+
+func (p *Plugin) lookupQueueItemByUID(channel, uid string) (*framework.QueueItem, bool, error) {
+	query := `
+		SELECT media_id, media_type, title, duration, queued_by
+		FROM daz_mediatracker_queue
+		WHERE channel = $1 AND uid = $2
+		ORDER BY id DESC
+		LIMIT 1
+	`
+
+	ctx, cancel := context.WithTimeout(p.ctx, 3*time.Second)
+	defer cancel()
+
+	rows, err := p.sqlClient.QueryContext(ctx, query, channel, uid)
+	if err != nil {
+		return nil, false, fmt.Errorf("query queue by uid: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			logger.Error("MediaTracker", "Failed to close queue rows: %v", err)
+		}
+	}()
+
+	if !rows.Next() {
+		return nil, false, nil
+	}
+
+	var item framework.QueueItem
+	if err := rows.Scan(
+		&item.MediaID,
+		&item.MediaType,
+		&item.Title,
+		&item.Duration,
+		&item.QueuedBy,
+	); err != nil {
+		return nil, false, fmt.Errorf("scan queue item by uid: %w", err)
+	}
+
+	return &item, true, nil
+}
+
+func (p *Plugin) applyPendingSetCurrent(channel string) {
+	p.mu.Lock()
+	pendingIndex, ok := p.pendingSetCurrentIndexes[channel]
+	p.mu.Unlock()
+	if !ok {
+		return
+	}
+
+	resolved, err := p.resolveSetCurrentFromQueue(channel, strconv.Itoa(pendingIndex))
+	if err != nil {
+		logger.Warn("MediaTracker", "Unable to resolve pending setCurrent index %d for channel %s: %v", pendingIndex, channel, err)
+		return
+	}
+	if resolved == nil {
+		return
+	}
+
+	p.mu.Lock()
+	delete(p.pendingSetCurrentIndexes, channel)
+	p.mu.Unlock()
+
+	if err := p.handleMediaChange(&framework.VideoChangeEvent{
+		CytubeEvent: framework.CytubeEvent{
+			ChannelName: channel,
+		},
+		VideoID:   resolved.MediaID,
+		VideoType: resolved.MediaType,
+		Duration:  resolved.Duration,
+		Title:     resolved.Title,
+	}); err != nil {
+		logger.Warn("MediaTracker", "Failed to apply pending setCurrent media for channel %s: %v", channel, err)
+	}
 }
 
 // handleQueueUpdate processes queue update events
@@ -1173,6 +1391,7 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 		}
 
 		logger.Info("MediaTracker", "Finished processing %d playlist items in %v", len(playlistArray.Items), time.Since(startTime))
+		p.applyPendingSetCurrent(channel)
 		return nil
 	}
 
