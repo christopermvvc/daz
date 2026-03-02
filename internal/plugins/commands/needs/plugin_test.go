@@ -107,7 +107,7 @@ func TestFormatNeedsMessage(t *testing.T) {
 		msg := formatNeedsMessage("alice", state, []string{"Lucky", "Hot"}, []string{"STD"}, false, 3)
 		assert.Equal(
 			t,
-			"alice: 🍽 Hunger: [█░░░░░░░] 12/100 (Satisfied) | 🍺 Drunk: [████░░░░] 45/100 (Already loud) | 🍃 High: [███████░] 87/100 (Spacey and loud) | 🌶 Horny: [███░░░░░] 32/100 (Already thinking about it) | 🚽 Bladder: [████████] 99/100 (Fuller than a water balloon)",
+			"alice: 🍽 Hunger: [█░░░░░░░] (Satisfied) || 🍺 Drunk: [████░░░░] (Already loud) || 🍃 High: [███████░] (Spacey and loud) || 🌶 Horny: [███░░░░░] (Already thinking about it) || 🚽 Bladder: [████████] (Fuller than a water balloon)",
 			msg,
 		)
 		assert.NotContains(t, msg, "Buffs:")
@@ -118,16 +118,13 @@ func TestFormatNeedsMessage(t *testing.T) {
 		msg := formatNeedsMessage("alice", state, []string{"Lucky", "Hot"}, []string{"STD", "Clumsy"}, true, 1)
 		assert.Equal(
 			t,
-			"alice: 🍽 Hunger: [█░░░░░░░] 12/100 (Satisfied) | 🍺 Drunk: [████░░░░] 45/100 (Already loud) | 🍃 High: [███████░] 87/100 (Spacey and loud) | 🌶 Horny: [███░░░░░] 32/100 (Already thinking about it) | 🚽 Bladder: [████████] 99/100 (Fuller than a water balloon) | Buffs: Lucky +1 more | Debuffs: STD +1 more",
+			"alice: 🍽 Hunger: [█░░░░░░░] (Satisfied) || 🍺 Drunk: [████░░░░] (Already loud) || 🍃 High: [███████░] (Spacey and loud) || 🌶 Horny: [███░░░░░] (Already thinking about it) || 🚽 Bladder: [████████] (Fuller than a water balloon) || Buffs: Lucky +1 more || Debuffs: STD +1 more",
 			msg,
 		)
 	})
 }
 
 func TestNeedFormatterHelpers(t *testing.T) {
-	assert.Equal(t, "99/100", formatNeedValue(99))
-	assert.Equal(t, "100/100", formatNeedValue(100))
-
 	t.Run("renders progress bar for min and max", func(t *testing.T) {
 		assert.Equal(t, "[░░░░░░░░]", renderNeedBar(0))
 		assert.Equal(t, "[████████]", renderNeedBar(100))
@@ -136,7 +133,7 @@ func TestNeedFormatterHelpers(t *testing.T) {
 
 	t.Run("formats need line", func(t *testing.T) {
 		result := formatNeedLine("🍺", "Drunk", 45, "already lit")
-		assert.Equal(t, "🍺 Drunk: [████░░░░] 45/100 (already lit)", result)
+		assert.Equal(t, "🍺 Drunk: [████░░░░] (already lit)", result)
 	})
 }
 
@@ -246,7 +243,7 @@ func TestHandleCommandCanSkipBuffTracker(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(
 		t,
-		"alice: 🍽 Hunger: [█░░░░░░░] 10/100 (Satisfied) | 🍺 Drunk: [█░░░░░░░] 11/100 (Just warm, barely) | 🍃 High: [█░░░░░░░] 12/100 (Breezy) | 🌶 Horny: [█░░░░░░░] 13/100 (Curious) | 🚽 Bladder: [█░░░░░░░] 14/100 (Comfortably in control)",
+		"alice: 🍽 Hunger: [█░░░░░░░] (Satisfied) || 🍺 Drunk: [█░░░░░░░] (Just warm, barely) || 🍃 High: [█░░░░░░░] (Breezy) || 🌶 Horny: [█░░░░░░░] (Curious) || 🚽 Bladder: [█░░░░░░░] (Comfortably in control)",
 		output,
 	)
 	mockBus.AssertExpectations(t)
@@ -332,7 +329,7 @@ func TestHandleCommandLoadsBuffTracker(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(
 		t,
-		"alice: 🍽 Hunger: [░░░░░░░░] 0/100 (Stuffed like a corpse) | 🍺 Drunk: [░░░░░░░░] 0/100 (Sane as a nun) | 🍃 High: [░░░░░░░░] 0/100 (Clear headed) | 🌶 Horny: [░░░░░░░░] 0/100 (Chaste and polite) | 🚽 Bladder: [░░░░░░░░] 0/100 (Dry as dust) | Buffs: Lucky +1 more | Debuffs: STD +1 more",
+		"alice: 🍽 Hunger: [░░░░░░░░] (Stuffed like a corpse) || 🍺 Drunk: [░░░░░░░░] (Sane as a nun) || 🍃 High: [░░░░░░░░] (Clear headed) || 🌶 Horny: [░░░░░░░░] (Chaste and polite) || 🚽 Bladder: [░░░░░░░░] (Dry as dust) || Buffs: Lucky +1 more || Debuffs: STD +1 more",
 		output,
 	)
 	mockBus.AssertExpectations(t)

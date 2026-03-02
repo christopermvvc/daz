@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -294,7 +293,7 @@ func formatNeedsMessage(player string, state framework.PlayerState, buffs []stri
 		formatNeedLine("🌶", "Horny", horny, needTier(horny, lustTiers)),
 		formatNeedLine("🚽", "Bladder", bladder, needTier(bladder, bladderTiers)),
 	}
-	base := fmt.Sprintf("%s: %s", player, strings.Join(sections, " | "))
+	base := fmt.Sprintf("%s: %s", player, strings.Join(sections, " || "))
 
 	if !showBuffs {
 		return base
@@ -306,19 +305,15 @@ func formatNeedsMessage(player string, state framework.PlayerState, buffs []stri
 
 	buffText := formatEffectList("none", buffs, maxEffectListSize)
 	debuffText := formatEffectList("none", debuffs, maxEffectListSize)
-	return fmt.Sprintf("%s | Buffs: %s | Debuffs: %s", base, buffText, debuffText)
+	return fmt.Sprintf("%s || Buffs: %s || Debuffs: %s", base, buffText, debuffText)
 }
 
 func formatNeedLine(icon, label string, value int64, tier string) string {
 	labelWithColon := label + ":"
 	return fmt.Sprintf(
-		"%s %s %s %s (%s)",
-		icon, labelWithColon, renderNeedBar(value), formatNeedValue(value), tier,
+		"%s %s %s (%s)",
+		icon, labelWithColon, renderNeedBar(value), tier,
 	)
-}
-
-func formatNeedValue(value int64) string {
-	return fmt.Sprintf("%s/100", strconv.FormatInt(value, 10))
 }
 
 func renderNeedBar(value int64) string {
