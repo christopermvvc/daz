@@ -61,6 +61,7 @@ type contestModifiers struct {
 type contestEvent struct {
 	Message string
 	Forfeit bool
+	Target  string
 }
 
 func (s contestResult) score() int {

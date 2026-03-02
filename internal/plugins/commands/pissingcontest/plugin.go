@@ -941,9 +941,21 @@ func formatDualStats(ch *activeChallenge) string {
 		return ""
 	}
 	return fmt.Sprintf(
-		"📊 %s || %s",
-		formatStats(ch.ChallengerStats, ch.ChallengerScore, ch.Challenger),
-		formatStats(ch.ChallengedStats, ch.ChallengedScore, ch.Challenged),
+		"📊 %s | %s",
+		formatCompactStats(ch.ChallengerStats, ch.ChallengerScore, ch.Challenger),
+		formatCompactStats(ch.ChallengedStats, ch.ChallengedScore, ch.Challenged),
+	)
+}
+
+func formatCompactStats(stats contestResult, score int, user string) string {
+	return fmt.Sprintf(
+		"-%s 📏%.1fm 💧%dml 🎯%.0f%% ⏱️%.0fs [%d]",
+		user,
+		stats.distance,
+		int(math.Round(stats.volume)),
+		stats.aim,
+		stats.duration,
+		score,
 	)
 }
 
@@ -992,7 +1004,7 @@ func (p *Plugin) announceSpecialEvents(ch *activeChallenge) {
 	}
 
 	for idx, message := range events {
-		msg := message.Message
+		msg := p.formatAttributedEventLine(ch, message)
 		delay := time.Duration(4+idx) * time.Second
 		time.AfterFunc(delay, func() {
 			select {
@@ -1002,6 +1014,48 @@ func (p *Plugin) announceSpecialEvents(ch *activeChallenge) {
 				p.sendPublic(ch.Room, msg)
 			}
 		})
+	}
+}
+
+func (p *Plugin) formatAttributedEventLine(ch *activeChallenge, message contestEvent) string {
+	actor := strings.TrimSpace(message.Target)
+	msg := strings.TrimSpace(message.Message)
+	if msg == "" {
+		return ""
+	}
+
+	switch actor {
+	case "challenger":
+		return fmt.Sprintf("-%s %s", ch.Challenger, msg)
+	case "challenged":
+		return fmt.Sprintf("-%s %s", ch.Challenged, msg)
+	case "both", "":
+		return fmt.Sprintf("-%s %s", ch.Challenger, msg)
+	default:
+		return fmt.Sprintf("-%s %s", actor, msg)
+	}
+}
+
+func (p *Plugin) eventMessageForTarget(evt contestEvent, role string) string {
+	if evt.Message == "" {
+		return ""
+	}
+	target := strings.ToLower(strings.TrimSpace(evt.Target))
+	role = strings.ToLower(strings.TrimSpace(role))
+
+	switch {
+	case target == "", target == "both", target == "all":
+		return evt.Message
+	case target == "challenger" || target == "challenged":
+		if target == role {
+			return evt.Message
+		}
+		return ""
+	default:
+		if normalizeUsername(target) == normalizeUsername(role) {
+			return evt.Message
+		}
+		return ""
 	}
 }
 
@@ -1121,12 +1175,8 @@ func (p *Plugin) evaluateContestFailure(ch *activeChallenge) (challengerFail boo
 		}
 		baseChallengerFail = true
 		baseChallengedFail = true
-		if challengerMessage == "" {
-			challengerMessage = evt.Message
-		}
-		if challengedMessage == "" {
-			challengedMessage = evt.Message
-		}
+		challengerMessage = firstNonEmpty(challengerMessage, p.eventMessageForTarget(evt, "challenger"))
+		challengedMessage = firstNonEmpty(challengedMessage, p.eventMessageForTarget(evt, "challenged"))
 	}
 	for _, evt := range ch.weatherEvents {
 		if !evt.Forfeit || evt.Message == "" {
@@ -1134,12 +1184,8 @@ func (p *Plugin) evaluateContestFailure(ch *activeChallenge) (challengerFail boo
 		}
 		baseChallengerFail = true
 		baseChallengedFail = true
-		if challengerMessage == "" {
-			challengerMessage = evt.Message
-		}
-		if challengedMessage == "" {
-			challengedMessage = evt.Message
-		}
+		challengerMessage = firstNonEmpty(challengerMessage, p.eventMessageForTarget(evt, "challenger"))
+		challengedMessage = firstNonEmpty(challengedMessage, p.eventMessageForTarget(evt, "challenged"))
 	}
 
 	if baseChallengerFail || baseChallengedFail {
