@@ -443,6 +443,7 @@ func (p *Plugin) startContest(ch *activeChallenge) {
 	room := ch.Room
 
 	p.sendPublic(room, fmt.Sprintf("%s -%s vs -%s", acceptAnnouncements[rand.Intn(len(acceptAnnouncements))], challenger, challenged))
+	p.sendPublic(room, p.contestKickoffLine(ch))
 
 	go p.runContest(ch)
 }
@@ -503,6 +504,7 @@ func (p *Plugin) runContest(ch *activeChallenge) {
 			Message: "the weather shifted mid-contest",
 		})
 	}
+	p.sendPublic(ch.Room, p.preContestFlavorLine(ch))
 
 	challengerScore := challengerStats.score()
 	challengedScore := challengedStats.score()
@@ -529,6 +531,50 @@ func (p *Plugin) runContest(ch *activeChallenge) {
 	p.resolveContest(ch)
 }
 
+func (p *Plugin) contestKickoffLine(ch *activeChallenge) string {
+	if ch == nil || ch.Challenger == "" || ch.Challenged == "" {
+		return "💬 The wall is lit and everybody is taking notes."
+	}
+	base := randomFromSlice(contestOpeners)
+	if ch.Amount > 0 {
+		return fmt.Sprintf("💸 %s put $%d on the board. %s", ch.Challenger, ch.Amount, base)
+	}
+	return "🤍 " + base
+}
+
+func (p *Plugin) preContestFlavorLine(ch *activeChallenge) string {
+	if ch == nil {
+		return "🔎 Something is about to get weird."
+	}
+	taunt := randomFromSlice(contestTaunts)
+	return fmt.Sprintf("💬 %s vs %s, %s", ch.Challenger, ch.Challenged, taunt)
+}
+
+func (p *Plugin) victoryFlavorLine(winner string, winnerScore, loserScore int) string {
+	flair := randomFromSlice(victoryFlavorMessages)
+	diff := winnerScore - loserScore
+	switch {
+	case diff > 300:
+		return fmt.Sprintf("💥 %s absolutely owned this: %s", winner, flair)
+	case diff > 0:
+		return fmt.Sprintf("💥 %s takes it: %s", winner, flair)
+	default:
+		return fmt.Sprintf("💥 %s edges out with dirty margins, %s", winner, flair)
+	}
+}
+
+func (p *Plugin) tieFlavorLine(ch *activeChallenge) string {
+	if ch == nil {
+		return "🧻 This run ends in static and no clean winner."
+	}
+	taunt := randomFromSlice(tieFlavorMessages)
+	return fmt.Sprintf("🧯 %s and %s are neck-and-neck, %s", ch.Challenger, ch.Challenged, taunt)
+}
+
+func failureFlavorLine() string {
+	return fmt.Sprintf("🚨 %s", randomFromSlice(failureFlavorMessages))
+}
+
 func (p *Plugin) resolveContest(ch *activeChallenge) {
 	// Instant failure check
 	challengerFail, challengedFail, challengerFailMsg, challengedFailMsg := p.evaluateContestFailure(ch)
@@ -543,7 +589,12 @@ func (p *Plugin) resolveContest(ch *activeChallenge) {
 
 	if ch.ChallengerScore == ch.ChallengedScore {
 		p.sendPublic(ch.Room, "No winner! Both of you put in the same amount of crap.")
+		p.sendPublic(ch.Room, p.tieFlavorLine(ch))
 		p.announceSpecialEvents(ch)
+		p.sendRibbonTaunt(ch.Room, ch.ChallengerStats, ch.Challenger)
+		p.sendPublic(ch.Room, formatStats(ch.ChallengerStats, ch.ChallengerScore, ch.Challenger))
+		p.sendRibbonTaunt(ch.Room, ch.ChallengedStats, ch.Challenged)
+		p.sendPublic(ch.Room, formatStats(ch.ChallengedStats, ch.ChallengedScore, ch.Challenged))
 		p.recordOutcome(ch, "", "", true)
 		ctx, cancel := p.withTimeout(10 * time.Second)
 		defer cancel()
@@ -552,8 +603,10 @@ func (p *Plugin) resolveContest(ch *activeChallenge) {
 	}
 	if winner == ch.Challenger {
 		p.sendPublic(ch.Room, fmt.Sprintf("🏆 -%s ['%s'] fuckin WINS with %d points!", winner, ch.ChallengerChar.Name, ch.ChallengerScore))
+		p.sendPublic(ch.Room, p.victoryFlavorLine(winner, ch.ChallengerScore, ch.ChallengedScore))
 	} else {
 		p.sendPublic(ch.Room, fmt.Sprintf("🏆 -%s ['%s'] fuckin WINS with %d points!", winner, ch.ChallengedChar.Name, ch.ChallengedScore))
+		p.sendPublic(ch.Room, p.victoryFlavorLine(winner, ch.ChallengedScore, ch.ChallengerScore))
 	}
 
 	if ch.Amount > 0 {
@@ -575,7 +628,9 @@ func (p *Plugin) resolveContest(ch *activeChallenge) {
 	p.announceSpecialEvents(ch)
 
 	p.recordOutcome(ch, winner, loser, true)
+	p.sendRibbonTaunt(ch.Room, ch.ChallengerStats, ch.Challenger)
 	p.sendPublic(ch.Room, formatStats(ch.ChallengerStats, ch.ChallengerScore, ch.Challenger))
+	p.sendRibbonTaunt(ch.Room, ch.ChallengedStats, ch.Challenged)
 	p.sendPublic(ch.Room, formatStats(ch.ChallengedStats, ch.ChallengedScore, ch.Challenged))
 	ctx, cancel := p.withTimeout(10 * time.Second)
 	defer cancel()
@@ -638,8 +693,39 @@ func (p *Plugin) resolveFailure(ch *activeChallenge, winner, loser string) {
 		p.sendPublic(ch.Room, fmt.Sprintf("💦 -%s %s! -%s WINS!", ch.Challenger, challengerMessage, winner))
 		p.handleFailureOutcome(ch, winner, loser, challengerMessage)
 	}
+	p.sendPublic(ch.Room, failureFlavorLine())
+	p.sendRibbonTaunt(ch.Room, ch.ChallengerStats, ch.Challenger)
+	p.sendPublic(ch.Room, formatStats(ch.ChallengerStats, ch.ChallengerScore, ch.Challenger))
+	p.sendRibbonTaunt(ch.Room, ch.ChallengedStats, ch.Challenged)
+	p.sendPublic(ch.Room, formatStats(ch.ChallengedStats, ch.ChallengedScore, ch.Challenged))
 	p.recordOutcome(ch, winner, loser, false)
 	p.applyFines(ch, winner, loser)
+}
+
+func (p *Plugin) sendRibbonTaunt(room string, stats contestResult, username string) {
+	if username == "" {
+		return
+	}
+	if !isRibbingMaterial(stats) {
+		return
+	}
+
+	msg := randomFromSlice(ribbonTaunts)
+	if msg == "" {
+		return
+	}
+
+	p.sendPublic(room, fmt.Sprintf(msg, username))
+}
+
+func isRibbingMaterial(stats contestResult) bool {
+	if stats.volume >= 1500 {
+		return true
+	}
+	if math.Round(stats.volume) >= 1200 && stats.distance >= 6 {
+		return true
+	}
+	return false
 }
 
 func (p *Plugin) announceSpecialEvents(ch *activeChallenge) {
