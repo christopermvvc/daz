@@ -114,3 +114,42 @@ func TestHelpResetGitStateSkipsWithoutMarker(t *testing.T) {
 		t.Fatalf("expected no git calls without marker, got %v", calls)
 	}
 }
+
+func TestHelpGenerateAllUsesConfiguredOutputFiles(t *testing.T) {
+	outputDir := t.TempDir()
+	config := &Config{
+		ShowAliases:       true,
+		GenerateHTML:      true,
+		HTMLOutputPath:    outputDir,
+		HelpBaseURL:       defaultHelpBaseURL,
+		IncludeRestricted: true,
+	}
+	entries := []*commandEntry{
+		{Primary: "ping", Description: "ping the bot"},
+	}
+	generator := NewHTMLGenerator(config, func() []*commandEntry { return entries }, true, true)
+	generator.rootOutputFile = "public-index.html"
+	generator.helpOutputFile = filepath.Join("custom", "index.html")
+	generator.gitRunner = func(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+		return "", nil
+	}
+	generator.deployKeyResolver = func() (string, error) {
+		return "", fmt.Errorf("missing deploy key")
+	}
+
+	if err := generator.GenerateAll(context.Background()); err != nil {
+		t.Fatalf("GenerateAll() error = %v", err)
+	}
+
+	rootOutput := filepath.Join(outputDir, "public-index.html")
+	helperOutput := filepath.Join(outputDir, "custom", "index.html")
+	for _, output := range []string{rootOutput, helperOutput} {
+		contents, err := os.ReadFile(output)
+		if err != nil {
+			t.Fatalf("expected generated output file %s: %v", output, err)
+		}
+		if !strings.Contains(string(contents), "ping the bot") {
+			t.Fatalf("expected generated output in %s to include command", output)
+		}
+	}
+}

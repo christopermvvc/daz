@@ -27,6 +27,8 @@ type HTMLGenerator struct {
 	showAliases       bool
 	includeRestricted bool
 	mu                sync.Mutex
+	rootOutputFile    string
+	helpOutputFile    string
 
 	gitRunner         gitRunner
 	deployKeyResolver func() (string, error)
@@ -40,6 +42,8 @@ func NewHTMLGenerator(config *Config, entryProvider func() []*commandEntry, show
 		entryProvider:     entryProvider,
 		showAliases:       showAliases,
 		includeRestricted: includeRestricted,
+		rootOutputFile:    "index.html",
+		helpOutputFile:    filepath.Join("help", "index.html"),
 		gitRunner:         defaultGitRunner,
 		deployKeyResolver: defaultDeployKeyResolver,
 	}
@@ -181,23 +185,23 @@ func (g *HTMLGenerator) GenerateAll(ctx context.Context) error {
 		return err
 	}
 
-	rootOutputFile := filepath.Join(g.config.HTMLOutputPath, "index.html")
+	rootOutputFile := filepath.Join(g.config.HTMLOutputPath, g.rootOutputFile)
 	if err := os.WriteFile(rootOutputFile, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write help HTML: %w", err)
 	}
 
-	helperOutputDir := filepath.Join(g.config.HTMLOutputPath, "help")
+	helperOutputFile := filepath.Join(g.config.HTMLOutputPath, g.helpOutputFile)
+	helperOutputDir := filepath.Dir(helperOutputFile)
 	if err := os.MkdirAll(helperOutputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create help output directory: %w", err)
 	}
-	helperOutputFile := filepath.Join(helperOutputDir, "index.html")
 	if err := os.WriteFile(helperOutputFile, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write help HTML: %w", err)
 	}
 
 	if err := g.pushToGitHub(ctx); err != nil {
 		logger.Warn("help", "Help page generation completed locally but publish failed: %v", err)
-		logger.Warn("help", "Local page artifacts exist at:\n- %s\n- %s/help/index.html", rootOutputFile, g.config.HTMLOutputPath)
+		logger.Warn("help", "Local page artifacts exist at:\n- %s\n- %s", rootOutputFile, helperOutputFile)
 	}
 
 	logger.Info("help", "Help HTML generation completed")

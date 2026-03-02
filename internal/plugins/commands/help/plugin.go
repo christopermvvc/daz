@@ -38,15 +38,18 @@ type Plugin struct {
 	commandCache map[string]*commandEntry
 	aliasIndex   map[string]string
 
-	htmlDirty   atomic.Bool
-	htmlDirtyCh chan struct{}
-	generator   *HTMLGenerator
+	htmlDirty      atomic.Bool
+	htmlDirtyCh    chan struct{}
+	generator      *HTMLGenerator
+	adminGenerator *HTMLGenerator
 
 	cooldownMu    sync.Mutex
 	lastHelpByKey map[string]time.Time
 }
 
 const helpCommandCooldown = 2 * time.Second
+const helpAdminOutputFile = "admin.html"
+const helpAdminHelpOutputFile = "admin/index.html"
 
 func New() framework.Plugin {
 	return &Plugin{
@@ -128,13 +131,12 @@ func (p *Plugin) Start() error {
 		logger.Error(p.name, "Failed to load command cache: %v", err)
 	}
 	if p.config.GenerateHTML {
-		entryProvider := p.snapshotAllEntries
-		if !p.config.IncludeRestricted {
-			entryProvider = func() []*commandEntry {
-				return p.snapshotEntries(0, false)
-			}
-		}
-		p.generator = NewHTMLGenerator(p.config, entryProvider, p.config.ShowAliases, p.config.IncludeRestricted)
+		p.generator = NewHTMLGenerator(p.config, func() []*commandEntry {
+			return p.snapshotEntries(0, false)
+		}, p.config.ShowAliases, false)
+		p.adminGenerator = NewHTMLGenerator(p.config, p.snapshotAllEntries, p.config.ShowAliases, p.config.IncludeRestricted)
+		p.adminGenerator.rootOutputFile = helpAdminOutputFile
+		p.adminGenerator.helpOutputFile = helpAdminHelpOutputFile
 		p.markHTMLDirty()
 		p.wg.Add(1)
 		go p.runHTMLGenerator()
@@ -247,7 +249,8 @@ func (p *Plugin) handleHelpCommand(req *framework.PluginRequest) {
 		p.handleCommandHelp(req, strings.ToLower(commandArgs[0]))
 		return
 	}
-	p.sendResponse(req, fmt.Sprintf("Help: %s", p.config.HelpBaseURL))
+	baseURL := p.helpURLForRequest(req)
+	p.sendResponse(req, fmt.Sprintf("Help: %s", baseURL))
 }
 
 func (p *Plugin) handleCommandHelp(req *framework.PluginRequest, command string) {
@@ -269,7 +272,8 @@ func (p *Plugin) handleCommandHelp(req *framework.PluginRequest, command string)
 	}
 
 	_ = aliases
-	p.sendResponse(req, fmt.Sprintf("Help: %s#%s", p.config.HelpBaseURL, info.Primary))
+	baseURL := p.helpURLForRequest(req)
+	p.sendResponse(req, fmt.Sprintf("Help: %s#%s", baseURL, info.Primary))
 }
 
 type commandEntry struct {
@@ -519,12 +523,33 @@ func (p *Plugin) generateHelpHTML() {
 	if p.generator == nil {
 		return
 	}
+	p.generateHelpForGenerator(p.generator)
+	p.generateHelpForGenerator(p.adminGenerator)
+}
+
+func (p *Plugin) generateHelpForGenerator(generator *HTMLGenerator) {
+	if generator == nil {
+		return
+	}
 	p.htmlDirty.Store(false)
 	ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
 	defer cancel()
-	if err := p.generator.GenerateAll(ctx); err != nil {
+	if err := generator.GenerateAll(ctx); err != nil {
 		logger.Error(p.name, "Failed to generate help HTML: %v", err)
 	}
+}
+
+func (p *Plugin) helpURLForRequest(req *framework.PluginRequest) string {
+	baseURL := p.config.HelpBaseURL
+	if req == nil || req.Data == nil || req.Data.Command == nil {
+		return baseURL
+	}
+	isAdmin := req.Data.Command.Params["is_admin"] == "true"
+	if !isAdmin || p.adminGenerator == nil {
+		return baseURL
+	}
+
+	return strings.TrimSuffix(baseURL, "/") + "/" + helpAdminOutputFile
 }
 
 func (p *Plugin) loadCacheFromDB() error {
