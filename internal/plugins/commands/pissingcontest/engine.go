@@ -271,31 +271,49 @@ func targetBounds(stats *contestResult) {
 }
 
 func highlightContestStat(stats contestResult) string {
+	highlights := make([]string, 0, 4)
+
 	if stats.aim >= 90 {
-		return "pinpoint aim"
+		highlights = append(highlights, "pinpoint aim")
 	}
 	if stats.distance >= 6 {
-		return "long-range arseplunger"
+		highlights = append(highlights, "long-range arseplunger")
 	}
 	if stats.volume >= 1500 {
-		return "high-pressure cannon"
+		highlights = append(highlights, "high-pressure cannon")
 	}
 	if stats.duration >= 90 {
-		return "marathon mode"
+		highlights = append(highlights, "marathon mode")
 	}
 
 	switch {
 	case stats.wrongDirection:
-		return "wrong-way special"
+		highlights = append(highlights, "wrong-way special")
 	case stats.straightUp:
-		return "the fountain of shame"
+		highlights = append(highlights, "the fountain of shame")
 	case stats.duration <= 4:
-		return "instant blast"
+		highlights = append(highlights, "instant blast")
 	case stats.volume <= 300:
-		return "stingy stream"
-	default:
-		return "steady flow"
+		highlights = append(highlights, "stingy stream")
 	}
+
+	if len(highlights) == 0 {
+		highlights = append(highlights, "steady flow")
+	}
+
+	maxHighlights := 3
+	if len(highlights) > maxHighlights {
+		highlights = highlights[:maxHighlights]
+	}
+
+	label := ""
+	for i, h := range highlights {
+		if i > 0 {
+			label += ", "
+		}
+		label += h
+	}
+	return label
 }
 
 func formatStats(stats contestResult, score int, user string) string {
