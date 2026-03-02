@@ -116,6 +116,14 @@ func TestFishingPMAndAnnouncement(t *testing.T) {
 		case "sql.exec.request":
 			return &framework.EventData{SQLExecResponse: &framework.SQLExecResponse{Success: true}}, nil
 		case "plugin.request":
+			if data.PluginRequest != nil && data.PluginRequest.Type == "economy.get_balance" {
+				payload, _ := json.Marshal(framework.GetBalanceResponse{Channel: "chan", Username: "dazza", Balance: 100})
+				return &framework.EventData{PluginResponse: &framework.PluginResponse{Success: true, Data: &framework.ResponseData{RawJSON: payload}}}, nil
+			}
+			if data.PluginRequest != nil && data.PluginRequest.Type == "economy.debit" {
+				payload, _ := json.Marshal(framework.DebitResponse{Channel: "chan", Username: "dazza", Amount: 2})
+				return &framework.EventData{PluginResponse: &framework.PluginResponse{Success: true, Data: &framework.ResponseData{RawJSON: payload}}}, nil
+			}
 			payload, _ := json.Marshal(framework.CreditResponse{Channel: "chan", Username: "dazza", Amount: 150})
 			return &framework.EventData{PluginResponse: &framework.PluginResponse{Success: true, Data: &framework.ResponseData{RawJSON: payload}}}, nil
 		default:

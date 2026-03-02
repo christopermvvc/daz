@@ -141,7 +141,7 @@ func (p *Plugin) registerCommands() error {
 				KeyValue: map[string]string{
 					"commands":    "fish,fishing,cast",
 					"min_rank":    "0",
-					"description": "go fishing for some cash",
+					"description": "go fishing for cash (baits: ciggie, worm, servo pie, lure, prawn, squid)",
 				},
 			},
 		},
@@ -355,7 +355,7 @@ type baitInfo struct {
 }
 
 var baitOptions = []baitInfo{
-	{Key: "worm", Name: "worm", Cost: 0, Modifier: 0.00, Emoji: "🪱"},
+	{Key: "worm", Name: "worm", Cost: 2, Modifier: 0.00, Emoji: "🪱"},
 	{Key: "ciggie", Name: "ciggie", Cost: 0, Modifier: 0.02, Emoji: "🚬"},
 	{Key: "servo_pie", Name: "servo pie", Cost: 5, Modifier: 0.05, Emoji: "🥧"},
 	{Key: "lure", Name: "shiny lure", Cost: 15, Modifier: 0.10, Emoji: "🪝"},
@@ -379,9 +379,12 @@ var baitAliases = map[string]string{
 
 func baitFromArgs(args []string) (baitInfo, bool) {
 	if len(args) == 0 {
-		return baitOptions[0], true
+		return baitOptions[1], true
 	}
-	key := normalizeBait(args[0])
+	key := normalizeBait(strings.Join(args, " "))
+	if key == "" {
+		return baitOptions[1], true
+	}
 	alias, ok := baitAliases[key]
 	if !ok {
 		return baitInfo{}, false
@@ -396,7 +399,7 @@ func baitFromArgs(args []string) (baitInfo, bool) {
 
 func baitHelpMessage() string {
 	lines := []string{
-		"fishing baits: worm (free), ciggie (free), servo_pie ($5), lure ($15), prawn ($25), squid ($40)",
+		"fishing baits: worm ($2), ciggie (free), servo pie ($5), lure ($15), prawn ($25), squid ($40)",
 		"usage: !fish [bait]",
 	}
 	return strings.Join(lines, "\n")
@@ -406,6 +409,7 @@ func normalizeBait(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	value = strings.ReplaceAll(value, "-", "")
 	value = strings.ReplaceAll(value, "_", "")
+	value = strings.ReplaceAll(value, " ", "")
 	return value
 }
 
