@@ -266,6 +266,21 @@ Notes:
 - `make test`
 - `go test ./internal/... -run TestName`
 
+## Local Runtime (prefer user systemd unit)
+- Use the user unit for running/restarting locally; avoid ad-hoc shell launch commands for daz.
+- Service file: `~/.config/systemd/user/dazza-dev.service`
+- Rebuild and restart flow:
+  - `make build`
+  - `systemctl --user daemon-reload`
+  - `systemctl --user restart dazza-dev.service`
+- Useful status/debug:
+  - `systemctl --user status dazza-dev.service --no-pager`
+  - `journalctl --user -u dazza-dev.service -f`
+- Optional stop/start:
+  - `systemctl --user stop dazza-dev.service`
+  - `systemctl --user start dazza-dev.service`
+- Do not use the system-level unit for local dev/test unless explicitly running as a system service.
+
 ## Legacy User-State Schema (032)
 - Migration file: `scripts/sql/032_user_state_foundation.sql`.
 - Runtime application: `internal/plugins/sql/plugin.go` via `applyExternalMigrations()` in `initializeSchema()`.
