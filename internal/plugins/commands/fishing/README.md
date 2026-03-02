@@ -7,4 +7,5 @@ Config (optional)
 
 Notes
 - Uses the economy API for bait debits and winnings credits.
-- Baits: worm (free), ciggie (free), servo pie ($5), lure ($15), prawn ($25), squid ($40).
+- Default bait: ciggie (free).
+- Baits: ciggie (free), worm ($2), servo pie ($5), lure ($15), prawn ($25), squid ($40).

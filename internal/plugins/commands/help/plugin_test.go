@@ -194,14 +194,22 @@ func TestInit(t *testing.T) {
 			name:   "default config",
 			config: nil,
 			want: &Config{
-				ShowAliases: true,
+				ShowAliases:       true,
+				GenerateHTML:      true,
+				HTMLOutputPath:    defaultHelpOutputPath,
+				HelpBaseURL:       defaultHelpBaseURL,
+				IncludeRestricted: true,
 			},
 		},
 		{
 			name:   "custom config",
 			config: json.RawMessage(`{"show_aliases": false}`),
 			want: &Config{
-				ShowAliases: false,
+				ShowAliases:       false,
+				GenerateHTML:      true,
+				HTMLOutputPath:    defaultHelpOutputPath,
+				HelpBaseURL:       defaultHelpBaseURL,
+				IncludeRestricted: true,
 			},
 		},
 	}
@@ -223,6 +231,18 @@ func TestInit(t *testing.T) {
 			if tt.want != nil {
 				if plugin.config.ShowAliases != tt.want.ShowAliases {
 					t.Errorf("ShowAliases = %v, want %v", plugin.config.ShowAliases, tt.want.ShowAliases)
+				}
+				if plugin.config.GenerateHTML != tt.want.GenerateHTML {
+					t.Errorf("GenerateHTML = %v, want %v", plugin.config.GenerateHTML, tt.want.GenerateHTML)
+				}
+				if plugin.config.HTMLOutputPath == "" {
+					t.Errorf("HTMLOutputPath should be set")
+				}
+				if plugin.config.HelpBaseURL == "" {
+					t.Errorf("HelpBaseURL should be set")
+				}
+				if plugin.config.IncludeRestricted != tt.want.IncludeRestricted {
+					t.Errorf("IncludeRestricted = %v, want %v", plugin.config.IncludeRestricted, tt.want.IncludeRestricted)
 				}
 			}
 		})

@@ -141,7 +141,7 @@ func (p *Plugin) registerCommands() error {
 				KeyValue: map[string]string{
 					"commands":    "fish,fishing,cast",
 					"min_rank":    "0",
-					"description": "go fishing for some cash",
+					"description": "go fishing for cash (baits: ciggie, worm, servo pie, lure, prawn, squid)",
 				},
 			},
 		},
@@ -171,6 +171,12 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		return nil
 	}
 
+	bait, valid := baitFromArgs(req.Data.Command.Args)
+	if !valid {
+		p.sendResponse(channel, username, baitHelpMessage(), true)
+		return nil
+	}
+
 	remaining, ok, err := p.checkCooldown(channel, username)
 	if err != nil {
 		logger.Error(p.name, "Cooldown check failed: %v", err)
@@ -178,13 +184,11 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		return nil
 	}
 	if !ok {
-		p.sendResponse(channel, username, waitMessage(username, remaining), true)
-		return nil
-	}
-
-	bait, valid := baitFromArgs(req.Data.Command.Args)
-	if !valid {
-		p.sendResponse(channel, username, baitHelpMessage(), true)
+		message := waitMessage(username, remaining)
+		if bait.Cost == 0 {
+			message = waitMessageCiggie(username, remaining)
+		}
+		p.sendResponse(channel, username, message, true)
 		return nil
 	}
 
@@ -361,7 +365,7 @@ type baitInfo struct {
 }
 
 var baitOptions = []baitInfo{
-	{Key: "worm", Name: "worm", Cost: 0, Modifier: 0.00, Emoji: "🪱"},
+	{Key: "worm", Name: "worm", Cost: 2, Modifier: 0.00, Emoji: "🪱"},
 	{Key: "ciggie", Name: "ciggie", Cost: 0, Modifier: 0.02, Emoji: "🚬"},
 	{Key: "servo_pie", Name: "servo pie", Cost: 5, Modifier: 0.05, Emoji: "🥧"},
 	{Key: "lure", Name: "shiny lure", Cost: 15, Modifier: 0.10, Emoji: "🪝"},
@@ -385,9 +389,12 @@ var baitAliases = map[string]string{
 
 func baitFromArgs(args []string) (baitInfo, bool) {
 	if len(args) == 0 {
-		return baitOptions[0], true
+		return baitOptions[1], true
 	}
-	key := normalizeBait(args[0])
+	key := normalizeBait(strings.Join(args, " "))
+	if key == "" {
+		return baitOptions[1], true
+	}
 	alias, ok := baitAliases[key]
 	if !ok {
 		return baitInfo{}, false
@@ -402,7 +409,7 @@ func baitFromArgs(args []string) (baitInfo, bool) {
 
 func baitHelpMessage() string {
 	lines := []string{
-		"fishing baits: worm (free), ciggie (free), servo_pie ($5), lure ($15), prawn ($25), squid ($40)",
+		"fishing baits: worm ($2), ciggie (free), servo pie ($5), lure ($15), prawn ($25), squid ($40)",
 		"usage: !fish [bait]",
 	}
 	return strings.Join(lines, "\n")
@@ -412,6 +419,7 @@ func normalizeBait(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	value = strings.ReplaceAll(value, "-", "")
 	value = strings.ReplaceAll(value, "_", "")
+	value = strings.ReplaceAll(value, " ", "")
 	return value
 }
 
@@ -556,6 +564,17 @@ func waitMessage(username string, remaining time.Duration) string {
 		fmt.Sprintf("-%s mate, you just fished. %dh %dm left", username, hours, minutes),
 		fmt.Sprintf("give it a rest -%s, next cast in %dh %dm", username, hours, minutes),
 		fmt.Sprintf("-%s the tide ain't ready. %dh %dm to go", username, hours, minutes),
+	}
+	return responses[rand.Intn(len(responses))]
+}
+
+func waitMessageCiggie(username string, remaining time.Duration) string {
+	hours := int(remaining.Hours())
+	minutes := int(remaining.Minutes()) % 60
+	responses := []string{
+		fmt.Sprintf("-%s can't find any ciggies right now. try again in %dh %dm", username, hours, minutes),
+		fmt.Sprintf("-%s your ciggie stash is empty. %dh %dm til you score another", username, hours, minutes),
+		fmt.Sprintf("-%s no smokes for bait yet. %dh %dm to go", username, hours, minutes),
 	}
 	return responses[rand.Intn(len(responses))]
 }
