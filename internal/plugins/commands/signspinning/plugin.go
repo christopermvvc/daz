@@ -357,6 +357,8 @@ func waitMessage(username string, remaining time.Duration) string {
 		fmt.Sprintf("ease up -%s, the corner's taken by another spinner. Try again in %dh %dm", username, hours, minutes),
 		fmt.Sprintf("bloody hell -%s, even sign spinning needs rest days! %dh %dm to go", username, hours, minutes),
 		fmt.Sprintf("-%s the agency said no more shifts for %dh %dm, too many spinners already", username, hours, minutes),
+		fmt.Sprintf("-%s ya wrists are cooked. take %dh %dm before the next shift", username, hours, minutes),
+		fmt.Sprintf("-%s the roster's full today. %dh %dm til a spot opens up", username, hours, minutes),
 	}
 	return responses[rand.Intn(len(responses))]
 }
@@ -517,6 +519,8 @@ var commonSigns = []string{
 	"discount chemist flogging vitamins",
 	"gym having a 'no joining fee' special",
 	"car wash trying to get customers",
+	"takeaway joint pushing $10 lunch boxes",
+	"window tint shop doing walk-ins",
 }
 
 var uncommonSigns = []string{
@@ -528,6 +532,8 @@ var uncommonSigns = []string{
 	"dodgy loan shark advertising quick cash",
 	"underground fight club recruitment",
 	"psychic reader offering life advice",
+	"dodgy vape wholesaler doing cash-only deals",
+	"auction house flogging seized goods",
 }
 
 var positiveEvents = []string{
@@ -538,6 +544,8 @@ var positiveEvents = []string{
 	"got featured on someone's tiktok, going viral",
 	"found a twenty on the ground while spinning",
 	"local news filmed ya for a segment on hard workers",
+	"a bloke in a ute yelled 'legend!' and tossed ya a tenner",
+	"got a tip from a customer for doing a perfect spin",
 }
 
 var negativeEvents = []string{
@@ -548,6 +556,8 @@ var negativeEvents = []string{
 	"nearly got clipped by a ute doing a burnout",
 	"started raining and the sign got soggy",
 	"karen complained you're distracting drivers",
+	"a kid grabbed the sign and ran off",
+	"sign blew into traffic and ya got a spray from drivers",
 }
 
 var injuryEvents = []string{
@@ -558,6 +568,8 @@ var injuryEvents = []string{
 	"sign caught the wind and yanked ya back out",
 	"got dizzy from spinning and stacked it hard",
 	"repetitive strain injury from all the waving",
+	"twisted ya ankle hopping the curb",
+	"got sunburnt to hell and peeled for a week",
 }
 
 var weatherConditions = []weatherCondition{
@@ -567,4 +579,6 @@ var weatherConditions = []weatherCondition{
 	{Condition: "started pissing down rain", Modifier: 0.7},
 	{Condition: "windy as fuck", Modifier: 0.8},
 	{Condition: "nice breeze keeping ya cool", Modifier: 1.1},
+	{Condition: "cloudy but dry as", Modifier: 1.0},
+	{Condition: "humid and sticky", Modifier: 0.9},
 }
