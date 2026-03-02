@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,14 +31,24 @@ type Plugin struct {
 
 	config   Config
 	cooldown time.Duration
+
+	balanceCooldown time.Duration
+	balanceLastUsed map[string]time.Time
+
+	addFundsCooldown time.Duration
+	addFundsLastUsed map[string]time.Time
 }
 
 const defaultCooldownHours = 12
 
 func New() framework.Plugin {
 	return &Plugin{
-		name:     "couchcoins",
-		cooldown: 12 * time.Hour,
+		name:             "couchcoins",
+		cooldown:         12 * time.Hour,
+		balanceCooldown:  20 * time.Second,
+		balanceLastUsed:  make(map[string]time.Time),
+		addFundsCooldown: 20 * time.Second,
+		addFundsLastUsed: make(map[string]time.Time),
 	}
 }
 
@@ -85,14 +96,14 @@ func (p *Plugin) Start() error {
 		return err
 	}
 
-	for _, cmd := range []string{"couch_coins", "couch", "couchsearch", "searchcouch"} {
+	for _, cmd := range []string{"couchcoins", "couch_coins", "couch", "couchsearch", "searchcouch", "balance", "bal", "addfunds"} {
 		eventName := fmt.Sprintf("command.%s.execute", cmd)
 		if err := p.eventBus.Subscribe(eventName, p.handleCommand); err != nil {
 			return fmt.Errorf("failed to subscribe to %s: %w", eventName, err)
 		}
 	}
 
-	rand.Seed(time.Now().UnixNano())
+	framework.SeedMathRand()
 	logger.Debug(p.name, "Started")
 	return nil
 }
@@ -140,9 +151,10 @@ func (p *Plugin) registerCommands() error {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands":    "couch_coins,couch,couchsearch,searchcouch",
+					"commands":    "couchcoins,couch_coins,couch,couchsearch,searchcouch,balance,bal,addfunds",
+					"admin_only":  "addfunds",
 					"min_rank":    "0",
-					"description": "search the couch for coins",
+					"description": "search the couch for coins and check your balance",
 				},
 			},
 		},
@@ -169,8 +181,18 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	username := strings.TrimSpace(params["username"])
 	channel := strings.TrimSpace(params["channel"])
 	isPM := params["is_pm"] == "true"
+	isAdmin := params["is_admin"] == "true"
+	commandName := strings.ToLower(strings.TrimSpace(req.Data.Command.Name))
+	args := req.Data.Command.Args
 	if username == "" || channel == "" {
 		return nil
+	}
+
+	if commandName == "balance" || commandName == "bal" {
+		return p.handleBalanceCommand(channel, username, isPM)
+	}
+	if commandName == "addfunds" {
+		return p.handleAddFundsCommand(channel, username, args, isPM, isAdmin)
 	}
 
 	remaining, ok, err := p.checkCooldown(channel, username)
@@ -215,6 +237,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		badEvent := badEvents[rand.Intn(len(badEvents))]
 		cost := rand.Intn(badEvent.MaxCost-badEvent.MinCost+1) + badEvent.MinCost
 		actualCost := int64(cost)
+		debitApplied := false
 		if balance < actualCost {
 			actualCost = balance
 		}
@@ -228,6 +251,9 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 			})
 			if err != nil {
 				logger.Error(p.name, "Failed to debit bad event cost: %v", err)
+				actualCost = 0
+			} else {
+				debitApplied = true
 			}
 		}
 
@@ -241,7 +267,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		}
 
 		message := fmt.Sprintf("❌ FUCKIN DISASTER! %s", strings.ReplaceAll(badEvent.Message, "-amount", fmt.Sprintf("$%d", actualCost)))
-		if actualCost == 0 {
+		if !debitApplied {
 			message += " Lucky you're broke or that woulda cost ya!"
 		}
 		p.sendResponse(channel, username, message, isPM)
@@ -314,6 +340,122 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	return nil
 }
 
+func (p *Plugin) handleAddFundsCommand(channel, username string, args []string, isPM, isAdmin bool) error {
+	if !isAdmin {
+		p.sendResponse(channel, username, "admin only command", isPM)
+		return nil
+	}
+
+	if len(args) < 2 {
+		p.sendResponse(channel, username, "usage: !addfunds <user> <amt>", isPM)
+		return nil
+	}
+
+	targetUser := strings.TrimSpace(args[0])
+	amount, err := strconv.ParseInt(strings.TrimSpace(args[1]), 10, 64)
+	if targetUser == "" || err != nil || amount <= 0 {
+		p.sendResponse(channel, username, "usage: !addfunds <user> <amt> (amt must be a positive integer)", isPM)
+		return nil
+	}
+
+	remaining, ok := p.checkAddFundsCooldown(channel, username)
+	if !ok {
+		p.sendResponse(channel, username, addFundsWaitMessage(username, remaining), isPM)
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
+	defer cancel()
+
+	resp, err := p.economyClient.Credit(ctx, framework.CreditRequest{
+		Channel:  channel,
+		Username: targetUser,
+		Amount:   amount,
+		Reason:   "admin_addfunds",
+	})
+	if err != nil {
+		logger.Error(p.name, "Failed to add funds: %v", err)
+		p.sendResponse(channel, username, "failed to add funds right now, try again later", isPM)
+		return nil
+	}
+
+	p.sendResponse(channel, username, fmt.Sprintf("added $%d to -%s. new balance: $%d", amount, targetUser, resp.BalanceAfter), isPM)
+	return nil
+}
+
+func (p *Plugin) handleBalanceCommand(channel, username string, isPM bool) error {
+	remaining, ok := p.checkBalanceCooldown(channel, username)
+	if !ok {
+		p.sendResponse(channel, username, balanceWaitMessage(username, remaining), isPM)
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
+	defer cancel()
+
+	balance, err := p.economyClient.GetBalance(ctx, channel, username)
+	if err != nil {
+		logger.Error(p.name, "Failed to fetch balance: %v", err)
+		p.sendResponse(channel, username, "balance service is cooked right now, try again in a bit", isPM)
+		return nil
+	}
+
+	p.sendResponse(channel, username, fmt.Sprintf("-%s, your balance is $%d", username, balance), isPM)
+	return nil
+}
+
+func (p *Plugin) checkBalanceCooldown(channel, username string) (time.Duration, bool) {
+	now := time.Now()
+	key := strings.ToLower(strings.TrimSpace(channel)) + ":" + strings.ToLower(strings.TrimSpace(username))
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if last, ok := p.balanceLastUsed[key]; ok {
+		until := last.Add(p.balanceCooldown)
+		if now.Before(until) {
+			return until.Sub(now), false
+		}
+	}
+
+	p.balanceLastUsed[key] = now
+	return 0, true
+}
+
+func balanceWaitMessage(username string, remaining time.Duration) string {
+	seconds := int(remaining.Seconds())
+	if seconds < 1 {
+		seconds = 1
+	}
+	return fmt.Sprintf("-%s, balance check is on cooldown. try again in %ds", username, seconds)
+}
+
+func (p *Plugin) checkAddFundsCooldown(channel, username string) (time.Duration, bool) {
+	now := time.Now()
+	key := strings.ToLower(strings.TrimSpace(channel)) + ":" + strings.ToLower(strings.TrimSpace(username))
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if last, ok := p.addFundsLastUsed[key]; ok {
+		until := last.Add(p.addFundsCooldown)
+		if now.Before(until) {
+			return until.Sub(now), false
+		}
+	}
+
+	p.addFundsLastUsed[key] = now
+	return 0, true
+}
+
+func addFundsWaitMessage(username string, remaining time.Duration) string {
+	seconds := int(remaining.Seconds())
+	if seconds < 1 {
+		seconds = 1
+	}
+	return fmt.Sprintf("-%s, addfunds is on cooldown. try again in %ds", username, seconds)
+}
+
 func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
@@ -332,10 +474,16 @@ func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool, e
 	defer rows.Close()
 
 	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return 0, false, err
+		}
 		return 0, true, nil
 	}
 	var lastPlayed time.Time
 	if err := rows.Scan(&lastPlayed); err != nil {
+		return 0, false, err
+	}
+	if err := rows.Err(); err != nil {
 		return 0, false, err
 	}
 	if lastPlayed.IsZero() {
