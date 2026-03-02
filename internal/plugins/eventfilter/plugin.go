@@ -804,6 +804,12 @@ func getDefaultRoutingRules() []RoutingRule {
 			Priority:     10,
 			Enabled:      true,
 		},
+		{
+			EventType:    "cytube.event.setCurrent",
+			TargetPlugin: "mediatracker",
+			Priority:     10,
+			Enabled:      true,
+		},
 		// Route all events to analytics plugin
 		{
 			EventType:    "cytube.event.*",
