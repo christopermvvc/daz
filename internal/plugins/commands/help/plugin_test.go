@@ -544,8 +544,8 @@ func TestHelpURLForRequest(t *testing.T) {
 	}
 
 	plugin.adminGenerator = NewHTMLGenerator(plugin.config, plugin.snapshotAllEntries, true, true)
-	if got := plugin.helpURLForRequest(adminReq); got != "https://example.com/help/admin.html" {
-		t.Fatalf("admin URL with admin generator = %q, want %q", got, "https://example.com/help/admin.html")
+	if got := plugin.helpURLForRequest(adminReq); got != "https://example.com/admin.html" {
+		t.Fatalf("admin URL with admin generator = %q, want %q", got, "https://example.com/admin.html")
 	}
 }
 
@@ -588,7 +588,7 @@ func TestGenerateHelpHTMLFiltersAdminCommandsFromPublicPage(t *testing.T) {
 	}, true, false)
 	plugin.adminGenerator = NewHTMLGenerator(plugin.config, plugin.snapshotAllEntries, true, true)
 	plugin.adminGenerator.rootOutputFile = helpAdminOutputFile
-	plugin.adminGenerator.helpOutputFile = helpAdminHelpOutputFile
+	plugin.adminGenerator.helpOutputFile = filepath.Join(helpAdminOutputDir, helpAdminHelpOutputFile)
 
 	// Prevent any external command execution in tests.
 	plugin.generator.gitRunner = func(ctx context.Context, dir string, env []string, args ...string) (string, error) {

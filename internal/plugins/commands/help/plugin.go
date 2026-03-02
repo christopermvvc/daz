@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,8 +50,9 @@ type Plugin struct {
 	lastHelpByKey map[string]time.Time
 }
 
-const helpCommandCooldown = 2 * time.Second
+const helpCommandCooldown = 60 * time.Second
 const helpAdminOutputFile = "admin.html"
+const helpAdminOutputDir = "help"
 const helpAdminHelpOutputFile = "admin/index.html"
 
 func New() framework.Plugin {
@@ -136,7 +140,7 @@ func (p *Plugin) Start() error {
 		}, p.config.ShowAliases, false)
 		p.adminGenerator = NewHTMLGenerator(p.config, p.snapshotAllEntries, p.config.ShowAliases, p.config.IncludeRestricted)
 		p.adminGenerator.rootOutputFile = helpAdminOutputFile
-		p.adminGenerator.helpOutputFile = helpAdminHelpOutputFile
+		p.adminGenerator.helpOutputFile = filepath.Join(helpAdminOutputDir, helpAdminHelpOutputFile)
 		p.markHTMLDirty()
 		p.wg.Add(1)
 		go p.runHTMLGenerator()
@@ -549,7 +553,22 @@ func (p *Plugin) helpURLForRequest(req *framework.PluginRequest) string {
 		return baseURL
 	}
 
-	return strings.TrimSuffix(baseURL, "/") + "/" + helpAdminOutputFile
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return strings.TrimSuffix(baseURL, "/") + "/" + helpAdminOutputFile
+	}
+
+	basePath := parsed.Path
+	if basePath == "" {
+		basePath = "/"
+	}
+	adminPath := path.Join(path.Dir(basePath), helpAdminOutputFile)
+	if !strings.HasPrefix(adminPath, "/") {
+		adminPath = "/" + adminPath
+	}
+	parsed.Path = adminPath
+
+	return parsed.String()
 }
 
 func (p *Plugin) loadCacheFromDB() error {
