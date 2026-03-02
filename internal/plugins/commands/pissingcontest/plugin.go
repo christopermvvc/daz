@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ type Plugin struct {
 	mu           sync.RWMutex
 	challenges   map[string]map[string]*activeChallenge
 	cooldowns    map[string]map[string]time.Time
+	roomBotNames map[string]string
 	challengeTTL time.Duration
 	cooldown     time.Duration
 	config       Config
@@ -46,6 +48,7 @@ func New() framework.Plugin {
 		name:         pluginName,
 		challenges:   make(map[string]map[string]*activeChallenge),
 		cooldowns:    make(map[string]map[string]time.Time),
+		roomBotNames: make(map[string]string),
 		challengeTTL: challengeTimeout,
 		cooldown:     defaultCooldown,
 	}
@@ -75,7 +78,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 			return fmt.Errorf("failed to unmarshal config: %w", err)
 		}
 	}
-	p.config.BotUsername = normalizeUsername(p.config.BotUsername)
+	p.config.BotUsername = resolveBotUsername(p.config.BotUsername)
 
 	if p.config.ChallengeDurationSeconds > 0 {
 		p.challengeTTL = time.Duration(p.config.ChallengeDurationSeconds) * time.Second
@@ -142,6 +145,7 @@ func (p *Plugin) Stop() error {
 	}
 	p.challenges = make(map[string]map[string]*activeChallenge)
 	p.cooldowns = make(map[string]map[string]time.Time)
+	p.roomBotNames = make(map[string]string)
 	p.mu.Unlock()
 
 	return nil
@@ -240,21 +244,16 @@ func (p *Plugin) handlePissCommand(channel, username string, args []string) {
 			p.sendCommandResult(channel, username, "gotta specify who to piss against mate - !piss <amount> <username>", false)
 			return
 		}
-		target = args[1]
+		target = normalizePissTarget(args[1])
 	} else {
-		target = args[0]
+		target = normalizePissTarget(args[0])
 	}
-	target = normalizeUsername(target)
 	if target == "" {
 		p.sendCommandResult(channel, username, "gotta specify who to piss against mate - !piss <amount> <username>", false)
 		return
 	}
 	if target == username {
 		p.sendCommandResult(channel, username, "can't piss against yaself", false)
-		return
-	}
-	if strings.HasPrefix(target, "[") {
-		p.sendCommandResult(channel, username, "bots don't piss mate, challenge a real person", false)
 		return
 	}
 
@@ -264,7 +263,7 @@ func (p *Plugin) handlePissCommand(channel, username string, args []string) {
 		return
 	}
 
-	if p.isBotTarget(target) {
+	if p.isBotTarget(channel, target) {
 		p.sendPublic(channel, fmt.Sprintf("Dazza doesn't run from a challenge — -%s accepts -%s's piss contest!", challenge.Challenged, challenge.Challenger))
 		p.handleAcceptChallenge(challenge.Challenger, channel, target)
 		return
@@ -409,14 +408,14 @@ func (p *Plugin) handleAcceptChallenge(challenger, room, challenged string) {
 	}
 	p.mu.Unlock()
 
-	if !p.isBotTarget(challenged) {
+	if !p.isBotTarget(room, challenged) {
 		if err := p.assertCooldownReady(room, challenged); err != nil {
 			p.sendPublic(room, err.Error())
 			return
 		}
 	}
 
-	if challenge.Amount > 0 && !p.isBotTarget(challenged) {
+	if challenge.Amount > 0 && !p.isBotTarget(room, challenged) {
 		balance, err := p.getBalance(room, challenged)
 		if err != nil {
 			p.sendPublic(room, "ya got a weird wallet error mate - challenge dropped")
@@ -441,12 +440,164 @@ func (p *Plugin) handleDeclineChallenge(challenger, room, challenged string) {
 	p.sendPublic(room, fmt.Sprintf("-%s pussied out! Kept it in their pants like a coward", challenged))
 }
 
-func (p *Plugin) isBotTarget(username string) bool {
-	return p.config.BotUsername != "" && strings.EqualFold(username, p.config.BotUsername)
+func (p *Plugin) isBotTarget(channel, username string) bool {
+	normalized := normalizePissTarget(username)
+	if normalized == "" {
+		return false
+	}
+
+	configured := normalizePissTarget(p.config.BotUsername)
+	if configured != "" && strings.EqualFold(normalized, configured) {
+		return true
+	}
+
+	roomBot := p.getResolvedBotName(channel)
+	if roomBot != "" && strings.EqualFold(normalized, roomBot) {
+		return true
+	}
+
+	// Fallback to configured room bot names if we can resolve and cache one.
+	resolved, err := p.resolveBotNameForRoom(channel)
+	if err != nil {
+		return false
+	}
+	if resolved == "" {
+		return false
+	}
+
+	return strings.EqualFold(normalized, resolved)
 }
 
-func (p *Plugin) applyBotAdvantage(stats *contestResult, opponent *contestResult, ownerMods, opponentMods *contestModifiers, username string) {
-	if !p.isBotTarget(username) || stats == nil {
+func normalizePissTarget(raw string) string {
+	t := strings.TrimSpace(raw)
+	if t == "" {
+		return ""
+	}
+	t = strings.TrimLeft(t, "-@")
+	t = strings.Trim(t, " \t\n\r,.;:!?()[]{}\"'`")
+	return normalizeUsername(t)
+}
+
+func (p *Plugin) getResolvedBotName(channel string) string {
+	room := normalizeChannel(channel)
+	if room == "" {
+		return ""
+	}
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	return p.roomBotNames[room]
+}
+
+func (p *Plugin) cacheResolvedBotName(channel, botName string) {
+	room := normalizeChannel(channel)
+	if room == "" {
+		return
+	}
+
+	normalized := normalizePissTarget(botName)
+	if normalized == "" {
+		return
+	}
+
+	p.mu.Lock()
+	p.roomBotNames[room] = normalized
+	p.mu.Unlock()
+}
+
+func (p *Plugin) resolveBotNameForRoom(channel string) (string, error) {
+	room := normalizeChannel(channel)
+	if room == "" {
+		return "", nil
+	}
+
+	requestID := fmt.Sprintf("piss-botname-%d", time.Now().UnixNano())
+	request := &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			ID:   requestID,
+			To:   "core",
+			From: p.name,
+			Type: "get_configured_channels",
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(p.ctx, 2*time.Second)
+	defer cancel()
+
+	metadata := &framework.EventMetadata{
+		Source:        p.name,
+		CorrelationID: requestID,
+	}
+
+	responseEvent, err := p.eventBus.Request(ctx, "core", "plugin.request", request, metadata)
+	if err != nil {
+		return "", err
+	}
+	if responseEvent == nil || responseEvent.PluginResponse == nil {
+		return "", nil
+	}
+
+	response := responseEvent.PluginResponse
+	if !response.Success {
+		if response.Error == "" {
+			return "", nil
+		}
+		return "", fmt.Errorf("core get_configured_channels failed: %s", response.Error)
+	}
+	if response.Data == nil || len(response.Data.RawJSON) == 0 {
+		return "", nil
+	}
+
+	botName, err := extractBotUsernameFromChannels(response.Data.RawJSON, room)
+	if err != nil {
+		return "", err
+	}
+
+	p.cacheResolvedBotName(room, botName)
+	return botName, nil
+}
+
+func extractBotUsernameFromChannels(rawJSON json.RawMessage, channel string) (string, error) {
+	var responseData struct {
+		Channels []struct {
+			Channel  string `json:"channel"`
+			Username string `json:"username"`
+		} `json:"channels"`
+	}
+
+	if err := json.Unmarshal(rawJSON, &responseData); err != nil {
+		return "", fmt.Errorf("failed to parse configured channel response: %w", err)
+	}
+
+	channel = normalizeChannel(channel)
+	for _, ch := range responseData.Channels {
+		if strings.EqualFold(strings.TrimSpace(ch.Channel), channel) {
+			return strings.TrimSpace(ch.Username), nil
+		}
+	}
+
+	return "", nil
+}
+
+func resolveBotUsername(configBotUsername string) string {
+	configured := strings.TrimSpace(configBotUsername)
+	if configured != "" {
+		return normalizeUsername(configured)
+	}
+
+	if fromEnv := strings.TrimSpace(os.Getenv("DAZ_BOT_NAME")); fromEnv != "" {
+		return normalizeUsername(fromEnv)
+	}
+
+	return normalizeUsername(os.Getenv("DAZ_CYTUBE_USERNAME"))
+}
+
+func (p *Plugin) applyBotAdvantage(stats *contestResult, opponent *contestResult, ownerMods, opponentMods *contestModifiers, room, username string) {
+	if stats == nil {
+		return
+	}
+	if !p.isBotTarget(room, username) {
 		return
 	}
 
@@ -496,8 +647,8 @@ func (p *Plugin) runContest(ch *activeChallenge) {
 
 	ch.ChallengerMods = contestModifiers{}
 	ch.ChallengedMods = contestModifiers{}
-	p.applyBotAdvantage(&challengerStats, &challengedStats, &ch.ChallengerMods, &ch.ChallengedMods, ch.Challenger)
-	p.applyBotAdvantage(&challengedStats, &challengerStats, &ch.ChallengedMods, &ch.ChallengerMods, ch.Challenged)
+	p.applyBotAdvantage(&challengerStats, &challengedStats, &ch.ChallengerMods, &ch.ChallengedMods, ch.Room, ch.Challenger)
+	p.applyBotAdvantage(&challengedStats, &challengerStats, &ch.ChallengedMods, &ch.ChallengerMods, ch.Room, ch.Challenged)
 
 	applyCharacteristic(&challengerStats, ch.ChallengerChar, &challengedStats, &ch.ChallengerMods, &ch.ChallengedMods)
 	applyCharacteristic(&challengedStats, ch.ChallengedChar, &challengerStats, &ch.ChallengedMods, &ch.ChallengerMods)

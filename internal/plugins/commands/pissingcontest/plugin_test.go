@@ -190,6 +190,12 @@ func TestNormalizeAndHelpers(t *testing.T) {
 	if !isInPhraseList("yes", acceptPhrases) {
 		t.Fatalf("isInPhraseList() should include yes")
 	}
+	if got := normalizePissTarget("[dazza]"); got != "dazza" {
+		t.Fatalf("normalizePissTarget([dazza]) = %q, want %q", got, "dazza")
+	}
+	if got := normalizePissTarget("@dazza,"); got != "dazza" {
+		t.Fatalf("normalizePissTarget(@dazza,) = %q, want %q", got, "dazza")
+	}
 }
 
 func TestDetermineWinner(t *testing.T) {
@@ -281,7 +287,7 @@ func TestApplyBotAdvantage(t *testing.T) {
 	}
 	var challengerMods, challengedMods contestModifiers
 
-	p.applyBotAdvantage(&challengerStats, &challengedStats, &challengerMods, &challengedMods, "botman")
+	p.applyBotAdvantage(&challengerStats, &challengedStats, &challengerMods, &challengedMods, "room", "botman")
 	if challengerStats.distance <= 2 || challengerStats.volume <= 100 {
 		t.Fatalf("bot advantage should boost its own distance/volume, got distance %f volume %f", challengerStats.distance, challengerStats.volume)
 	}
@@ -290,9 +296,23 @@ func TestApplyBotAdvantage(t *testing.T) {
 	}
 
 	before := challengedStats
-	p.applyBotAdvantage(&challengedStats, &challengerStats, &challengedMods, &challengerMods, "alice")
+	p.applyBotAdvantage(&challengedStats, &challengerStats, &challengedMods, &challengerMods, "room", "alice")
 	if challengedStats != before {
 		t.Fatalf("non-bot should not trigger advantage")
+	}
+}
+
+func TestIsBotTargetFromCoreConfig(t *testing.T) {
+	p, bus := newTestPlugin(t, `{}`)
+	bus.requestResp = mustConfiguredChannelsResponse(t, []coreChannelConfig{
+		{Channel: "room", Username: "dazza"},
+	})
+
+	if !p.isBotTarget("room", "dazza") {
+		t.Fatal("expected target dazza to resolve from core-configured channels")
+	}
+	if p.isBotTarget("room", "alice") {
+		t.Fatal("expected non-bot target to not match")
 	}
 }
 
@@ -483,6 +503,32 @@ func TestHandleCommandValidation(t *testing.T) {
 			t.Fatalf("expected no pending challenge for bot target, got %q", challenger)
 		}
 	})
+
+	t.Run("bot target resolved from core config", func(t *testing.T) {
+		p, bus := newTestPlugin(t, `{}`)
+		bus.requestResp = mustConfiguredChannelsResponse(t, []coreChannelConfig{
+			{Channel: "room", Username: "dazza"},
+		})
+		params := map[string]string{"channel": "room", "username": "alice", "is_pm": "false"}
+		if err := p.handleCommand(makeCommandEvent("piss", []string{"[dazza]"}, params)); err != nil {
+			t.Fatalf("handleCommand() error = %v", err)
+		}
+
+		messages := bus.rawMessages()
+		foundAcceptance := false
+		for _, msg := range messages {
+			if strings.Contains(msg, "Dazza doesn't run from a challenge") {
+				foundAcceptance = true
+				break
+			}
+		}
+		if !foundAcceptance {
+			t.Fatalf("expected bot auto-acceptance message from resolved channel username, got messages = %v", messages)
+		}
+		if _, challenger := p.findChallengeByTarget("room", "dazza"); challenger != "" {
+			t.Fatalf("expected no pending challenge for resolved bot target, got %q", challenger)
+		}
+	})
 }
 
 func TestHandleCommandCreatesChallenge(t *testing.T) {
@@ -510,6 +556,11 @@ func TestHandleCommandCreatesChallenge(t *testing.T) {
 	cleanupChallenge(p, "room", "alice")
 }
 
+type coreChannelConfig struct {
+	Channel  string
+	Username string
+}
+
 func TestHandleCommandAcceptsAlias(t *testing.T) {
 	p, bus := newTestPlugin(t, `{}`)
 	params := map[string]string{"channel": "room", "username": "alice", "is_pm": "false"}
@@ -531,6 +582,27 @@ func TestHandleCommandAcceptsAlias(t *testing.T) {
 		t.Fatalf("challenge message = %q, want %q", msg, want)
 	}
 	cleanupChallenge(p, "room", "alice")
+}
+
+func mustConfiguredChannelsResponse(t *testing.T, channels []coreChannelConfig) *framework.EventData {
+	t.Helper()
+
+	rawJSON, err := json.Marshal(struct {
+		Channels []coreChannelConfig `json:"channels"`
+	}{Channels: channels})
+
+	if err != nil {
+		t.Fatalf("marshal configured channels response: %v", err)
+	}
+
+	return &framework.EventData{
+		PluginResponse: &framework.PluginResponse{
+			Success: true,
+			Data: &framework.ResponseData{
+				RawJSON: rawJSON,
+			},
+		},
+	}
 }
 
 func TestCreateChallengeBalanceChecks(t *testing.T) {
