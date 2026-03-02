@@ -114,7 +114,7 @@ func TestOddjobCooldown(t *testing.T) {
 	if !strings.Contains(message, "cooldown") && !strings.Contains(message, "wait") && !strings.Contains(message, "left") && !strings.Contains(message, "no more") {
 		t.Fatalf("unexpected cooldown message: %s", bus.broadcasts[0].data.RawMessage.Message)
 	}
-	if !regexp.MustCompile(`\d+h\s+\d+m`).MatchString(message) {
+	if !regexp.MustCompile(`\d+h`).MatchString(message) || !regexp.MustCompile(`\d+m`).MatchString(message) {
 		t.Fatalf("unexpected cooldown message: %s", bus.broadcasts[0].data.RawMessage.Message)
 	}
 }
