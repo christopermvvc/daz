@@ -178,6 +178,66 @@ func TestParseVideoChangeWithStringDuration(t *testing.T) {
 	}
 }
 
+func TestParseSetCurrent(t *testing.T) {
+	parser := NewParser("test-channel", "test-room")
+
+	rawData := json.RawMessage(`132`)
+	event := Event{
+		Type: "setCurrent",
+		Data: rawData,
+	}
+
+	parsed, err := parser.ParseEvent(event)
+	if err != nil {
+		t.Fatalf("ParseEvent failed: %v", err)
+	}
+
+	videoChange, ok := parsed.(*framework.VideoChangeEvent)
+	if !ok {
+		t.Fatalf("Expected VideoChangeEvent, got %T", parsed)
+	}
+
+	if videoChange.Metadata["setCurrentIndex"] != "132" {
+		t.Errorf("setCurrentIndex = %v, want %v", videoChange.Metadata["setCurrentIndex"], "132")
+	}
+}
+
+func TestParseSetCurrentObjectPayload(t *testing.T) {
+	parser := NewParser("test-channel", "test-room")
+
+	rawData := json.RawMessage(`{"id":"xyz789","type":"youtube","duration":345,"title":"SetCurrent Video"}`)
+	event := Event{
+		Type: "setCurrent",
+		Data: rawData,
+	}
+
+	parsed, err := parser.ParseEvent(event)
+	if err != nil {
+		t.Fatalf("ParseEvent failed: %v", err)
+	}
+
+	videoChange, ok := parsed.(*framework.VideoChangeEvent)
+	if !ok {
+		t.Fatalf("Expected VideoChangeEvent, got %T", parsed)
+	}
+
+	if videoChange.VideoID != "xyz789" {
+		t.Errorf("VideoID = %v, want %v", videoChange.VideoID, "xyz789")
+	}
+
+	if videoChange.VideoType != "youtube" {
+		t.Errorf("VideoType = %v, want %v", videoChange.VideoType, "youtube")
+	}
+
+	if videoChange.Duration != 345 {
+		t.Errorf("Duration = %v, want %v", videoChange.Duration, 345)
+	}
+
+	if videoChange.Title != "SetCurrent Video" {
+		t.Errorf("Title = %v, want %v", videoChange.Title, "SetCurrent Video")
+	}
+}
+
 func TestParseUnknownEvent(t *testing.T) {
 	parser := NewParser("test-channel", "test-room")
 

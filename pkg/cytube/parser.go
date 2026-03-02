@@ -3,6 +3,7 @@ package cytube
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
@@ -50,7 +51,7 @@ func (p *Parser) ParseEvent(event Event) (framework.Event, error) {
 	case "mediaUpdate":
 		return p.parseMediaUpdate(baseEvent, event.Data)
 	case "setCurrent":
-		return &baseEvent, nil
+		return p.parseSetCurrent(baseEvent, event.Data)
 	case "login":
 		return p.parseLogin(baseEvent, event.Data)
 	case "addUser":
@@ -177,6 +178,26 @@ func (p *Parser) parseMediaUpdate(base framework.CytubeEvent, data json.RawMessa
 	}
 
 	return event, nil
+}
+
+func (p *Parser) parseSetCurrent(base framework.CytubeEvent, data json.RawMessage) (*framework.VideoChangeEvent, error) {
+	// Cytube sends setCurrent as either:
+	// - full media payload (legacy/alternate behavior)
+	// - a numeric/JSON string playlist index (observed in production)
+	// Keep this tolerant so nowplaying can still initialize from queue position.
+	var index int
+	if err := json.Unmarshal(data, &index); err == nil {
+		base.Metadata["setCurrentIndex"] = strconv.Itoa(index)
+		return &framework.VideoChangeEvent{CytubeEvent: base}, nil
+	}
+
+	var indexStr string
+	if err := json.Unmarshal(data, &indexStr); err == nil && indexStr != "" {
+		base.Metadata["setCurrentIndex"] = indexStr
+		return &framework.VideoChangeEvent{CytubeEvent: base}, nil
+	}
+
+	return p.parseVideoChange(base, data)
 }
 
 func (p *Parser) parseLogin(base framework.CytubeEvent, data json.RawMessage) (*framework.LoginEvent, error) {
