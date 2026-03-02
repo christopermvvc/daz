@@ -31,6 +31,12 @@
       "command_prefix": "!"
     },
     "economy": {},
+    "pissingcontest": {
+      "bot_username": "",
+      "challenge_duration_seconds": 30,
+      "cooldown_minutes": 5
+    },
+    "playerstate": {},
     "fishing": {}
   }
 }

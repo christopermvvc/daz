@@ -298,3 +298,21 @@ Notes:
 - The bot expects Postgres 14+ per README.
 - The repo uses Go modules; run `go mod download` if needed.
 - Keep log levels configurable via config/env and `logger.SetDebug`.
+
+## Player State API (bladder/alcohol/weed/food/lust)
+- Use `framework.NewPlayerStateClient` in command/game plugins.
+- API client methods for whole-state:
+  - `Get(ctx, channel, username)` → `PlayerState`
+  - `Set(ctx, PlayerStateMutationRequest)` (sparse overwrite)
+  - `Adjust(ctx, PlayerStateMutationRequest)` (deltas)
+- Per-field helper methods:
+  - `SetBladder`, `AdjustBladder`
+  - `SetAlcohol`, `AdjustAlcohol`
+  - `SetWeed`, `AdjustWeed`
+  - `SetFood`, `AdjustFood`
+  - `SetLust`, `AdjustLust`
+- All values are clamped at the store layer to never go below zero.
+- Example usage:
+  - `stateClient := framework.NewPlayerStateClient(bus, "myplugin")`
+  - `stateClient.AdjustBladder(ctx, channel, username, -5)` for bladder drain
+  - `stateClient.AdjustLust(ctx, channel, username, 12)` for lust gain
