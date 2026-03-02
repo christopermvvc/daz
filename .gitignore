@@ -157,6 +157,7 @@ dazza-repo/
 dazza-reference/
 *-repo/
 *-reference/
+data/
 
 # Documentation and fix tracking
 *_FIX.md

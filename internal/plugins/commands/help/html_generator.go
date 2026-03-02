@@ -181,8 +181,17 @@ func (g *HTMLGenerator) GenerateAll(ctx context.Context) error {
 		return err
 	}
 
-	outputFile := filepath.Join(g.config.HTMLOutputPath, "index.html")
-	if err := os.WriteFile(outputFile, []byte(content), 0644); err != nil {
+	rootOutputFile := filepath.Join(g.config.HTMLOutputPath, "index.html")
+	if err := os.WriteFile(rootOutputFile, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write help HTML: %w", err)
+	}
+
+	helperOutputDir := filepath.Join(g.config.HTMLOutputPath, "help")
+	if err := os.MkdirAll(helperOutputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create help output directory: %w", err)
+	}
+	helperOutputFile := filepath.Join(helperOutputDir, "index.html")
+	if err := os.WriteFile(helperOutputFile, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write help HTML: %w", err)
 	}
 
