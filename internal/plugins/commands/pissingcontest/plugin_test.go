@@ -30,12 +30,17 @@ type mockPissContestBus struct {
 	requests      []mockPissContestRequest
 	requestErr    error
 	requestResp   *framework.EventData
+	onBroadcast   func(string, *framework.EventData)
 }
 
 func (m *mockPissContestBus) Broadcast(eventType string, data *framework.EventData) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	cb := m.onBroadcast
 	m.broadcasts = append(m.broadcasts, mockEvent{eventType: eventType, data: data})
+	if cb != nil {
+		cb(eventType, data)
+	}
 	return nil
 }
 
@@ -304,7 +309,7 @@ func TestApplyBotAdvantage(t *testing.T) {
 
 func TestIsBotTargetFromCoreConfig(t *testing.T) {
 	p, bus := newTestPlugin(t, `{}`)
-	bus.requestResp = mustConfiguredChannelsResponse(t, []coreChannelConfig{
+	bus.onBroadcast = configuredChannelsResponder(t, p, []coreChannelConfig{
 		{Channel: "room", Username: "dazza"},
 	})
 
@@ -506,7 +511,7 @@ func TestHandleCommandValidation(t *testing.T) {
 
 	t.Run("bot target resolved from core config", func(t *testing.T) {
 		p, bus := newTestPlugin(t, `{}`)
-		bus.requestResp = mustConfiguredChannelsResponse(t, []coreChannelConfig{
+		bus.onBroadcast = configuredChannelsResponder(t, p, []coreChannelConfig{
 			{Channel: "room", Username: "dazza"},
 		})
 		params := map[string]string{"channel": "room", "username": "alice", "is_pm": "false"}
@@ -602,6 +607,27 @@ func mustConfiguredChannelsResponse(t *testing.T, channels []coreChannelConfig) 
 				RawJSON: rawJSON,
 			},
 		},
+	}
+}
+
+func configuredChannelsResponder(t *testing.T, p *Plugin, channels []coreChannelConfig) func(string, *framework.EventData) {
+	t.Helper()
+
+	return func(eventType string, data *framework.EventData) {
+		if eventType != "plugin.request" || data == nil || data.PluginRequest == nil {
+			return
+		}
+		if data.PluginRequest.Type != "get_configured_channels" {
+			return
+		}
+
+		resp := mustConfiguredChannelsResponse(t, channels)
+		if resp.PluginResponse != nil {
+			resp.PluginResponse.ID = data.PluginRequest.ID
+		}
+		if err := p.handlePluginResponse(framework.NewDataEvent("plugin.response.pissingcontest", resp)); err != nil {
+			t.Errorf("mock plugin response error: %v", err)
+		}
 	}
 }
 

@@ -30,6 +30,8 @@ type Plugin struct {
 	challenges   map[string]map[string]*activeChallenge
 	cooldowns    map[string]map[string]time.Time
 	roomBotNames map[string]string
+	pendingBot   map[string]chan *framework.PluginResponse
+	pendingBotMu sync.Mutex
 	challengeTTL time.Duration
 	cooldown     time.Duration
 	config       Config
@@ -49,6 +51,7 @@ func New() framework.Plugin {
 		challenges:   make(map[string]map[string]*activeChallenge),
 		cooldowns:    make(map[string]map[string]time.Time),
 		roomBotNames: make(map[string]string),
+		pendingBot:   make(map[string]chan *framework.PluginResponse),
 		challengeTTL: challengeTimeout,
 		cooldown:     defaultCooldown,
 	}
@@ -117,6 +120,10 @@ func (p *Plugin) Start() error {
 		return fmt.Errorf("failed to subscribe chat message event: %w", err)
 	}
 
+	if err := p.eventBus.Subscribe("plugin.response.pissingcontest", p.handlePluginResponse); err != nil {
+		return fmt.Errorf("failed to subscribe to plugin response: %w", err)
+	}
+
 	framework.SeedMathRand()
 	logger.Debug(p.name, "Started")
 	return nil
@@ -146,6 +153,9 @@ func (p *Plugin) Stop() error {
 	p.challenges = make(map[string]map[string]*activeChallenge)
 	p.cooldowns = make(map[string]map[string]time.Time)
 	p.roomBotNames = make(map[string]string)
+	p.pendingBotMu.Lock()
+	p.pendingBot = make(map[string]chan *framework.PluginResponse)
+	p.pendingBotMu.Unlock()
 	p.mu.Unlock()
 
 	return nil
@@ -506,6 +516,36 @@ func (p *Plugin) cacheResolvedBotName(channel, botName string) {
 	p.mu.Unlock()
 }
 
+func (p *Plugin) handlePluginResponse(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil || dataEvent.Data.PluginResponse == nil {
+		return nil
+	}
+
+	resp := dataEvent.Data.PluginResponse
+	if strings.TrimSpace(resp.ID) == "" {
+		return nil
+	}
+
+	p.pendingBotMu.Lock()
+	responseChan, exists := p.pendingBot[resp.ID]
+	if exists {
+		delete(p.pendingBot, resp.ID)
+	}
+	p.pendingBotMu.Unlock()
+
+	if !exists {
+		return nil
+	}
+
+	select {
+	case responseChan <- resp:
+	default:
+	}
+
+	return nil
+}
+
 func (p *Plugin) resolveBotNameForRoom(channel string) (string, error) {
 	room := normalizeChannel(channel)
 	if room == "" {
@@ -513,6 +553,16 @@ func (p *Plugin) resolveBotNameForRoom(channel string) (string, error) {
 	}
 
 	requestID := fmt.Sprintf("piss-botname-%d", time.Now().UnixNano())
+	responseChan := make(chan *framework.PluginResponse, 1)
+	p.pendingBotMu.Lock()
+	p.pendingBot[requestID] = responseChan
+	p.pendingBotMu.Unlock()
+	defer func() {
+		p.pendingBotMu.Lock()
+		delete(p.pendingBot, requestID)
+		p.pendingBotMu.Unlock()
+	}()
+
 	request := &framework.EventData{
 		PluginRequest: &framework.PluginRequest{
 			ID:   requestID,
@@ -525,37 +575,38 @@ func (p *Plugin) resolveBotNameForRoom(channel string) (string, error) {
 	ctx, cancel := context.WithTimeout(p.ctx, 2*time.Second)
 	defer cancel()
 
-	metadata := &framework.EventMetadata{
-		Source:        p.name,
-		CorrelationID: requestID,
+	if err := p.eventBus.Broadcast("plugin.request", request); err != nil {
+		return "", fmt.Errorf("failed to request configured channels: %w", err)
 	}
 
-	responseEvent, err := p.eventBus.Request(ctx, "core", "plugin.request", request, metadata)
-	if err != nil {
-		return "", err
-	}
-	if responseEvent == nil || responseEvent.PluginResponse == nil {
+	select {
+	case <-ctx.Done():
 		return "", nil
-	}
-
-	response := responseEvent.PluginResponse
-	if !response.Success {
-		if response.Error == "" {
+	case response := <-responseChan:
+		if response == nil {
 			return "", nil
 		}
-		return "", fmt.Errorf("core get_configured_channels failed: %s", response.Error)
-	}
-	if response.Data == nil || len(response.Data.RawJSON) == 0 {
-		return "", nil
-	}
+		if !response.Success {
+			if response.Error == "" {
+				return "", nil
+			}
+			return "", fmt.Errorf("core get_configured_channels failed: %s", response.Error)
+		}
+		if response.Data == nil || len(response.Data.RawJSON) == 0 {
+			return "", nil
+		}
 
-	botName, err := extractBotUsernameFromChannels(response.Data.RawJSON, room)
-	if err != nil {
-		return "", err
-	}
+		botName, err := extractBotUsernameFromChannels(response.Data.RawJSON, room)
+		if err != nil {
+			return "", err
+		}
+		if botName == "" {
+			return "", nil
+		}
 
-	p.cacheResolvedBotName(room, botName)
-	return botName, nil
+		p.cacheResolvedBotName(room, botName)
+		return botName, nil
+	}
 }
 
 func extractBotUsernameFromChannels(rawJSON json.RawMessage, channel string) (string, error) {
