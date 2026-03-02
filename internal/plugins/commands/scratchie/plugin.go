@@ -141,7 +141,7 @@ func (p *Plugin) registerCommands() error {
 				KeyValue: map[string]string{
 					"commands":    "scratchie,scratch,scratchies,lotto",
 					"min_rank":    "0",
-					"description": "buy a scratchie",
+					"description": "buy a scratchie ($5, $20, $50, $100)",
 				},
 			},
 		},
