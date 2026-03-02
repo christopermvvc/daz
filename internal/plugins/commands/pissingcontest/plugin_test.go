@@ -321,6 +321,21 @@ func TestIsBotTargetFromCoreConfig(t *testing.T) {
 	}
 }
 
+func TestSendRibbonTauntUsesBotTaunts(t *testing.T) {
+	t.Parallel()
+
+	p, _ := newTestPlugin(t, `{"bot_username":"dazza"}`)
+	p.sendRibbonTaunt("room", contestResult{volume: 1600}, "dazza")
+
+	msg, ok := p.eventBus.(*mockPissContestBus).lastRawMessage()
+	if !ok {
+		t.Fatal("expected ribbon taunt message")
+	}
+	if !strings.Contains(msg, "Dazza") || !strings.Contains(msg, "his own") {
+		t.Fatalf("expected bot-specific ribbon taunt, got %q", msg)
+	}
+}
+
 func TestWeatherEffectsWindSailorMultiplier(t *testing.T) {
 	t.Parallel()
 

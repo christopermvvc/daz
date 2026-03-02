@@ -967,6 +967,15 @@ func (p *Plugin) sendRibbonTaunt(room string, stats contestResult, username stri
 		return
 	}
 
+	if p.isBotTarget(room, username) {
+		msg := randomFromSlice(botRibbonTaunts)
+		if msg == "" {
+			return
+		}
+		p.sendPublic(room, msg)
+		return
+	}
+
 	msg := randomFromSlice(ribbonTaunts)
 	if msg == "" {
 		return

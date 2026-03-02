@@ -47,6 +47,11 @@ var (
 		"silence, then chaos: dazza ties a victory ribbon onto %s's oversized shaft before anyone can blink.",
 		"if there's a hall of fame, dazza pins %s's stat and hangs an extra ribbon on that glorious member.",
 	}
+	botRibbonTaunts = []string{
+		"Dazza ties the ribbon around his own overlong member and calls it a trophy.",
+		"Dazza hangs a winner ribbon on his own shaft because he doesn't need a runner-up.",
+		"The room roars as Dazza crowns his own monster member with a giant ribbon.",
+	}
 	acceptPhrases = []string{
 		"yes",
 		"yeah",
