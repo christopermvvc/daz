@@ -265,6 +265,37 @@ func TestApplyEffect(t *testing.T) {
 	}
 }
 
+func TestApplyBotAdvantage(t *testing.T) {
+	p, _ := newTestPlugin(t, `{"bot_username":"botman"}`)
+	challengerStats := contestResult{
+		distance: 2,
+		volume:   100,
+		aim:      10,
+		duration: 10,
+	}
+	challengedStats := contestResult{
+		distance: 2,
+		volume:   100,
+		aim:      10,
+		duration: 10,
+	}
+	var challengerMods, challengedMods contestModifiers
+
+	p.applyBotAdvantage(&challengerStats, &challengedStats, &challengerMods, &challengedMods, "botman")
+	if challengerStats.distance <= 2 || challengerStats.volume <= 100 {
+		t.Fatalf("bot advantage should boost its own distance/volume, got distance %f volume %f", challengerStats.distance, challengerStats.volume)
+	}
+	if challengedStats.aim >= 10 || challengedStats.volume >= 100 {
+		t.Fatalf("bot advantage should debuff challenged stats, got aimed %f volume %f", challengedStats.aim, challengedStats.volume)
+	}
+
+	before := challengedStats
+	p.applyBotAdvantage(&challengedStats, &challengerStats, &challengedMods, &challengerMods, "alice")
+	if challengedStats != before {
+		t.Fatalf("non-bot should not trigger advantage")
+	}
+}
+
 func TestWeatherEffectsWindSailorMultiplier(t *testing.T) {
 	t.Parallel()
 
@@ -437,13 +468,19 @@ func TestHandleCommandValidation(t *testing.T) {
 		if err := p.handleCommand(makeCommandEvent("piss", []string{"botman"}, params)); err != nil {
 			t.Fatalf("handleCommand() error = %v", err)
 		}
-		msg, ok := bus.lastRawMessage()
-		if !ok {
-			t.Fatal("expected public message")
+		messages := bus.rawMessages()
+		foundAcceptance := false
+		for _, msg := range messages {
+			if strings.Contains(msg, "Dazza doesn't run from a challenge") {
+				foundAcceptance = true
+				break
+			}
 		}
-		want := "bots don't piss mate, challenge a real person"
-		if msg != want {
-			t.Fatalf("public message = %q, want %q", msg, want)
+		if !foundAcceptance {
+			t.Fatalf("expected bot auto-acceptance message, got messages = %v", messages)
+		}
+		if _, challenger := p.findChallengeByTarget("room", "botman"); challenger != "" {
+			t.Fatalf("expected no pending challenge for bot target, got %q", challenger)
 		}
 	})
 }

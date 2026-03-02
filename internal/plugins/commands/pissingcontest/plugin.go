@@ -257,14 +257,16 @@ func (p *Plugin) handlePissCommand(channel, username string, args []string) {
 		p.sendCommandResult(channel, username, "bots don't piss mate, challenge a real person", false)
 		return
 	}
-	if p.config.BotUsername != "" && strings.EqualFold(target, p.config.BotUsername) {
-		p.sendCommandResult(channel, username, "bots don't piss mate, challenge a real person", false)
-		return
-	}
 
 	challenge, err := p.createChallenge(channel, username, target, amount)
 	if err != nil {
 		p.sendCommandResult(channel, username, err.Error(), false)
+		return
+	}
+
+	if p.isBotTarget(target) {
+		p.sendPublic(channel, fmt.Sprintf("Dazza doesn't run from a challenge — -%s accepts -%s's piss contest!", challenge.Challenged, challenge.Challenger))
+		p.handleAcceptChallenge(challenge.Challenger, channel, target)
 		return
 	}
 
@@ -407,12 +409,14 @@ func (p *Plugin) handleAcceptChallenge(challenger, room, challenged string) {
 	}
 	p.mu.Unlock()
 
-	if err := p.assertCooldownReady(room, challenged); err != nil {
-		p.sendPublic(room, err.Error())
-		return
+	if !p.isBotTarget(challenged) {
+		if err := p.assertCooldownReady(room, challenged); err != nil {
+			p.sendPublic(room, err.Error())
+			return
+		}
 	}
 
-	if challenge.Amount > 0 {
+	if challenge.Amount > 0 && !p.isBotTarget(challenged) {
 		balance, err := p.getBalance(room, challenged)
 		if err != nil {
 			p.sendPublic(room, "ya got a weird wallet error mate - challenge dropped")
@@ -435,6 +439,22 @@ func (p *Plugin) handleDeclineChallenge(challenger, room, challenged string) {
 		return
 	}
 	p.sendPublic(room, fmt.Sprintf("-%s pussied out! Kept it in their pants like a coward", challenged))
+}
+
+func (p *Plugin) isBotTarget(username string) bool {
+	return p.config.BotUsername != "" && strings.EqualFold(username, p.config.BotUsername)
+}
+
+func (p *Plugin) applyBotAdvantage(stats *contestResult, opponent *contestResult, ownerMods, opponentMods *contestModifiers, username string) {
+	if !p.isBotTarget(username) || stats == nil {
+		return
+	}
+
+	advantage := characteristic{
+		Name:    "Dazza advantage",
+		Effects: map[string]float64{"all": 45, "opponent_aim": -35, "opponent_volume": -35},
+	}
+	applyCharacteristic(stats, advantage, opponent, ownerMods, opponentMods)
 }
 
 func (p *Plugin) startContest(ch *activeChallenge) {
@@ -476,6 +496,9 @@ func (p *Plugin) runContest(ch *activeChallenge) {
 
 	ch.ChallengerMods = contestModifiers{}
 	ch.ChallengedMods = contestModifiers{}
+	p.applyBotAdvantage(&challengerStats, &challengedStats, &ch.ChallengerMods, &ch.ChallengedMods, ch.Challenger)
+	p.applyBotAdvantage(&challengedStats, &challengerStats, &ch.ChallengedMods, &ch.ChallengerMods, ch.Challenged)
+
 	applyCharacteristic(&challengerStats, ch.ChallengerChar, &challengedStats, &ch.ChallengerMods, &ch.ChallengedMods)
 	applyCharacteristic(&challengedStats, ch.ChallengedChar, &challengerStats, &ch.ChallengedMods, &ch.ChallengerMods)
 
