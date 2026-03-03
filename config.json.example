@@ -39,6 +39,8 @@
         "connect_timeout": 30
       },
       "background_max_connections": 5,
+      "background_queue_max": 40,
+      "background_queue_wait_ms": 1200,
       "core_event_queue_size": 4000,
       "core_event_batch_size": 64,
       "core_event_flush_ms": 200,
@@ -66,7 +68,8 @@
     "usertracker": {
       "inactivity_timeout_minutes": 30,
       "userlist_join_delay_ms": 15,
-      "userlist_join_queue_max": 2000
+      "userlist_join_queue_max": 2000,
+      "userlist_debounce_ms": 3000
     },
     "ollama": {
       "enabled": true,

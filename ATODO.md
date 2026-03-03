@@ -16,10 +16,10 @@
 - [x] Run full test suite (`go test ./...`) if feasible.
 
 ## Next Phase: VPS Stability Remediation (2026-03-03 findings)
-- [ ] Protect command path with a dedicated event bus lane for `command.*` and admin flows.
+- [x] Protect command path with a dedicated event bus lane for `command.*` and admin flows.
 - [x] Propagate high-priority metadata into command-originated SQL requests.
-- [ ] Split SQL execution into critical vs background lanes with bounded background queueing.
-- [ ] Add non-critical SQL/background shedding and coalescing under pressure.
+- [x] Split SQL execution into critical vs background lanes with bounded background queueing.
+- [x] Add non-critical SQL/background shedding and coalescing under pressure.
 - [x] Debounce reconnect/startup sync so userlist+playlist initialization runs once per reconnect window.
 - [x] Prevent overlapping `mediatracker` staged-ingestion runs per channel/session.
 - [ ] Gate help publish jobs with content-hash checks and a minimum publish interval.
@@ -29,6 +29,6 @@
 - [ ] Tune event bus worker reservations and plugin background concurrency for 1-vCPU deployment.
 - [ ] Add pressure tests proving command delivery during reconnect/startup burst traffic.
 - [ ] Add integration tests for reconnect burst dedupe and staged playlist behavior.
-- [ ] Run targeted tests (`eventbus`, `eventfilter`, `sql`, `mediatracker`, `usertracker`) plus `go test ./...`.
+- [x] Run targeted tests (`eventbus`, `eventfilter`, `sql`, `mediatracker`, `usertracker`) plus `go test ./...`.
 - [ ] Push phased commits to `origin` (lane/debounce first, then jobs/migrations/tuning).
 - [ ] Validate on VPS with metrics: `!update` reach rate, SQL timeout count, dropped-event count.

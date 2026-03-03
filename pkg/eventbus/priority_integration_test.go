@@ -201,7 +201,11 @@ func TestHighPriorityDispatchBypassesNormalSaturation(t *testing.T) {
 	}()
 
 	blockLow := make(chan struct{})
-	lowStarted := make(chan struct{}, 3)
+	lowWorkers := cap(eb.dispatchSemNormal)
+	if lowWorkers < 1 {
+		lowWorkers = 1
+	}
+	lowStarted := make(chan struct{}, lowWorkers)
 	highDone := make(chan struct{}, 1)
 
 	if err := eb.Subscribe("saturation.low", func(event framework.Event) error {
@@ -225,13 +229,13 @@ func TestHighPriorityDispatchBypassesNormalSaturation(t *testing.T) {
 		t.Fatalf("failed to subscribe high handler: %v", err)
 	}
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < lowWorkers; i++ {
 		if err := eb.Broadcast("saturation.low", &framework.EventData{}); err != nil {
 			t.Fatalf("failed to broadcast low event %d: %v", i, err)
 		}
 	}
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < lowWorkers; i++ {
 		select {
 		case <-lowStarted:
 		case <-time.After(2 * time.Second):

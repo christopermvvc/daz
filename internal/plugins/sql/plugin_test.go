@@ -185,6 +185,89 @@ func TestSplitConnectionBudget(t *testing.T) {
 	}
 }
 
+func TestClassifySQLRequestLane(t *testing.T) {
+	p := &Plugin{}
+
+	tests := []struct {
+		name     string
+		source   string
+		query    string
+		expected sqlRequestLane
+	}{
+		{
+			name:     "background source routed to background lane",
+			source:   "mediatracker",
+			query:    "UPDATE daz_mediatracker_queue SET title = $1 WHERE channel = $2",
+			expected: sqlLaneBackground,
+		},
+		{
+			name:     "core events query routed to background lane",
+			source:   "unknown",
+			query:    "SELECT * FROM daz_core_events LIMIT 10",
+			expected: sqlLaneBackground,
+		},
+		{
+			name:     "command source routed to critical lane",
+			source:   "update",
+			query:    "SELECT 1",
+			expected: sqlLaneCritical,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := p.classifySQLRequestLane(tc.source, tc.query)
+			if got != tc.expected {
+				t.Fatalf("classifySQLRequestLane(%q, %q) = %v, want %v", tc.source, tc.query, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestAcquireSQLRequestLaneCriticalIgnoresBackgroundPressure(t *testing.T) {
+	p := &Plugin{}
+	p.configureSQLRequestLanes(2, 1)
+
+	// Saturate background lane.
+	p.sqlBackgroundSem <- struct{}{}
+
+	release, err := p.acquireSQLRequestLane(context.Background(), "update", "SELECT 1")
+	if err != nil {
+		t.Fatalf("expected critical lane acquisition to succeed: %v", err)
+	}
+	defer release()
+
+	if len(p.sqlCriticalSem) != 1 {
+		t.Fatalf("expected one critical slot to be occupied, got %d", len(p.sqlCriticalSem))
+	}
+}
+
+func TestAcquireSQLRequestLaneBackgroundShedsWhenQueueFull(t *testing.T) {
+	p := &Plugin{
+		config: Config{
+			BackgroundQueueMax:    1,
+			BackgroundQueueWaitMS: 5,
+		},
+	}
+	p.configureSQLRequestLanes(1, 1)
+
+	// Saturate background active slot and pending queue.
+	p.sqlBackgroundSem <- struct{}{}
+	p.sqlBackgroundPend <- struct{}{}
+	defer func() {
+		<-p.sqlBackgroundSem
+		<-p.sqlBackgroundPend
+	}()
+
+	_, err := p.acquireSQLRequestLane(context.Background(), "mediatracker", "UPDATE daz_mediatracker_queue SET title = $1")
+	if err == nil {
+		t.Fatal("expected background lane acquisition to fail when queue is full")
+	}
+	if got := p.sqlBackgroundDrops.Load(); got != 1 {
+		t.Fatalf("expected one dropped background request, got %d", got)
+	}
+}
+
 func TestEnqueueCoreEventLogDropsNonCriticalWhenQueuePressured(t *testing.T) {
 	p := &Plugin{
 		coreEventLogQueue: make(chan *coreEventLogEntry, 1),

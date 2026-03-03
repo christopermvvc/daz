@@ -34,9 +34,10 @@ type EventBus struct {
 	bufferSizes map[string]int
 
 	// Limit concurrent handler execution with reserved capacity for high-priority events.
-	dispatchSemNormal chan struct{}
-	dispatchSemHigh   chan struct{}
-	dispatchPending   chan struct{}
+	dispatchSemCommand chan struct{}
+	dispatchSemNormal  chan struct{}
+	dispatchSemHigh    chan struct{}
+	dispatchPending    chan struct{}
 
 	// Track active routers to prevent duplicates
 	activeRouters map[string]bool
@@ -112,14 +113,33 @@ func NewEventBus(config *Config) *EventBus {
 	if workerCount < 4 {
 		workerCount = 4
 	}
+
+	commandWorkers := workerCount / 8
+	if commandWorkers < 1 {
+		commandWorkers = 1
+	}
+
 	highPriorityWorkers := workerCount / 4
 	if highPriorityWorkers < 1 {
 		highPriorityWorkers = 1
 	}
-	if highPriorityWorkers >= workerCount {
-		highPriorityWorkers = workerCount - 1
+
+	// Always preserve at least one normal worker.
+	maxReserved := workerCount - 1
+	reserved := commandWorkers + highPriorityWorkers
+	if reserved > maxReserved {
+		overflow := reserved - maxReserved
+		if highPriorityWorkers > 1 {
+			reduce := minInt(overflow, highPriorityWorkers-1)
+			highPriorityWorkers -= reduce
+			overflow -= reduce
+		}
+		if overflow > 0 && commandWorkers > 1 {
+			reduce := minInt(overflow, commandWorkers-1)
+			commandWorkers -= reduce
+		}
 	}
-	normalWorkers := workerCount - highPriorityWorkers
+	normalWorkers := workerCount - commandWorkers - highPriorityWorkers
 	if normalWorkers < 1 {
 		normalWorkers = 1
 	}
@@ -133,6 +153,7 @@ func NewEventBus(config *Config) *EventBus {
 		activeRouters:      make(map[string]bool),
 		pendingRequests:    make(map[string]chan *pluginResponse),
 		droppedEvents:      make(map[string]int64),
+		dispatchSemCommand: make(chan struct{}, commandWorkers),
 		dispatchSemNormal:  make(chan struct{}, normalWorkers),
 		dispatchSemHigh:    make(chan struct{}, highPriorityWorkers),
 		dispatchPending:    make(chan struct{}, workerCount*8),
@@ -471,8 +492,52 @@ func (eb *EventBus) effectivePriority(msg *eventMessage) int {
 	return priority
 }
 
+func (eb *EventBus) isCommandPath(msg *eventMessage) bool {
+	if msg == nil {
+		return false
+	}
+	if strings.HasPrefix(msg.Type, "command.") {
+		return true
+	}
+	if msg.Type == "plugin.request" && msg.Data != nil && msg.Data.PluginRequest != nil {
+		req := msg.Data.PluginRequest
+		if req.Type == "execute" && req.From == "eventfilter" {
+			return true
+		}
+	}
+	return false
+}
+
 func (eb *EventBus) acquireDispatchSlot(msg *eventMessage) func() {
 	priority := eb.effectivePriority(msg)
+	commandPath := eb.isCommandPath(msg)
+
+	if commandPath {
+		select {
+		case eb.dispatchSemCommand <- struct{}{}:
+			return func() { <-eb.dispatchSemCommand }
+		default:
+		}
+
+		select {
+		case eb.dispatchSemHigh <- struct{}{}:
+			return func() { <-eb.dispatchSemHigh }
+		default:
+		}
+
+		select {
+		case eb.dispatchSemNormal <- struct{}{}:
+			return func() { <-eb.dispatchSemNormal }
+		default:
+		}
+
+		select {
+		case eb.dispatchSemCommand <- struct{}{}:
+			return func() { <-eb.dispatchSemCommand }
+		case <-eb.ctx.Done():
+			return func() {}
+		}
+	}
 
 	// Priority > normal can use reserved high-priority capacity first.
 	if priority > framework.PriorityNormal {
@@ -510,6 +575,15 @@ func (eb *EventBus) acquireDispatchSlot(msg *eventMessage) func() {
 func (eb *EventBus) acquirePendingDispatchSlot(msg *eventMessage) (func(), bool) {
 	release := func() { <-eb.dispatchPending }
 
+	if eb.isCommandPath(msg) {
+		select {
+		case eb.dispatchPending <- struct{}{}:
+			return release, true
+		case <-eb.ctx.Done():
+			return nil, false
+		}
+	}
+
 	priority := eb.effectivePriority(msg)
 
 	if priority > framework.PriorityNormal {
@@ -536,6 +610,13 @@ func (eb *EventBus) acquirePendingDispatchSlot(msg *eventMessage) (func(), bool)
 	case <-eb.ctx.Done():
 		return nil, false
 	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // getMatchingSubscribers returns all subscribers that match the event type and tags

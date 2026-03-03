@@ -44,12 +44,19 @@ type Plugin struct {
 	coreEventFlushEvery time.Duration
 	coreEventDrops      atomic.Int64
 	coreEventExecFn     func(context.Context, string, ...interface{}) error
+
+	sqlCriticalSem     chan struct{}
+	sqlBackgroundSem   chan struct{}
+	sqlBackgroundPend  chan struct{}
+	sqlBackgroundDrops atomic.Int64
 }
 
 type Config struct {
 	Database                 DatabaseConfig `json:"database"`
 	LoggerRules              []LoggerRule   `json:"logger_rules"`
 	BackgroundMaxConnections int            `json:"background_max_connections"`
+	BackgroundQueueMax       int            `json:"background_queue_max"`
+	BackgroundQueueWaitMS    int            `json:"background_queue_wait_ms"`
 	CoreEventQueueSize       int            `json:"core_event_queue_size"`
 	CoreEventBatchSize       int            `json:"core_event_batch_size"`
 	CoreEventFlushMS         int            `json:"core_event_flush_ms"`
@@ -108,11 +115,20 @@ type coreEventLogEntry struct {
 }
 
 const (
-	defaultCoreEventQueueSize  = 4000
-	defaultCoreEventBatchSize  = 64
-	defaultCoreEventFlushMS    = 200
-	coreEventCriticalEnqueueMS = 75
+	defaultCoreEventQueueSize       = 4000
+	defaultCoreEventBatchSize       = 64
+	defaultCoreEventFlushMS         = 200
+	coreEventCriticalEnqueueMS      = 75
+	defaultSQLBackgroundQueueWaitMS = 1200
+	defaultSQLBackgroundQueueFactor = 8
 )
+
+var backgroundSQLSources = map[string]struct{}{
+	"analytics":    {},
+	"gallery":      {},
+	"mediatracker": {},
+	"usertracker":  {},
+}
 
 func NewPlugin() *Plugin {
 	return &Plugin{
@@ -350,6 +366,7 @@ func (p *Plugin) connectDatabase() error {
 		totalConns = 10
 	}
 	criticalConns, backgroundConns := splitConnectionBudget(totalConns, p.config.BackgroundMaxConnections)
+	p.configureSQLRequestLanes(criticalConns, backgroundConns)
 
 	poolConfig, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
@@ -479,6 +496,128 @@ func splitConnectionBudget(total int, configuredBackground int) (critical int, b
 	}
 
 	return critical, background
+}
+
+func (p *Plugin) configureSQLRequestLanes(criticalConns, backgroundConns int) {
+	if criticalConns < 1 {
+		criticalConns = 1
+	}
+	if backgroundConns < 0 {
+		backgroundConns = 0
+	}
+
+	p.sqlCriticalSem = make(chan struct{}, criticalConns)
+
+	if backgroundConns == 0 {
+		p.sqlBackgroundSem = nil
+		p.sqlBackgroundPend = nil
+		return
+	}
+
+	p.sqlBackgroundSem = make(chan struct{}, backgroundConns)
+
+	queueMax := p.config.BackgroundQueueMax
+	if queueMax <= 0 {
+		queueMax = backgroundConns * defaultSQLBackgroundQueueFactor
+		if queueMax < backgroundConns {
+			queueMax = backgroundConns
+		}
+	}
+	p.sqlBackgroundPend = make(chan struct{}, queueMax)
+}
+
+type sqlRequestLane int
+
+const (
+	sqlLaneCritical sqlRequestLane = iota
+	sqlLaneBackground
+)
+
+func (p *Plugin) classifySQLRequestLane(source, query string) sqlRequestLane {
+	normalizedSource := strings.ToLower(strings.TrimSpace(source))
+	if _, background := backgroundSQLSources[normalizedSource]; background {
+		return sqlLaneBackground
+	}
+
+	lowerQuery := strings.ToLower(strings.TrimSpace(query))
+	if strings.Contains(lowerQuery, "daz_core_events") ||
+		strings.Contains(lowerQuery, "daz_chat_log") ||
+		strings.Contains(lowerQuery, "daz_user_activity") {
+		return sqlLaneBackground
+	}
+
+	return sqlLaneCritical
+}
+
+func (p *Plugin) acquireSQLRequestLane(ctx context.Context, source, query string) (func(), error) {
+	if p.sqlCriticalSem == nil {
+		return func() {}, nil
+	}
+
+	lane := p.classifySQLRequestLane(source, query)
+	if lane == sqlLaneCritical || p.sqlBackgroundSem == nil {
+		select {
+		case p.sqlCriticalSem <- struct{}{}:
+			return func() { <-p.sqlCriticalSem }, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	select {
+	case p.sqlBackgroundSem <- struct{}{}:
+		return func() { <-p.sqlBackgroundSem }, nil
+	default:
+	}
+
+	if p.sqlBackgroundPend == nil {
+		p.recordBackgroundSQLDrop(source, query)
+		return nil, fmt.Errorf("background SQL lane saturated")
+	}
+
+	select {
+	case p.sqlBackgroundPend <- struct{}{}:
+	default:
+		p.recordBackgroundSQLDrop(source, query)
+		return nil, fmt.Errorf("background SQL lane saturated")
+	}
+	defer func() {
+		<-p.sqlBackgroundPend
+	}()
+
+	waitMS := p.config.BackgroundQueueWaitMS
+	if waitMS <= 0 {
+		waitMS = defaultSQLBackgroundQueueWaitMS
+	}
+
+	waitCtx := ctx
+	cancel := func() {}
+	if waitMS > 0 {
+		waitCtx, cancel = context.WithTimeout(ctx, time.Duration(waitMS)*time.Millisecond)
+	}
+	defer cancel()
+
+	select {
+	case p.sqlBackgroundSem <- struct{}{}:
+		return func() { <-p.sqlBackgroundSem }, nil
+	case <-waitCtx.Done():
+		p.recordBackgroundSQLDrop(source, query)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("background SQL lane wait timed out")
+	}
+}
+
+func (p *Plugin) recordBackgroundSQLDrop(source, query string) {
+	drops := p.sqlBackgroundDrops.Add(1)
+	if drops == 1 || drops%100 == 0 {
+		trimmedQuery := strings.TrimSpace(query)
+		if len(trimmedQuery) > 80 {
+			trimmedQuery = trimmedQuery[:80] + "..."
+		}
+		logger.Warn("SQL", "Dropping/deprioritizing background SQL request under pressure (source=%s dropped=%d query=%q)", source, drops, trimmedQuery)
+	}
 }
 
 func (p *Plugin) getLogPool() *pgxpool.Pool {

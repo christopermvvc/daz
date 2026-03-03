@@ -121,3 +121,46 @@ func TestEffectivePriorityPromotesEventfilterPluginExecRequests(t *testing.T) {
 		t.Fatalf("expected eventfilter execute request effective priority high, got %d", got)
 	}
 }
+
+func TestAcquireDispatchSlotUsesDedicatedCommandLane(t *testing.T) {
+	eb := NewEventBus(&Config{})
+	msg := &eventMessage{
+		Type:     "command.update.execute",
+		Metadata: framework.NewEventMetadata("test", "command.update.execute"),
+	}
+
+	release := eb.acquireDispatchSlot(msg)
+	defer release()
+
+	if got := len(eb.dispatchSemCommand); got != 1 {
+		t.Fatalf("expected command dispatch semaphore to be used, got len=%d", got)
+	}
+	if got := len(eb.dispatchSemHigh); got != 0 {
+		t.Fatalf("expected high-priority semaphore to remain unused, got len=%d", got)
+	}
+}
+
+func TestAcquireDispatchSlotFallsBackWhenCommandLaneBusy(t *testing.T) {
+	eb := NewEventBus(&Config{})
+	// Saturate command lane so command dispatch must borrow another reserved lane.
+	for i := 0; i < cap(eb.dispatchSemCommand); i++ {
+		eb.dispatchSemCommand <- struct{}{}
+	}
+	defer func() {
+		for len(eb.dispatchSemCommand) > 0 {
+			<-eb.dispatchSemCommand
+		}
+	}()
+
+	msg := &eventMessage{
+		Type:     "command.update.execute",
+		Metadata: framework.NewEventMetadata("test", "command.update.execute"),
+	}
+
+	release := eb.acquireDispatchSlot(msg)
+	defer release()
+
+	if len(eb.dispatchSemHigh) == 0 && len(eb.dispatchSemNormal) == 0 {
+		t.Fatal("expected fallback lane (high or normal) to be used when command lane is busy")
+	}
+}

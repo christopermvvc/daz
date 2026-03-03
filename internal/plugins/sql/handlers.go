@@ -399,6 +399,27 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 		defer cancel()
 	}
 
+	releaseLane, laneErr := p.acquireSQLRequestLane(ctx, req.RequestBy, req.Query)
+	if laneErr != nil {
+		metrics.DatabaseErrors.Inc()
+		err := fmt.Errorf("sql lane admission failed: %w", laneErr)
+		p.emitFailureEvent("sql.query.failed", req.CorrelationID, req.RequestBy, "sql.query", err)
+		if req.CorrelationID != "" {
+			resp := &framework.EventData{
+				SQLQueryResponse: &framework.SQLQueryResponse{
+					ID:            req.ID,
+					CorrelationID: req.CorrelationID,
+					Success:       false,
+					Error:         err.Error(),
+				},
+			}
+			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
+			return nil
+		}
+		return err
+	}
+	defer releaseLane()
+
 	// Convert SQLParam to interface{} for database operation
 	params := make([]interface{}, len(req.Params))
 	for i, p := range req.Params {
@@ -598,6 +619,27 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 		defer cancel()
 	}
 
+	releaseLane, laneErr := p.acquireSQLRequestLane(ctx, req.RequestBy, req.Query)
+	if laneErr != nil {
+		metrics.DatabaseErrors.Inc()
+		err := fmt.Errorf("sql lane admission failed: %w", laneErr)
+		p.emitFailureEvent("sql.exec.failed", req.CorrelationID, req.RequestBy, "sql.exec", err)
+		if req.CorrelationID != "" {
+			resp := &framework.EventData{
+				SQLExecResponse: &framework.SQLExecResponse{
+					ID:            req.ID,
+					CorrelationID: req.CorrelationID,
+					Success:       false,
+					Error:         err.Error(),
+				},
+			}
+			p.eventBus.DeliverResponse(req.CorrelationID, resp, nil)
+			return nil
+		}
+		return err
+	}
+	defer releaseLane()
+
 	// Convert SQLParam to interface{} for database operation
 	params := make([]interface{}, len(req.Params))
 	for i, p := range req.Params {
@@ -726,6 +768,16 @@ func (p *Plugin) handleBatchQueryRequest(event framework.Event) error {
 
 	ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
 	defer cancel()
+
+	summaryQuery := ""
+	if len(batchReq.Queries) > 0 {
+		summaryQuery = batchReq.Queries[0].Query
+	}
+	releaseLane, laneErr := p.acquireSQLRequestLane(ctx, req.From, summaryQuery)
+	if laneErr != nil {
+		return fmt.Errorf("sql lane admission failed for batch query: %w", laneErr)
+	}
+	defer releaseLane()
 
 	var responses []*framework.SQLQueryResponse
 
@@ -993,6 +1045,16 @@ func (p *Plugin) handleBatchExecRequest(event framework.Event) error {
 	ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
 	defer cancel()
 
+	summaryQuery := ""
+	if len(batchReq.Execs) > 0 {
+		summaryQuery = batchReq.Execs[0].Query
+	}
+	releaseLane, laneErr := p.acquireSQLRequestLane(ctx, req.From, summaryQuery)
+	if laneErr != nil {
+		return fmt.Errorf("sql lane admission failed for batch exec: %w", laneErr)
+	}
+	defer releaseLane()
+
 	var responses []*framework.SQLExecResponse
 
 	if batchReq.Atomic {
@@ -1140,6 +1202,30 @@ func (p *Plugin) handleFrameworkBatchRequest(batchReq *framework.SQLBatchRequest
 
 	ctx, cancel := context.WithTimeout(p.ctx, batchReq.Timeout)
 	defer cancel()
+
+	summaryQuery := ""
+	if len(batchReq.Operations) > 0 {
+		summaryQuery = batchReq.Operations[0].Query
+	}
+	releaseLane, laneErr := p.acquireSQLRequestLane(ctx, batchReq.RequestBy, summaryQuery)
+	if laneErr != nil {
+		err := fmt.Errorf("sql lane admission failed for framework batch: %w", laneErr)
+		if batchReq.CorrelationID != "" {
+			resp := &framework.EventData{
+				SQLBatchResponse: &framework.SQLBatchResponse{
+					ID:            batchReq.ID,
+					CorrelationID: batchReq.CorrelationID,
+					Success:       false,
+					Error:         err.Error(),
+					Results:       nil,
+				},
+			}
+			p.eventBus.DeliverResponse(batchReq.CorrelationID, resp, nil)
+			return nil
+		}
+		return err
+	}
+	defer releaseLane()
 
 	var results []framework.BatchOperationResult
 
