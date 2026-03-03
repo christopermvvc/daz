@@ -90,6 +90,8 @@ type greetingRequest struct {
 	username string
 	rank     int
 	joinedAt time.Time
+	// bypassCooldown skips cooldown checks for testing/admin commands.
+	bypassCooldown bool
 }
 
 // lastGreetingInfo tracks the last greeting sent in a channel
@@ -640,7 +642,7 @@ func (p *Plugin) sendGreeting(req *greetingRequest) {
 	}
 
 	// Double-check cooldown
-	if !p.shouldGreet(req.channel, req.username) {
+	if !req.bypassCooldown && !p.shouldGreet(req.channel, req.username) {
 		logger.Debug(p.name, "User %s still on cooldown, skipping greeting", req.username)
 		return
 	}
@@ -948,10 +950,11 @@ func (p *Plugin) handleGreeterCommand(event framework.Event) error {
 
 		logger.Info(p.name, "Admin greeting test requested by %s for themselves", username)
 		p.sendGreeting(&greetingRequest{
-			channel:  channel,
-			username: username,
-			rank:     invokerRank,
-			joinedAt: time.Now(),
+			channel:        channel,
+			username:       username,
+			rank:           invokerRank,
+			joinedAt:       time.Now(),
+			bypassCooldown: true,
 		})
 		return nil
 	case "greeter":
