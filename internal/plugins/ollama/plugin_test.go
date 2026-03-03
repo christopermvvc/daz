@@ -40,6 +40,7 @@ type MockEventBus struct {
 	broadcasts    []mockBroadcast
 	queries       []mockQuery
 	execs         []mockExec
+	missingTables map[string]bool
 }
 
 func NewMockEventBus() *MockEventBus {
@@ -49,6 +50,7 @@ func NewMockEventBus() *MockEventBus {
 		broadcasts:    make([]mockBroadcast, 0),
 		queries:       make([]mockQuery, 0),
 		execs:         make([]mockExec, 0),
+		missingTables: make(map[string]bool),
 	}
 }
 
@@ -118,6 +120,28 @@ func (m *MockEventBus) Request(ctx context.Context, target string, eventType str
 		m.mu.Lock()
 		m.queries = append(m.queries, mockQuery{query: query})
 		m.mu.Unlock()
+
+		if strings.Contains(query, "information_schema.tables") {
+			tableName := ""
+			if len(data.SQLQueryRequest.Params) > 0 {
+				if s, ok := data.SQLQueryRequest.Params[0].Value.(string); ok {
+					tableName = strings.ToLower(strings.TrimSpace(s))
+				}
+			}
+
+			count := 1
+			if tableName != "" && m.missingTables[tableName] {
+				count = 0
+			}
+			countBytes, _ := json.Marshal(count)
+			return &framework.EventData{
+				SQLQueryResponse: &framework.SQLQueryResponse{
+					Success: true,
+					Columns: []string{"count"},
+					Rows:    [][]json.RawMessage{{countBytes}},
+				},
+			}, nil
+		}
 
 		// hasAlreadyResponded query expects a count column and one row.
 		if strings.Contains(query, "select count(*)") && strings.Contains(query, "daz_ollama_responses") {
@@ -209,6 +233,44 @@ func TestPluginInit(t *testing.T) {
 	err = plugin2.Init(configJSON, bus)
 	if err != nil {
 		t.Fatalf("Init failed with custom config: %v", err)
+	}
+}
+
+func TestCheckRequiredTables_AllPresent(t *testing.T) {
+	bus := NewMockEventBus()
+	plugin := New().(*Plugin)
+
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	missing, err := plugin.checkRequiredTables(context.Background())
+	if err != nil {
+		t.Fatalf("checkRequiredTables returned error: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("expected no missing tables, got %v", missing)
+	}
+}
+
+func TestCheckRequiredTables_MissingTable(t *testing.T) {
+	bus := NewMockEventBus()
+	bus.missingTables["daz_ollama_rate_limits"] = true
+
+	plugin := New().(*Plugin)
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	missing, err := plugin.checkRequiredTables(context.Background())
+	if err != nil {
+		t.Fatalf("checkRequiredTables returned error: %v", err)
+	}
+	if len(missing) != 1 {
+		t.Fatalf("expected one missing table, got %v", missing)
+	}
+	if missing[0] != "daz_ollama_rate_limits" {
+		t.Fatalf("expected missing daz_ollama_rate_limits, got %v", missing[0])
 	}
 }
 

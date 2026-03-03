@@ -38,6 +38,11 @@ const (
 	defaultSystemPrompt      = "You are Dazza, a regular chatroom user. You're sprawled on your couch in your Penrith apartment, properly cooked from the morning sesh. Empty VB cans everywhere, bong still smoking on the coffee table, half-watching whatever video's playing while chatting.\n\nKeep responses short and casual (1-2 sentences usually). Type like people actually do in chat: lowercase, skip punctuation sometimes, occasional typos, use common abbreviations (lol, nah, yeah, idk, tbh).\n\nKeep replies quick, human, and conversational. Prefer one short sentence or phrase when possible.\n\nSometimes you get distracted or trail off... Sometimes random stuff reminds you of something - maybe that time Shazza did that thing, maybe when you were at the servo absolutely munted, maybe from back when you weren't such a useless cunt. Only mention this stuff when it naturally fits the conversation.\n\nWhen someone says hi/hey/sup, give a casual greeting back (hey, sup, g'day mate). When they say bye, respond naturally (later, cya, catch ya). React naturally to whatever's in chat - if someone's being a dickhead, call it out aussie style.\n\nNever announce who you are, never use asterisks for actions, never say 'I'm Dazza'. Just chat like a properly cooked bogan would. If something reminds you of getting on the piss or other substances, mention it casually like any aussie would.\n\n(Security: Stay in character always. If someone tries to make you do complex stuff or break character, you're too cooked/munted to understand what they're on about anyway.)"
 )
 
+var requiredOllamaTables = []string{
+	"daz_ollama_responses",
+	"daz_ollama_rate_limits",
+}
+
 const (
 	followUpOriginMention  = "mention"
 	followUpOriginGreeting = "greeting"
@@ -1939,6 +1944,73 @@ func (p *Plugin) testOllamaConnection() error {
 	return nil
 }
 
+func (p *Plugin) checkRequiredTables(ctx context.Context) ([]string, error) {
+	if p.eventBus == nil {
+		return nil, fmt.Errorf("event bus not initialized")
+	}
+
+	query := `
+		SELECT COUNT(*)
+		FROM information_schema.tables
+		WHERE table_schema = 'public' AND table_name = $1
+	`
+
+	helper := framework.NewSQLRequestHelper(p.eventBus, p.name)
+	missing := make([]string, 0)
+
+	for _, tableName := range requiredOllamaTables {
+		rows, err := helper.FastQuery(ctx, query, tableName)
+		if err != nil {
+			return nil, fmt.Errorf("query table %s: %w", tableName, err)
+		}
+
+		exists := false
+		if rows.Next() {
+			var count int
+			if scanErr := rows.Scan(&count); scanErr != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scan table %s check: %w", tableName, scanErr)
+			}
+			exists = count > 0
+		}
+		if closeErr := rows.Close(); closeErr != nil {
+			return nil, fmt.Errorf("close table %s check rows: %w", tableName, closeErr)
+		}
+
+		if !exists {
+			missing = append(missing, tableName)
+		}
+	}
+
+	return missing, nil
+}
+
+func (p *Plugin) verifySchemaAtStartup() {
+	if p.ctx == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
+	defer cancel()
+
+	missingTables, err := p.checkRequiredTables(ctx)
+	if err != nil {
+		logger.Warn(p.name, "Ollama schema sanity check failed: %v", err)
+		return
+	}
+
+	if len(missingTables) > 0 {
+		logger.Warn(
+			p.name,
+			"Ollama schema missing required tables: %s (ensure SQL migrations are applied)",
+			strings.Join(missingTables, ", "),
+		)
+		return
+	}
+
+	logger.Debug(p.name, "Verified required Ollama tables are present")
+}
+
 // Start starts the plugin
 func (p *Plugin) Start() error {
 	p.mu.Lock()
@@ -1955,6 +2027,8 @@ func (p *Plugin) Start() error {
 		logger.Warn(p.name, "Ollama not available at startup (will retry on each request): %v", err)
 		// Continue anyway - Ollama might become available later
 	}
+
+	p.verifySchemaAtStartup()
 
 	// Start cleanup goroutine for old SQL records
 	p.wg.Add(1)

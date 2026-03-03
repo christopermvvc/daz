@@ -26,3 +26,11 @@ CREATE TABLE IF NOT EXISTS daz_ollama_rate_limits (
     last_response_at TIMESTAMP NOT NULL,
     UNIQUE(channel, username)
 );
+
+CREATE INDEX IF NOT EXISTS idx_ollama_rate_limits_lookup
+    ON daz_ollama_rate_limits(channel, username, last_response_at DESC);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON daz_ollama_responses TO daz_user;
+GRANT SELECT, INSERT, UPDATE, DELETE ON daz_ollama_rate_limits TO daz_user;
+GRANT USAGE, SELECT ON SEQUENCE daz_ollama_responses_id_seq TO daz_user;
+GRANT USAGE, SELECT ON SEQUENCE daz_ollama_rate_limits_id_seq TO daz_user;
