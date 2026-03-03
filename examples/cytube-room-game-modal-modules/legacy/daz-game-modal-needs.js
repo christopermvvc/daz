@@ -3,7 +3,6 @@
 
   const MIN_NEED = 0;
   const MAX_NEED = 100;
-  const NEED_SEGMENTS = 7;
 
   function clampNeed(value) {
     const parsed = Number.parseInt(value, 10);
@@ -19,16 +18,10 @@
       const value = clampNeed(needs && needs[key]);
       const meter = document.getElementById(`daz-modal-need-${key}-meter`);
       if (meter) {
-        const segments = Math.round((value / MAX_NEED) * NEED_SEGMENTS);
-        const filled = Math.max(0, Math.min(NEED_SEGMENTS, segments));
-        meter.innerHTML = '';
-        for (let i = 0; i < NEED_SEGMENTS; i += 1) {
-          const segment = document.createElement('span');
-          segment.className = i < filled
-            ? 'daz-game-need-meter-segment daz-game-need-meter-segment-fill'
-            : 'daz-game-need-meter-segment';
-          meter.appendChild(segment);
-        }
+        const percent = Math.max(0, Math.round((value / MAX_NEED) * 100));
+        meter.style.setProperty('--dazNeedFill', `${percent}%`);
+        meter.setAttribute('aria-valuenow', String(percent));
+        meter.setAttribute('aria-valuetext', `${value}`);
       }
     });
   }

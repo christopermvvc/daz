@@ -174,7 +174,7 @@
 
       .daz-game-need-row {
         display: grid;
-        grid-template-columns: 16px 1fr;
+        grid-template-columns: 16px 52px 1fr;
         align-items: center;
         gap: 6px;
         min-height: 14px;
@@ -190,45 +190,45 @@
         justify-self: start;
       }
 
+      .daz-game-need-name {
+        font-family: Cinzel, serif;
+        font-size: 10px;
+        line-height: 1;
+        letter-spacing: 0.4px;
+        color: #c9a961;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
       .daz-game-need-meter {
+        --dazNeedFill: 0%;
         position: relative;
-        display: flex;
-        gap: 2px;
-        align-items: center;
-        justify-content: stretch;
         width: 100%;
         min-width: 0;
         max-width: 100%;
-        height: 12px;
-        line-height: 1.1;
-        text-align: right;
-        min-height: 10px;
-        color: #a08050;
-        white-space: nowrap;
+        height: 9px;
+        min-height: 9px;
+        border-radius: 999px;
+        border: 1px solid rgba(212, 175, 55, 0.45);
+        background: rgba(13, 7, 4, 0.9);
         overflow: hidden;
-        padding-left: 2px;
-        padding-right: 1px;
       }
 
-      .daz-game-need-meter-segment {
-        flex: 1 1 0;
+      .daz-game-need-meter::before {
+        content: "";
+        position: absolute;
+        inset: 1px;
+        width: var(--dazNeedFill);
+        background: linear-gradient(90deg, rgba(255, 136, 62, 0.85) 0, rgba(22, 155, 98, 0.9) 100%);
+        border-radius: 999px;
+        transition: width 0.2s ease;
         min-width: 0;
-        max-width: none;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 9px;
-        line-height: 1;
-        color: #a08050;
       }
 
-      .daz-game-need-meter-segment::before {
-        content: '⬜';
-      }
-
-      .daz-game-need-meter-segment.daz-game-need-meter-segment-fill::before {
-        content: '🟢';
-        color: #d4af37;
+      .daz-game-need-meter:focus-visible {
+        outline: 1px solid rgba(212, 175, 55, 0.8);
+        outline-offset: 2px;
       }
 
       .daz-game-buff-list {
@@ -383,63 +383,28 @@
               <div class="daz-game-needs-grid">
                 <div class="daz-game-need-row">
                   <span class="daz-game-need-emoji">💧</span>
-                  <span class="daz-game-need-meter" id="daz-modal-need-bladder-meter" aria-hidden="true" aria-label="needs">
-                    <span class="daz-game-need-meter-segment daz-game-need-meter-segment-fill"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                  </span>
+                  <span class="daz-game-need-name">Bladder</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-bladder-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Bladder"></span>
                 </div>
                 <div class="daz-game-need-row">
                   <span class="daz-game-need-emoji">🍺</span>
-                  <span class="daz-game-need-meter" id="daz-modal-need-alcohol-meter" aria-hidden="true" aria-label="needs">
-                    <span class="daz-game-need-meter-segment daz-game-need-meter-segment-fill"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                  </span>
+                  <span class="daz-game-need-name">Buzz</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-alcohol-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Alcohol"></span>
                 </div>
                 <div class="daz-game-need-row">
                   <span class="daz-game-need-emoji">🌿</span>
-                  <span class="daz-game-need-meter" id="daz-modal-need-weed-meter" aria-hidden="true" aria-label="needs">
-                    <span class="daz-game-need-meter-segment daz-game-need-meter-segment-fill"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                  </span>
+                  <span class="daz-game-need-name">Weed</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-weed-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Weed"></span>
                 </div>
                 <div class="daz-game-need-row">
                   <span class="daz-game-need-emoji">🍗</span>
-                  <span class="daz-game-need-meter" id="daz-modal-need-food-meter" aria-hidden="true" aria-label="needs">
-                    <span class="daz-game-need-meter-segment daz-game-need-meter-segment-fill"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                  </span>
+                  <span class="daz-game-need-name">Food</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-food-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Food"></span>
                 </div>
                 <div class="daz-game-need-row">
                   <span class="daz-game-need-emoji">💘</span>
-                  <span class="daz-game-need-meter" id="daz-modal-need-lust-meter" aria-hidden="true" aria-label="needs">
-                    <span class="daz-game-need-meter-segment daz-game-need-meter-segment-fill"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                    <span class="daz-game-need-meter-segment"></span>
-                  </span>
+                  <span class="daz-game-need-name">Lust</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-lust-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Lust"></span>
                 </div>
               </div>
             </section>
