@@ -1,11 +1,40 @@
 (function () {
   'use strict';
 
+  const LOADER_BUILD_ID = 'f190aa7d1';
+  const LOADER_SOURCE = (() => {
+    const current = document.currentScript;
+    return current && current.src ? current.src : 'inline-or-unknown';
+  })();
+
+  console.info('[daz-game-modal] loader start', { build: LOADER_BUILD_ID, source: LOADER_SOURCE });
+
   const existingRoot = document.getElementById('daz-game-modal-root');
-  if (window.__dazGameModalActive && existingRoot) {
+  if (window.__dazGameModalActive && window.__dazGameModalBuild === LOADER_BUILD_ID && existingRoot) {
+    console.info('[daz-game-modal] skipping bootstrap: same build already mounted', {
+      build: LOADER_BUILD_ID,
+      source: LOADER_SOURCE,
+    });
     return;
   }
+
+  const priorBuild = window.__dazGameModalBuild || null;
+  if (priorBuild && priorBuild !== LOADER_BUILD_ID && existingRoot) {
+    console.warn('[daz-game-modal] replacing older build', {
+      previousBuild: priorBuild,
+      nextBuild: LOADER_BUILD_ID,
+    });
+    existingRoot.remove();
+  }
+
   window.__dazGameModalActive = true;
+  window.__dazGameModalBuild = LOADER_BUILD_ID;
+
+  window.__dazGameModalBuildMeta = {
+    build: LOADER_BUILD_ID,
+    source: LOADER_SOURCE,
+    loadedAt: Date.now(),
+  };
 
   const STORAGE_MODE_KEY = 'daz-cytube-game-modal-mode-v1';
   const STORAGE_BALANCE_KEY = 'daz-cytube-game-modal-balance-v1';
@@ -224,12 +253,23 @@
   }
 
   function getUiModuleBase() {
-    const current = document.currentScript;
-    if (!current || !current.src) {
-      return null;
+    const known = (() => {
+      const current = document.currentScript;
+      if (current && current.src) {
+        return current.src;
+      }
+
+      const matching = Array.from(document.querySelectorAll('script')).find((script) => {
+        const src = script && script.src;
+        return typeof src === 'string' && src.includes('cytube-room-game-modal.js');
+      });
+      return matching && matching.src ? matching.src : null;
+    })();
+
+    if (!known) {
+      return '';
     }
-    const src = current.src;
-    return src.substring(0, src.lastIndexOf('/') + 1);
+    return known.substring(0, known.lastIndexOf('/') + 1);
   }
 
   const UI_BASE = getUiModuleBase();
@@ -673,6 +713,8 @@
 
     const root = document.createElement('div');
     root.id = 'daz-game-modal-root';
+    root.dataset.dazGameModalBuild = LOADER_BUILD_ID;
+    root.dataset.dazGameModalSource = LOADER_SOURCE;
     root.innerHTML = createMarkup();
 
     maybeInjectStyles();
@@ -698,9 +740,16 @@
       } else {
         window.addEventListener('DOMContentLoaded', mount, { once: true });
       }
-      console.info('[daz-game-modal] bundle loaded; root exists now?', !!document.getElementById('daz-game-modal-root'));
+      const activeRoot = document.getElementById('daz-game-modal-root');
+      console.info('[daz-game-modal] bundle loaded', {
+        rootExists: !!activeRoot,
+        build: LOADER_BUILD_ID,
+        source: LOADER_SOURCE,
+        uiModules: UI_MODULE_FILES,
+      });
     } catch (err) {
-      console.error('[daz-game-modal] Failed to mount modal:', err);
+      const message = `${LOADER_BUILD_ID} failed: ${(err && err.message) || 'unknown'}`;
+      console.error('[daz-game-modal] Failed to mount modal:', message, err);
       window.__dazGameModalLoadError = true;
       throw err;
     }
