@@ -279,6 +279,20 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
+### Git and branch tips for this repo
+- The write-enabled remote for this work is `origin` (`https://github.com/hildolfr/daz.git`). Push feature branches there.
+- Some secondary remotes may be read-only or permission-restricted, so if `git push` is rejected there, use `origin` and set upstream with:
+  - `git push -u origin <branch-name>`
+- Keep branch names descriptive (`feat/...`, `fix/...`, `chore/...`) and include targeted commit messages.
+
+### Plugin HTML generation (help/gallery style pages)
+- Existing HTML publishers keep outputs in separate subfolders before pushing to `gh-pages`:
+  - help: `data/help/...`
+  - gallery: `data/galleries/...`
+- When adding a new plugin HTML surface, write to its own folder and only add that subtree in git (`git add <plugin-folder>/`), not entire root `-A`.
+- Each publisher uses a marker file to protect shared output directories (`.daz_help_marker`, `.daz-gallery`), and must refuse to operate in unsafe/mixed git directories.
+- Push should continue to target `gh-pages`; let the branch checkout/fetch flow preserve existing pages and avoid clobbering unrelated plugin pages.
+
 ## 📝 License
 
 This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.

@@ -252,6 +252,18 @@ Notes:
 - Deploy key: `./dazza_deploy_key` (private) and `./dazza_deploy_key.pub` (public).
 - Git username: `hildolfr`.
 - Git email: `svhildolfr@gmail.com`.
+- Push note: set `origin` as the write target (`https://github.com/hildolfr/daz.git`) and push feature branches there (for example `git push -u origin feat/...`), since other remotes may be read-only/permission-restricted.
+
+### HTML Pages + Plugin Extensions (help/gallery)
+- Both help and gallery generators push to `origin` on `gh-pages` and use `GITHUB_TOKEN` or `dazza_deploy_key`.
+- Each generator protects its working tree with a marker:
+  - help: `data/help/.daz_help_marker`
+  - gallery: `data/galleries/.daz-gallery`
+- To add a new plugin HTML surface without clobbering others:
+  1. Generate output only under its own directory (for example `data/help/<plugin>/` or `data/galleries/<plugin>/`).
+  2. Ensure the generator writes its marker file and only `git add` that plugin subtree (not `git add -A` at repo root).
+  3. Keep pushes scoped to `gh-pages` and let the existing `gh-pages` checkout/rebase flow handle merge with current remote state.
+  4. If a marker is missing in an existing git directory, fail fast and do not auto-delete/overwrite unrelated files.
 
 ## When Unsure
 - Read similar plugins under `internal/plugins/` first.
