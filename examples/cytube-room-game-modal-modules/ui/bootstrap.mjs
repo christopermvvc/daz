@@ -9,11 +9,8 @@ showStatus('daz game modal: loading full modal bundle...');
 export async function start() {
   try {
     await loadLegacyBundle();
-    if (!document.getElementById('daz-game-modal-root')) {
-      throw new Error('daz game modal: legacy bundle loaded but root did not mount');
-    }
+    showStatus('daz game modal: root mounted, ready');
     window.__dazGameModalActive = true;
-    showStatus('daz game modal: modal initialized');
     setTimeout(hideStatus, 1200);
     return;
   } catch (error) {

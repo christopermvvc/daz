@@ -10,7 +10,7 @@
   const current = document.currentScript;
   const base = current && current.src ? current.src.replace(/[^/]+$/, '') : '';
   const moduleUrl = `${base}ui/bootstrap.mjs`;
-  const MODULE_READY_TIMEOUT_MS = 2500;
+  const MODULE_READY_TIMEOUT_MS = 6500;
   const ERROR_CLEAR_DELAY_MS = 4000;
   let hasError = false;
 
