@@ -30,6 +30,8 @@
 
 **Daz** is not just another chat bot – it's a powerhouse modular system designed for [Cytube](https://cytu.be) channels. Built with Go for blazing performance, featuring a robust plugin architecture, enterprise-grade PostgreSQL persistence, and seamless multi-room support. Whether you're managing a single channel or orchestrating multiple rooms, Daz delivers unmatched flexibility and reliability.
 
+> Deployment validation marker: super simple readme-only update.
+
 ## ✨ Why Daz?
 
 <table>
