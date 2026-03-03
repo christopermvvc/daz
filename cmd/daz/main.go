@@ -31,6 +31,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/mysterybox"
 	"github.com/hildolfr/daz/internal/plugins/commands/oddjob"
 	"github.com/hildolfr/daz/internal/plugins/commands/ping"
+	"github.com/hildolfr/daz/internal/plugins/commands/pissingcontest"
 	"github.com/hildolfr/daz/internal/plugins/commands/quote"
 	"github.com/hildolfr/daz/internal/plugins/commands/random"
 	"github.com/hildolfr/daz/internal/plugins/commands/remind"
@@ -239,6 +240,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"mysterybox", mysterybox.New()},
 		{"oddjob", oddjob.New()},
 		{"ping", ping.New()},
+		{"pissingcontest", pissingcontest.New()},
 		{"quote", quote.New()},
 		{"uptime", uptime.New()},
 		{"weather", weather.New()},
@@ -277,6 +279,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["mysterybox"] = cfg.GetPluginConfig("mysterybox")
 	pluginConfigs["oddjob"] = cfg.GetPluginConfig("oddjob")
 	pluginConfigs["ping"] = cfg.GetPluginConfig("ping")
+	pluginConfigs["pissingcontest"] = cfg.GetPluginConfig("pissingcontest")
 	pluginConfigs["fortune"] = cfg.GetPluginConfig("fortune")
 	pluginConfigs["games"] = cfg.GetPluginConfig("games")
 	pluginConfigs["help"] = cfg.GetPluginConfig("help")
