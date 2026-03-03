@@ -60,31 +60,15 @@
         height: 36px;
         border-bottom: 1px solid rgba(212, 175, 55, 0.3);
         background: linear-gradient(180deg, rgba(22, 155, 98, 0.6) 0, rgba(22, 155, 98, 0.6) 2px, rgba(255, 255, 255, 0.4) 2px, rgba(255, 255, 255, 0.4) 4px, rgba(255, 136, 62, 0.6) 4px, rgba(255, 136, 62, 0.6) 6px, transparent 6px, transparent 100%), linear-gradient(180deg, #1a0f08 0, #0d0704 100%);
-        display: grid;
-        grid-template-columns: 1fr auto 1fr;
+        display: flex;
         align-items: center;
+        justify-content: flex-end;
         padding: 0 8px;
         position: relative;
         z-index: 2;
         cursor: move;
         touch-action: none;
         user-select: none;
-      }
-
-      #daz-game-modal-title {
-        font-family: "Irish Grover", cursive;
-        font-size: 16px;
-        color: #d4af37;
-        text-shadow: 1px 1px 2px #000;
-        line-height: 1.1;
-        white-space: nowrap;
-        grid-column: 2;
-        justify-self: center;
-        text-align: center;
-      }
-
-      #daz-game-modal-has-content {
-        display: contents;
       }
 
       #daz-game-modal-header-actions {
@@ -386,7 +370,6 @@
         gap: 0;
       }
 
-      #daz-game-modal-root.daz-state-minimized #daz-game-modal-title,
       #daz-game-modal-root.daz-state-minimized #daz-game-modal-hint {
         display: none !important;
       }
@@ -466,9 +449,6 @@
     createMarkup: () => `
       <div id="daz-game-modal">
         <div id="daz-game-modal-header">
-          <div class="daz-game-modal-has-content">
-            <div id="daz-game-modal-title">Paddy's Pub Game Console</div>
-          </div>
           <div id="daz-game-modal-header-actions">
             <button type="button" class="daz-game-modal-btn" data-action="toggle-min" title="Minimise" id="daz-game-modal-min-toggle">_</button>
           </div>
