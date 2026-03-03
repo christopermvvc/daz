@@ -3,6 +3,7 @@
 
   const MIN_NEED = 0;
   const MAX_NEED = 100;
+  const NEED_SEGMENTS = 8;
 
   function clampNeed(value) {
     const parsed = Number.parseInt(value, 10);
@@ -16,13 +17,11 @@
     const keys = ['bladder', 'alcohol', 'weed', 'food', 'lust'];
     keys.forEach((key) => {
       const value = clampNeed(needs && needs[key]);
-      const label = document.getElementById(`daz-modal-need-${key}`);
-      const bar = document.getElementById(`daz-modal-need-${key}-bar`);
-      if (label) {
-        label.textContent = `${value}`;
-      }
-      if (bar) {
-        bar.style.width = `${value}%`;
+      const meter = document.getElementById(`daz-modal-need-${key}-meter`);
+      if (meter) {
+        const segments = Math.round((value / MAX_NEED) * NEED_SEGMENTS);
+        const filled = Math.max(0, Math.min(NEED_SEGMENTS, segments));
+        meter.textContent = `${'🟢'.repeat(filled)}${'⚪'.repeat(Math.max(0, NEED_SEGMENTS - filled))}`;
       }
     });
   }

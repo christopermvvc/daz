@@ -2,49 +2,58 @@
   'use strict';
 
   const DEFAULT_EFFECTS = {
-    buffs: {
-      focus: 0,
-      vigor: 0,
-      luck: 0,
-    },
-    debuffs: {
-      hangover: -10,
-      nausea: -5,
-      dizzy: -8,
-    },
+    buffs: {},
+    debuffs: {},
   };
 
-  const BUFFS = [
-    { section: 'buffs', key: 'focus' },
-    { section: 'buffs', key: 'vigor' },
-    { section: 'buffs', key: 'luck' },
-    { section: 'debuffs', key: 'hangover' },
-    { section: 'debuffs', key: 'nausea' },
-    { section: 'debuffs', key: 'dizzy' },
-  ];
-
-  function formatEffect(value) {
-    const parsed = Number.parseFloat(value);
-    if (!Number.isFinite(parsed)) {
-      return '0';
-    }
-    const rounded = Math.round(parsed);
-    return rounded > 0 ? `+${rounded}` : `${rounded}`;
-  }
-
   function refresh(effects) {
+    const container = document.getElementById('daz-modal-buffs-list');
+    if (!container) {
+      return;
+    }
+
     const currentEffects = effects && typeof effects === 'object'
       ? effects
       : DEFAULT_EFFECTS;
+    const buffs = currentEffects.buffs && typeof currentEffects.buffs === 'object'
+      ? currentEffects.buffs
+      : {};
+    const debuffs = currentEffects.debuffs && typeof currentEffects.debuffs === 'object'
+      ? currentEffects.debuffs
+      : {};
 
-    BUFFS.forEach((entry) => {
-      const container = `${entry.section.slice(0, -1)}`;
-      const source = currentEffects[container] || {};
-      const el = document.getElementById(`daz-modal-${entry.section.slice(0, -1)}-${entry.key}`);
-      if (!el) {
-        return;
+    container.innerHTML = '';
+    const active = [];
+
+    Object.keys(buffs).forEach((key) => {
+      const value = Number.parseFloat(buffs[key]);
+      if (Number.isFinite(value) && value !== 0) {
+        active.push('buff');
       }
-      el.textContent = formatEffect(source[entry.key] === undefined ? DEFAULT_EFFECTS[container][entry.key] : source[entry.key]);
+      return;
+    });
+
+    Object.keys(debuffs).forEach((key) => {
+      const value = Number.parseFloat(debuffs[key]);
+      if (Number.isFinite(value) && value !== 0) {
+        active.push('debuff');
+      }
+      return;
+    });
+
+    if (!active.length) {
+      const placeholder = document.createElement('span');
+      placeholder.className = 'daz-game-empty-list-space';
+      placeholder.textContent = '—';
+      container.appendChild(placeholder);
+      return;
+    }
+
+    active.forEach((type) => {
+      const el = document.createElement('span');
+      el.className = 'daz-game-effect-dot';
+      el.textContent = type === 'buff' ? '✨' : '☠️';
+      container.appendChild(el);
     });
   }
 

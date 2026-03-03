@@ -53,16 +53,8 @@
   const STORAGE_RESTORE_WIDTH_KEY = 'daz-cytube-game-modal-restore-width-v1';
   const STORAGE_RESTORE_HEIGHT_KEY = 'daz-cytube-game-modal-restore-height-v1';
   const DEFAULT_EFFECTS = {
-    buffs: {
-      focus: 0,
-      vigor: 0,
-      luck: 0,
-    },
-    debuffs: {
-      hangover: -10,
-      nausea: -5,
-      dizzy: -8,
-    },
+    buffs: {},
+    debuffs: {},
   };
   const DEFAULT_BALANCE = 1250;
   const MIN_NEED = 0;
@@ -86,8 +78,8 @@
       lust: 20,
     },
     effects: {
-      buffs: { ...DEFAULT_EFFECTS.buffs },
-      debuffs: { ...DEFAULT_EFFECTS.debuffs },
+      buffs: {},
+      debuffs: {},
     },
     left: null,
     top: null,
@@ -188,11 +180,17 @@
           if (parsed && typeof parsed === 'object') {
             const buffs = parsed.buffs || {};
             const debuffs = parsed.debuffs || {};
-            Object.keys(DEFAULT_EFFECTS.buffs).forEach((key) => {
-              state.effects.buffs[key] = parseStoredNumber(buffs[key], state.effects.buffs[key]);
+            Object.keys(buffs).forEach((key) => {
+              const value = parseStoredNumber(buffs[key], 0);
+              if (Number.isFinite(value) && value !== 0) {
+                state.effects.buffs[key] = value;
+              }
             });
-            Object.keys(DEFAULT_EFFECTS.debuffs).forEach((key) => {
-              state.effects.debuffs[key] = parseStoredNumber(debuffs[key], state.effects.debuffs[key]);
+            Object.keys(debuffs).forEach((key) => {
+              const value = parseStoredNumber(debuffs[key], 0);
+              if (Number.isFinite(value) && value !== 0) {
+                state.effects.debuffs[key] = value;
+              }
             });
           }
         }
@@ -393,15 +391,15 @@
       return;
     }
 
-    Object.entries(state.needs).forEach(([key, value]) => {
-      const label = document.getElementById(`daz-modal-need-${key}`);
-      const bar = document.getElementById(`daz-modal-need-${key}-bar`);
-      if (label) {
-        label.textContent = String(value);
+    Object.entries(state.needs).forEach(([key, rawValue]) => {
+      const meter = document.getElementById(`daz-modal-need-${key}-meter`);
+      if (!meter) {
+        return;
       }
-      if (bar) {
-        bar.style.width = `${clamp(value, MIN_NEED, MAX_NEED)}%`;
-      }
+      const value = clamp(rawValue, MIN_NEED, MAX_NEED);
+      const segmentCount = 8;
+      const filled = Math.round((value / MAX_NEED) * segmentCount);
+      meter.textContent = `${'🟢'.repeat(Math.max(0, filled))}${'⚪'.repeat(Math.max(0, segmentCount - filled))}`;
     });
   }
 
@@ -412,26 +410,42 @@
       return;
     }
 
-    const formatEffectValue = (value) => {
-      const parsed = parseFloat(value);
-      if (!Number.isFinite(parsed)) {
-        return '0';
-      }
-      return parsed > 0 ? `+${Math.round(parsed)}` : `${Math.round(parsed)}`;
-    };
+    const container = document.getElementById('daz-modal-buffs-list');
+    if (!container) {
+      return;
+    }
+    container.innerHTML = '';
+    const effects = state.effects || {};
+    const buffs = effects.buffs && typeof effects.buffs === 'object' ? effects.buffs : {};
+    const debuffs = effects.debuffs && typeof effects.debuffs === 'object' ? effects.debuffs : {};
+    const active = [];
 
-    Object.entries(state.effects.buffs || {}).forEach(([key, value]) => {
-      const label = document.getElementById(`daz-modal-buff-${key}`);
-      if (label) {
-        label.textContent = formatEffectValue(value);
+    Object.keys(buffs).forEach((key) => {
+      const value = parseFloat(buffs[key]);
+      if (Number.isFinite(value) && value !== 0) {
+        active.push({ type: 'buff' });
+      }
+    });
+    Object.keys(debuffs).forEach((key) => {
+      const value = parseFloat(debuffs[key]);
+      if (Number.isFinite(value) && value !== 0) {
+        active.push({ type: 'debuff' });
       }
     });
 
-    Object.entries(state.effects.debuffs || {}).forEach(([key, value]) => {
-      const label = document.getElementById(`daz-modal-debuff-${key}`);
-      if (label) {
-        label.textContent = formatEffectValue(value);
-      }
+    if (!active.length) {
+      const placeholder = document.createElement('span');
+      placeholder.className = 'daz-game-empty-list-space';
+      placeholder.textContent = '—';
+      container.appendChild(placeholder);
+      return;
+    }
+
+    active.forEach((entry) => {
+      const node = document.createElement('span');
+      node.className = 'daz-game-effect-dot';
+      node.textContent = entry.type === 'buff' ? '✨' : '☠️';
+      container.appendChild(node);
     });
   }
 
