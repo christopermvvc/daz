@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const LOADER_BUILD_ID = 'f190aa7d1';
+  const LOADER_BUILD_ID = '1792b471d-2';
   const LOADER_SOURCE = (() => {
     const current = document.currentScript;
     return current && current.src ? current.src : 'inline-or-unknown';
@@ -271,11 +271,21 @@
   }
 
   const UI_BASE = getUiModuleBase();
+  function withCacheBuster(url) {
+    try {
+      const urlObj = new URL(url, LOADER_SOURCE || document.baseURI);
+      urlObj.searchParams.set('v', LOADER_BUILD_ID);
+      return urlObj.toString();
+    } catch (err) {
+      return `${url}${url.includes('?') ? '&' : '?'}v=${encodeURIComponent(LOADER_BUILD_ID)}`;
+    }
+  }
+
   const UI_MODULE_FILES = [
     'cytube-room-game-modal-modules/legacy/daz-game-modal-view.js',
     'cytube-room-game-modal-modules/legacy/daz-game-modal-needs.js',
     'cytube-room-game-modal-modules/legacy/daz-game-modal-buffs.js',
-  ].map((path) => `${UI_BASE || ''}${path}`);
+  ].map((path) => withCacheBuster(`${UI_BASE || ''}${path}`));
   const uiModuleLoadPromises = new Map();
   let uiViewLoaded = false;
 

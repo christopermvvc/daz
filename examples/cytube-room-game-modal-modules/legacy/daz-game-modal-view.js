@@ -174,66 +174,62 @@
 
       .daz-game-need-row {
         display: flex;
-        flex-direction: column;
-        gap: 3px;
-      }
-
-      .daz-game-need-top {
-        display: flex;
+        align-items: center;
         justify-content: space-between;
+        gap: 6px;
+        min-height: 14px;
       }
 
-      .daz-game-need-name {
-        color: #a08050;
-      }
-
-      .daz-game-need-value {
-        color: #d4af37;
+      .daz-game-need-emoji {
+        font-size: 12px;
+        line-height: 1;
+        width: 16px;
+        text-align: center;
+        flex: 0 0 auto;
       }
 
       .daz-game-need-meter {
-        width: 100%;
-        height: 8px;
-        border: 1px solid rgba(212, 175, 55, 0.25);
-        background: rgba(10, 6, 4, 0.6);
-      }
-
-      .daz-game-need-meter > i {
-        display: block;
-        height: 100%;
-        width: 0%;
-        background: linear-gradient(90deg, #ff883e 0, #d4af37 60%, #f5d37a 100%);
-        transition: width 0.2s ease;
-      }
-
-      .daz-game-buff-columns {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 6px;
-      }
-
-      .daz-game-buff-column {
-        min-width: 0;
-      }
-
-      .daz-game-subtitle {
-        color: #c9a961;
-        font-family: Cinzel, serif;
-        font-size: 10px;
-        margin: 0 0 4px;
-        text-transform: uppercase;
+        font-size: 9px;
         letter-spacing: 1px;
-      }
-
-      .daz-game-effect-row {
-        display: flex;
-        justify-content: space-between;
-        gap: 6px;
-        color: #a08050;
-      }
-
-      .daz-game-effect-row strong {
+        line-height: 1.1;
         color: #d4af37;
+        text-align: right;
+        min-height: 10px;
+        min-width: 60px;
+        flex: 1 1 auto;
+        color: #a08050;
+        white-space: nowrap;
+        overflow: hidden;
+        padding-left: 6px;
+      }
+
+      .daz-game-buff-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 3px;
+        min-height: 20px;
+        font-size: 10px;
+        align-items: flex-start;
+      }
+
+      .daz-game-effect-dot {
+        display: inline-block;
+        width: 11px;
+        height: 11px;
+        line-height: 11px;
+        text-align: center;
+        border: 1px solid rgba(212, 175, 55, 0.35);
+        border-radius: 50%;
+        color: #d4af37;
+        font-size: 10px;
+        background: linear-gradient(180deg, rgba(26, 15, 8, 0.9), rgba(15, 12, 10, 0.95));
+      }
+
+      .daz-game-empty-list-space {
+        color: rgba(160, 128, 80, 0.5);
+        font-size: 10px;
+        line-height: 1.2;
+        min-height: 11px;
       }
 
       .daz-game-metric-note {
@@ -358,75 +354,31 @@
               <h4 class="daz-game-section-title">Needs</h4>
               <div class="daz-game-needs-grid">
                 <div class="daz-game-need-row">
-                  <div class="daz-game-need-top">
-                    <span class="daz-game-need-name">Bladder</span>
-                    <strong class="daz-game-need-value" id="daz-modal-need-bladder">0</strong>
-                  </div>
-                  <div class="daz-game-need-meter"><i id="daz-modal-need-bladder-bar"></i></div>
+                  <span class="daz-game-need-emoji">💧</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-bladder-meter" aria-hidden="true">• • •</span>
                 </div>
                 <div class="daz-game-need-row">
-                  <div class="daz-game-need-top">
-                    <span class="daz-game-need-name">Alcohol</span>
-                    <strong class="daz-game-need-value" id="daz-modal-need-alcohol">0</strong>
-                  </div>
-                  <div class="daz-game-need-meter"><i id="daz-modal-need-alcohol-bar"></i></div>
+                  <span class="daz-game-need-emoji">🍺</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-alcohol-meter" aria-hidden="true">• • •</span>
                 </div>
                 <div class="daz-game-need-row">
-                  <div class="daz-game-need-top">
-                    <span class="daz-game-need-name">Weed</span>
-                    <strong class="daz-game-need-value" id="daz-modal-need-weed">0</strong>
-                  </div>
-                  <div class="daz-game-need-meter"><i id="daz-modal-need-weed-bar"></i></div>
+                  <span class="daz-game-need-emoji">🌿</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-weed-meter" aria-hidden="true">• • •</span>
                 </div>
                 <div class="daz-game-need-row">
-                  <div class="daz-game-need-top">
-                    <span class="daz-game-need-name">Food</span>
-                    <strong class="daz-game-need-value" id="daz-modal-need-food">0</strong>
-                  </div>
-                  <div class="daz-game-need-meter"><i id="daz-modal-need-food-bar"></i></div>
+                  <span class="daz-game-need-emoji">🍗</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-food-meter" aria-hidden="true">• • •</span>
                 </div>
                 <div class="daz-game-need-row">
-                  <div class="daz-game-need-top">
-                    <span class="daz-game-need-name">Lust</span>
-                    <strong class="daz-game-need-value" id="daz-modal-need-lust">0</strong>
-                  </div>
-                  <div class="daz-game-need-meter"><i id="daz-modal-need-lust-bar"></i></div>
+                  <span class="daz-game-need-emoji">💘</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-lust-meter" aria-hidden="true">• • •</span>
                 </div>
               </div>
             </section>
             <section class="daz-game-card">
               <h4 class="daz-game-section-title">Buffs &amp; Debuffs</h4>
-              <div class="daz-game-buff-columns">
-                <div class="daz-game-buff-column">
-                  <div class="daz-game-subtitle">Buffs</div>
-                  <div class="daz-game-effect-row">
-                    <span>Focus</span>
-                    <strong id="daz-modal-buff-focus">+0</strong>
-                  </div>
-                  <div class="daz-game-effect-row">
-                    <span>Vigor</span>
-                    <strong id="daz-modal-buff-vigor">+0</strong>
-                  </div>
-                  <div class="daz-game-effect-row">
-                    <span>Luck</span>
-                    <strong id="daz-modal-buff-luck">+0</strong>
-                  </div>
-                </div>
-                <div class="daz-game-buff-column">
-                  <div class="daz-game-subtitle">Debuffs</div>
-                  <div class="daz-game-effect-row">
-                    <span>Hangover</span>
-                    <strong id="daz-modal-debuff-hangover">-10</strong>
-                  </div>
-                  <div class="daz-game-effect-row">
-                    <span>Nausea</span>
-                    <strong id="daz-modal-debuff-nausea">-5</strong>
-                  </div>
-                  <div class="daz-game-effect-row">
-                    <span>Dizzy</span>
-                    <strong id="daz-modal-debuff-dizzy">-8</strong>
-                  </div>
-                </div>
+              <div class="daz-game-buff-list" id="daz-modal-buffs-list" aria-live="polite">
+                <span class="daz-game-empty-list-space">—</span>
               </div>
             </section>
           </div>
