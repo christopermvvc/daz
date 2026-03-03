@@ -347,7 +347,7 @@ func (p *Plugin) handleGalleryCommand(params map[string]string) {
 	isPM := params["is_pm"] == "true"
 
 	// Get the shared gallery URL (GitHub Pages)
-	galleryURL := "https://hildolfr.github.io/daz/"
+	galleryURL := "https://hildolfr.github.io/daz/gallery/"
 
 	// Get gallery stats for the user
 	stats, err := p.store.GetUserStats(username, channel)

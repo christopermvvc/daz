@@ -238,7 +238,10 @@ func (g *HTMLGenerator) GenerateSharedGallery(ctx context.Context, users []struc
 	}
 
 	// Write to file
-	outputFile := filepath.Join(g.config.HTMLOutputPath, "index.html")
+	outputFile := filepath.Join(g.config.HTMLOutputPath, "gallery", "index.html")
+	if err := os.MkdirAll(filepath.Dir(outputFile), 0755); err != nil {
+		return fmt.Errorf("failed to create gallery output directory: %w", err)
+	}
 	if err := os.WriteFile(outputFile, []byte(htmlContent), 0644); err != nil {
 		return fmt.Errorf("failed to write shared gallery HTML: %w", err)
 	}
@@ -1242,8 +1245,8 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 		}
 	}
 
-	// Add all files
-	if err := runGitCmd("add", "-A"); err != nil {
+	// Add only gallery subtree
+	if err := runGitCmd("add", "-A", "gallery/"); err != nil {
 		needsRecovery = true
 		return fmt.Errorf("failed to add files: %w", err)
 	}
