@@ -145,6 +145,7 @@
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
         gap: 6px;
+        align-items: start;
       }
 
       .daz-game-command-row {
@@ -158,12 +159,14 @@
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 4px;
+        align-items: start;
       }
 
       .daz-game-command-category {
         display: flex;
         flex-direction: column;
         gap: 4px;
+        align-self: start;
       }
 
       .daz-game-command-category > .daz-game-modal-btn {
@@ -204,6 +207,7 @@
         border-radius: 6px;
         background: radial-gradient(circle at 20% 30%, rgba(139, 105, 20, 0.12) 0, transparent 30%), radial-gradient(circle at 80% 70%, rgba(139, 105, 20, 0.08) 0, transparent 25%), linear-gradient(180deg, rgba(26, 15, 8, 0.9) 0, rgba(15, 12, 10, 0.95) 100%);
         padding: 6px;
+        align-self: start;
       }
 
       .daz-game-section-title {
