@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const LOADER_BUILD_ID = '94fb3ff22-command-rows-v1';
+  const LOADER_BUILD_ID = '94fb3ff22-command-rows-v2';
   const LOADER_SOURCE = (() => {
     const current = document.currentScript;
     return current && current.src ? current.src : 'inline-or-unknown';
@@ -68,6 +68,7 @@
   const DEFAULT_MARGIN = 12;
   const MINIMIZED_ICON = '▢';
   const OPEN_ICON = '—';
+  const STATE_SAVE_DEBOUNCE_MS = 250;
 
   const state = {
     mode: 'open',
@@ -672,6 +673,7 @@
       root.style.setProperty('pointer-events', 'auto', 'important');
       root.style.setProperty('transform', 'none', 'important');
       root.style.setProperty('margin', '0', 'important');
+      persistStateSoon();
       return;
     }
 
@@ -700,6 +702,7 @@
     root.style.setProperty('pointer-events', 'auto', 'important');
     root.style.setProperty('transform', 'none', 'important');
     root.style.setProperty('margin', '0', 'important');
+    persistStateSoon();
   }
 
   function getPointerPoint(event) {
@@ -739,6 +742,7 @@
   }
 
   let activeInteraction = null;
+  let statePersistTimer = null;
 
   function beginInteraction(event, type) {
     const root = document.getElementById('daz-game-modal-root');
@@ -822,6 +826,26 @@
     document.removeEventListener('touchend', onInteractionStop);
   }
 
+  function persistStateSoon() {
+    if (statePersistTimer) {
+      window.clearTimeout(statePersistTimer);
+      statePersistTimer = null;
+    }
+
+    statePersistTimer = window.setTimeout(() => {
+      statePersistTimer = null;
+      saveState();
+    }, STATE_SAVE_DEBOUNCE_MS);
+  }
+
+  function flushStateNow() {
+    if (statePersistTimer) {
+      window.clearTimeout(statePersistTimer);
+      statePersistTimer = null;
+    }
+    saveState();
+  }
+
   function onMouseDown(event) {
     const isMouse = event.type === 'mousedown';
     if (isMouse && event.button !== 0) {
@@ -892,6 +916,8 @@
     root.addEventListener('touchstart', onMouseDown);
     window.addEventListener('resize', applyGeometry);
     window.addEventListener('orientationchange', applyGeometry);
+    window.addEventListener('pagehide', flushStateNow);
+    window.addEventListener('beforeunload', flushStateNow);
   }
 
   function maybeInjectStyles() {
