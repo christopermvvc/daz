@@ -596,7 +596,8 @@
     root.innerHTML = createMarkup();
 
     maybeInjectStyles();
-    document.body.appendChild(root);
+    const container = document.body || document.documentElement;
+    container.appendChild(root);
     bindEvents();
 
     refreshBalance();
@@ -609,7 +610,11 @@
 
   try {
     loadState();
-    mount();
+    if (document.body) {
+      mount();
+    } else {
+      window.addEventListener('DOMContentLoaded', mount, { once: true });
+    }
   } catch (err) {
     console.error('[daz-game-modal] Failed to mount modal:', err);
   }
