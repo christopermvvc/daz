@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const LOADER_BUILD_ID = '94fb3ff22-command-rows-v2';
+  const LOADER_BUILD_ID = '94fb3ff22-command-rows-v3';
   const LOADER_SOURCE = (() => {
     const current = document.currentScript;
     return current && current.src ? current.src : 'inline-or-unknown';

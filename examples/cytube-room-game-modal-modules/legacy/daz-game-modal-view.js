@@ -60,9 +60,9 @@
         height: 36px;
         border-bottom: 1px solid rgba(212, 175, 55, 0.3);
         background: linear-gradient(180deg, rgba(22, 155, 98, 0.6) 0, rgba(22, 155, 98, 0.6) 2px, rgba(255, 255, 255, 0.4) 2px, rgba(255, 255, 255, 0.4) 4px, rgba(255, 136, 62, 0.6) 4px, rgba(255, 136, 62, 0.6) 6px, transparent 6px, transparent 100%), linear-gradient(180deg, #1a0f08 0, #0d0704 100%);
-        display: flex;
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
         align-items: center;
-        justify-content: space-between;
         padding: 0 8px;
         position: relative;
         z-index: 2;
@@ -78,20 +78,20 @@
         text-shadow: 1px 1px 2px #000;
         line-height: 1.1;
         white-space: nowrap;
+        grid-column: 2;
+        justify-self: center;
+        text-align: center;
       }
 
-      #daz-game-modal-hint {
-        margin-left: 6px;
-        font-size: 9px;
-        color: rgba(212, 175, 55, 0.78);
-        text-transform: none;
-        letter-spacing: 0.2px;
-        opacity: 0.85;
+      #daz-game-modal-has-content {
+        display: contents;
       }
 
       #daz-game-modal-header-actions {
         display: flex;
         gap: 4px;
+        justify-self: end;
+        grid-column: 3;
       }
 
       .daz-game-modal-btn {
@@ -468,7 +468,6 @@
         <div id="daz-game-modal-header">
           <div class="daz-game-modal-has-content">
             <div id="daz-game-modal-title">Paddy's Pub Game Console</div>
-            <div id="daz-game-modal-hint">Drag • Resize</div>
           </div>
           <div id="daz-game-modal-header-actions">
             <button type="button" class="daz-game-modal-btn" data-action="toggle-min" title="Minimise" id="daz-game-modal-min-toggle">_</button>
