@@ -382,9 +382,9 @@
               <h4 class="daz-game-section-title">Needs</h4>
               <div class="daz-game-needs-grid">
                 <div class="daz-game-need-row">
-                  <span class="daz-game-need-emoji">💧</span>
-                  <span class="daz-game-need-name">Bladder</span>
-                  <span class="daz-game-need-meter" id="daz-modal-need-bladder-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Bladder"></span>
+                  <span class="daz-game-need-emoji">🍗</span>
+                  <span class="daz-game-need-name">Food</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-food-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Food"></span>
                 </div>
                 <div class="daz-game-need-row">
                   <span class="daz-game-need-emoji">🍺</span>
@@ -397,9 +397,9 @@
                   <span class="daz-game-need-meter" id="daz-modal-need-weed-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Weed"></span>
                 </div>
                 <div class="daz-game-need-row">
-                  <span class="daz-game-need-emoji">🍗</span>
-                  <span class="daz-game-need-name">Food</span>
-                  <span class="daz-game-need-meter" id="daz-modal-need-food-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Food"></span>
+                  <span class="daz-game-need-emoji">💧</span>
+                  <span class="daz-game-need-name">Bladder</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-bladder-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Bladder"></span>
                 </div>
                 <div class="daz-game-need-row">
                   <span class="daz-game-need-emoji">💘</span>
