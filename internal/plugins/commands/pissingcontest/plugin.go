@@ -238,30 +238,35 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 
 func (p *Plugin) handlePissCommand(channel, username string, args []string) {
 	if len(args) == 0 {
-		p.sendCommandResult(channel, username, "gotta challenge someone mate - !piss <amount> <username> or !piss <username> for bragging rights", false)
+		p.sendCommandResult(channel, username, "gotta challenge someone mate - !piss <username> [amount]", false)
 		return
 	}
 
-	amount := int64(0)
-	target := ""
-	if parsedAmount, err := strconv.ParseInt(args[0], 10, 64); err == nil {
+	if len(args) > 2 {
+		p.sendCommandResult(channel, username, "too many args - use !piss <username> [amount]", false)
+		return
+	}
+
+	target := normalizePissTarget(args[0])
+	if target == "" {
+		p.sendCommandResult(channel, username, "gotta specify who to piss against mate - !piss <username> [amount]", false)
+		return
+	}
+
+	var amount int64
+	if len(args) == 2 {
+		parsedAmount, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil {
+			p.sendCommandResult(channel, username, "can't parse bet amount - use a number like 25 or leave blank for bragging rights", false)
+			return
+		}
 		if parsedAmount < 0 {
 			p.sendCommandResult(channel, username, "can't bet negative money", false)
 			return
 		}
 		amount = parsedAmount
-		if len(args) < 2 {
-			p.sendCommandResult(channel, username, "gotta specify who to piss against mate - !piss <amount> <username>", false)
-			return
-		}
-		target = normalizePissTarget(args[1])
-	} else {
-		target = normalizePissTarget(args[0])
 	}
-	if target == "" {
-		p.sendCommandResult(channel, username, "gotta specify who to piss against mate - !piss <amount> <username>", false)
-		return
-	}
+
 	if target == username {
 		p.sendCommandResult(channel, username, "can't piss against yaself", false)
 		return

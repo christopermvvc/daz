@@ -572,7 +572,7 @@ func TestHandleCommandValidation(t *testing.T) {
 		if !ok {
 			t.Fatal("expected public message")
 		}
-		want := "gotta challenge someone mate - !piss <amount> <username> or !piss <username> for bragging rights"
+		want := "gotta challenge someone mate - !piss <username> [amount]"
 		if msg != want {
 			t.Fatalf("public message = %q, want %q", msg, want)
 		}
@@ -581,7 +581,7 @@ func TestHandleCommandValidation(t *testing.T) {
 	t.Run("negative bet", func(t *testing.T) {
 		p, bus := newTestPlugin(t, `{"bot_username":"botman"}`)
 		params := map[string]string{"channel": "room", "username": "alice", "is_pm": "false"}
-		if err := p.handleCommand(makeCommandEvent("piss", []string{"-5", "bob"}, params)); err != nil {
+		if err := p.handleCommand(makeCommandEvent("piss", []string{"bob", "-5"}, params)); err != nil {
 			t.Fatalf("handleCommand() error = %v", err)
 		}
 		msg, ok := bus.lastRawMessage()
@@ -589,6 +589,39 @@ func TestHandleCommandValidation(t *testing.T) {
 			t.Fatal("expected public message")
 		}
 		want := "can't bet negative money"
+		if msg != want {
+			t.Fatalf("public message = %q, want %q", msg, want)
+		}
+	})
+
+	t.Run("numeric username with amount", func(t *testing.T) {
+		p, bus := newTestPlugin(t, `{"bot_username":"botman"}`)
+		params := map[string]string{"channel": "room", "username": "alice", "is_pm": "false"}
+		bus.requestResp = mustGetBalanceResponse(t, "room", "alice", 50)
+		if err := p.handleCommand(makeCommandEvent("piss", []string{"26", "9"}, params)); err != nil {
+			t.Fatalf("handleCommand() error = %v", err)
+		}
+		msg, ok := bus.lastRawMessage()
+		if !ok {
+			t.Fatal("expected public message")
+		}
+		want := "-alice challenges -26 to a $9 pissing contest! Type 'yes' or 'no' to respond (30s to accept)"
+		if msg != want {
+			t.Fatalf("public message = %q, want %q", msg, want)
+		}
+	})
+
+	t.Run("amount parse error", func(t *testing.T) {
+		p, bus := newTestPlugin(t, `{"bot_username":"botman"}`)
+		params := map[string]string{"channel": "room", "username": "alice", "is_pm": "false"}
+		if err := p.handleCommand(makeCommandEvent("piss", []string{"alice", "abc"}, params)); err != nil {
+			t.Fatalf("handleCommand() error = %v", err)
+		}
+		msg, ok := bus.lastRawMessage()
+		if !ok {
+			t.Fatal("expected public message")
+		}
+		want := "can't parse bet amount - use a number like 25 or leave blank for bragging rights"
 		if msg != want {
 			t.Fatalf("public message = %q, want %q", msg, want)
 		}
