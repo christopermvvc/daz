@@ -35,6 +35,10 @@
   const STORAGE_TOP_KEY = 'daz-cytube-game-modal-top-v1';
   const STORAGE_WIDTH_KEY = 'daz-cytube-game-modal-width-v1';
   const STORAGE_HEIGHT_KEY = 'daz-cytube-game-modal-height-v1';
+  const STORAGE_RESTORE_LEFT_KEY = 'daz-cytube-game-modal-restore-left-v1';
+  const STORAGE_RESTORE_TOP_KEY = 'daz-cytube-game-modal-restore-top-v1';
+  const STORAGE_RESTORE_WIDTH_KEY = 'daz-cytube-game-modal-restore-width-v1';
+  const STORAGE_RESTORE_HEIGHT_KEY = 'daz-cytube-game-modal-restore-height-v1';
   const DEFAULT_BALANCE = 1250;
   const MIN_MODAL_WIDTH = 280;
   const MIN_MODAL_HEIGHT = 220;
@@ -52,6 +56,10 @@
     top: null,
     width: null,
     height: null,
+    restoreLeft: null,
+    restoreTop: null,
+    restoreWidth: null,
+    restoreHeight: null,
   };
 
   function clamp(value, min, max) {
@@ -120,6 +128,10 @@
       state.top = parseStoredNumber(window.localStorage.getItem(STORAGE_TOP_KEY), null);
       state.width = parseStoredNumber(window.localStorage.getItem(STORAGE_WIDTH_KEY), null);
       state.height = parseStoredNumber(window.localStorage.getItem(STORAGE_HEIGHT_KEY), null);
+      state.restoreLeft = parseStoredNumber(window.localStorage.getItem(STORAGE_RESTORE_LEFT_KEY), null);
+      state.restoreTop = parseStoredNumber(window.localStorage.getItem(STORAGE_RESTORE_TOP_KEY), null);
+      state.restoreWidth = parseStoredNumber(window.localStorage.getItem(STORAGE_RESTORE_WIDTH_KEY), null);
+      state.restoreHeight = parseStoredNumber(window.localStorage.getItem(STORAGE_RESTORE_HEIGHT_KEY), null);
     } catch (err) {
       // localStorage unavailable in restricted contexts.
     }
@@ -141,6 +153,18 @@
       }
       if (Number.isFinite(state.height)) {
         window.localStorage.setItem(STORAGE_HEIGHT_KEY, String(Math.round(state.height)));
+      }
+      if (Number.isFinite(state.restoreLeft)) {
+        window.localStorage.setItem(STORAGE_RESTORE_LEFT_KEY, String(Math.round(state.restoreLeft)));
+      }
+      if (Number.isFinite(state.restoreTop)) {
+        window.localStorage.setItem(STORAGE_RESTORE_TOP_KEY, String(Math.round(state.restoreTop)));
+      }
+      if (Number.isFinite(state.restoreWidth)) {
+        window.localStorage.setItem(STORAGE_RESTORE_WIDTH_KEY, String(Math.round(state.restoreWidth)));
+      }
+      if (Number.isFinite(state.restoreHeight)) {
+        window.localStorage.setItem(STORAGE_RESTORE_HEIGHT_KEY, String(Math.round(state.restoreHeight)));
       }
     } catch (err) {
       // ignore storage failures.
@@ -738,6 +762,28 @@
     saveState();
   }
 
+  function captureOpenGeometrySnapshot() {
+    const normalized = normalizeGeometry();
+    state.restoreLeft = normalized.left;
+    state.restoreTop = normalized.top;
+    state.restoreWidth = normalized.width;
+    state.restoreHeight = normalized.height;
+  }
+
+  function restoreOpenGeometrySnapshot() {
+    if (
+      Number.isFinite(state.restoreLeft) &&
+      Number.isFinite(state.restoreTop) &&
+      Number.isFinite(state.restoreWidth) &&
+      Number.isFinite(state.restoreHeight)
+    ) {
+      state.left = state.restoreLeft;
+      state.top = state.restoreTop;
+      state.width = state.restoreWidth;
+      state.height = state.restoreHeight;
+    }
+  }
+
   function applyGeometry() {
     const root = document.getElementById('daz-game-modal-root');
     if (!root) {
@@ -772,7 +818,6 @@
       root.style.setProperty('pointer-events', 'auto', 'important');
       root.style.setProperty('transform', 'none', 'important');
       root.style.setProperty('margin', '0', 'important');
-      state.left = minimizedLeft;
       return;
     }
 
@@ -820,6 +865,16 @@
     if (nextMode !== 'open' && nextMode !== 'minimized') {
       return;
     }
+    const wasMinimized = state.mode === 'minimized';
+    const switchingToMinimized = nextMode === 'minimized' && !wasMinimized;
+    const switchingToOpen = nextMode === 'open' && wasMinimized;
+
+    if (switchingToMinimized) {
+      captureOpenGeometrySnapshot();
+    } else if (switchingToOpen) {
+      restoreOpenGeometrySnapshot();
+    }
+
     state.mode = nextMode;
     updateModeUI();
   }
