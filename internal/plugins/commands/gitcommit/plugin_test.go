@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hildolfr/daz/internal/buildinfo"
 	"github.com/hildolfr/daz/internal/framework"
 )
 
@@ -272,6 +273,24 @@ func TestHandleCommandAdminPM(t *testing.T) {
 		return
 	}
 	t.Fatalf("expected plugin.response response")
+}
+
+func TestDefaultCommitMessageUsesInjectedBuildInfo(t *testing.T) {
+	prevCommit := buildinfo.GitCommit
+	prevDirty := buildinfo.GitDirty
+	t.Cleanup(func() {
+		buildinfo.GitCommit = prevCommit
+		buildinfo.GitDirty = prevDirty
+	})
+
+	buildinfo.GitCommit = "deadbeefcafebabe"
+	buildinfo.GitDirty = "true"
+
+	got := defaultCommitMessage()
+	want := "Current git commit: deadbeefcafe (dirty)"
+	if got != want {
+		t.Fatalf("defaultCommitMessage() = %q, want %q", got, want)
+	}
 }
 
 func hasCommandAliases(commands string, aliases ...string) bool {

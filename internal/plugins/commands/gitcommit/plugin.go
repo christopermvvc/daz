@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
 
+	"github.com/hildolfr/daz/internal/buildinfo"
 	"github.com/hildolfr/daz/internal/framework"
 	"github.com/hildolfr/daz/internal/logger"
 )
@@ -172,33 +176,96 @@ func (p *Plugin) sendResponse(username, channel string, isPM bool, message strin
 }
 
 func defaultCommitMessage() string {
-	buildInfo, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "Current git commit: unknown"
+	if message, ok := commitFromInjectedBuildInfo(); ok {
+		return message
 	}
 
-	var revision string
-	var modified string
-	for _, setting := range buildInfo.Settings {
-		switch setting.Key {
-		case "vcs.revision":
-			revision = strings.TrimSpace(setting.Value)
-		case "vcs.modified":
-			modified = strings.TrimSpace(setting.Value)
+	buildInfo, ok := debug.ReadBuildInfo()
+	if ok {
+		var revision string
+		var modified string
+		for _, setting := range buildInfo.Settings {
+			switch setting.Key {
+			case "vcs.revision":
+				revision = strings.TrimSpace(setting.Value)
+			case "vcs.modified":
+				modified = strings.TrimSpace(setting.Value)
+			}
+		}
+
+		if message, ok := formatCommitMessage(revision, modified); ok {
+			return message
 		}
 	}
 
-	if revision == "" {
-		return "Current git commit: unknown"
+	if message, ok := commitFromGitCLI(); ok {
+		return message
 	}
 
+	return "Current git commit: unknown"
+}
+
+func commitFromInjectedBuildInfo() (string, bool) {
+	revision := strings.TrimSpace(buildinfo.GitCommit)
+	modified := strings.TrimSpace(buildinfo.GitDirty)
+	return formatCommitMessage(revision, modified)
+}
+
+func commitFromGitCLI() (string, bool) {
+	candidates := []string{"."}
+
+	if execPath, err := os.Executable(); err == nil {
+		execDir := filepath.Dir(execPath)
+		candidates = append(candidates, execDir, filepath.Clean(filepath.Join(execDir, "..")))
+	}
+
+	for _, dir := range candidates {
+		revision, err := runGitOutput(dir, "rev-parse", "--short=12", "HEAD")
+		if err != nil || revision == "" {
+			continue
+		}
+
+		dirty := "false"
+		if err := runGitStatus(dir); err != nil {
+			dirty = "true"
+		}
+
+		if message, ok := formatCommitMessage(revision, dirty); ok {
+			return message, true
+		}
+	}
+
+	return "", false
+}
+
+func runGitOutput(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func runGitStatus(dir string) error {
+	cmd := exec.Command("git", "diff", "--quiet", "--ignore-submodules", "HEAD")
+	cmd.Dir = dir
+	return cmd.Run()
+}
+
+func formatCommitMessage(revision, modified string) (string, bool) {
+	revision = strings.TrimSpace(revision)
+	if revision == "" || strings.EqualFold(revision, "unknown") {
+		return "", false
+	}
 	if len(revision) > 12 {
 		revision = revision[:12]
 	}
 
-	if modified == "true" {
-		return fmt.Sprintf("Current git commit: %s (dirty)", revision)
+	if strings.EqualFold(strings.TrimSpace(modified), "true") {
+		return fmt.Sprintf("Current git commit: %s (dirty)", revision), true
 	}
 
-	return fmt.Sprintf("Current git commit: %s", revision)
+	return fmt.Sprintf("Current git commit: %s", revision), true
 }

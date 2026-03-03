@@ -81,12 +81,25 @@ echo ""
 echo -e "${BLUE}🏗️  Building Daz...${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
+GIT_COMMIT=$(git rev-parse --short=12 HEAD 2>/dev/null || echo "unknown")
+GIT_DIRTY="unknown"
+if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    if git diff --quiet --ignore-submodules HEAD 2>/dev/null; then
+        GIT_DIRTY="false"
+    else
+        GIT_DIRTY="true"
+    fi
+fi
+
+LDFLAGS="-X github.com/hildolfr/daz/internal/buildinfo.GitCommit=${GIT_COMMIT} -X github.com/hildolfr/daz/internal/buildinfo.GitDirty=${GIT_DIRTY}"
+echo -e "  ${WHITE}Commit:${NC} ${GIT_COMMIT} (dirty=${GIT_DIRTY})"
+
 # Capture build output
 BUILD_OUTPUT=$(mktemp)
 BUILD_START=$(date +%s)
 
 (
-    go build -v -o bin/daz cmd/daz/main.go 2>&1 | tee "$BUILD_OUTPUT"
+    go build -buildvcs=true -ldflags "$LDFLAGS" -v -o bin/daz cmd/daz/main.go 2>&1 | tee "$BUILD_OUTPUT"
 ) &
 BUILD_PID=$!
 
