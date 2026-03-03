@@ -13,9 +13,9 @@
     status.id = statusId;
     status.textContent = message;
     status.style.cssText =
-      'position:fixed;right:12px;top:12px;z-index:2147483647;background:' +
+      'position:fixed;left:12px;bottom:12px;z-index:2147483647;background:' +
       (asError ? '#4a120f' : '#2d1810') +
-      ';color:#d4af37;border:1px solid rgba(212,175,55,.45);padding:6px 10px;font:12px/1.3 Cinzel,Georgia,serif;max-width:40vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      ';color:#d4af37;border:1px solid rgba(212,175,55,.45);padding:6px 10px;font:12px/1.3 Cinzel,Georgia,serif;max-width:40vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 0 12px rgba(0,0,0,.35);';
     (document.body || document.documentElement).appendChild(status);
   }
 
@@ -615,22 +615,65 @@
       return;
     }
     root.dataset.fallbackApplied = '1';
-    root.style.position = 'fixed';
-    root.style.left = '12px';
-    root.style.bottom = '12px';
-    root.style.width = 'clamp(320px, 34vw, 700px)';
-    root.style.height = 'clamp(250px, 36vh, 420px)';
-    root.style.zIndex = '2147483647';
-    root.style.display = 'block';
-    root.style.visibility = 'visible';
-    root.style.background = '#140f0a';
-    root.style.border = '1px solid rgba(212,175,55,.35)';
-    root.style.borderRadius = '8px';
-    root.style.color = '#d4af37';
-    root.style.pointerEvents = 'auto';
-    root.style.userSelect = 'none';
-    root.style.fontFamily = 'Cinzel, Georgia, serif';
-    root.style.letterSpacing = '0.5px';
+    forceBottomLeftPlacement(root);
+    root.style.setProperty('width', 'clamp(320px, 34vw, 700px)', 'important');
+    root.style.setProperty('height', 'clamp(250px, 36vh, 420px)', 'important');
+    root.style.setProperty('display', 'block', 'important');
+    root.style.setProperty('visibility', 'visible', 'important');
+    root.style.setProperty('z-index', '2147483647', 'important');
+    root.style.setProperty('background', '#140f0a', 'important');
+    root.style.setProperty('border', '1px solid rgba(212,175,55,.35)', 'important');
+    root.style.setProperty('border-radius', '8px', 'important');
+    root.style.setProperty('color', '#d4af37', 'important');
+    root.style.setProperty('pointer-events', 'auto', 'important');
+    root.style.setProperty('user-select', 'none', 'important');
+    root.style.setProperty('font-family', 'Cinzel, Georgia, serif', 'important');
+    root.style.setProperty('letter-spacing', '0.5px', 'important');
+  }
+
+  function forceBottomLeftPlacement(root) {
+    if (!root) {
+      return;
+    }
+    root.style.setProperty('position', 'fixed', 'important');
+    root.style.setProperty('left', '12px', 'important');
+    root.style.setProperty('right', 'auto', 'important');
+    root.style.setProperty('top', 'auto', 'important');
+    root.style.setProperty('bottom', '12px', 'important');
+    root.style.setProperty('transform', 'none', 'important');
+    root.style.setProperty('opacity', '1', 'important');
+    root.style.setProperty('margin', '0', 'important');
+    root.style.setProperty('inset', 'auto auto 12px 12px', 'important');
+  }
+
+  function keepBottomLeftAnchored() {
+    const root = document.getElementById('daz-game-modal-root');
+    if (!root) {
+      return;
+    }
+    forceBottomLeftPlacement(root);
+    const rect = root.getBoundingClientRect();
+    const hiddenOrShifted = rect.width < 40 || rect.height < 40 || rect.left < -1 || rect.top > window.innerHeight || rect.right < 0 || rect.bottom > window.innerHeight + 4;
+    if (hiddenOrShifted) {
+      root.style.setProperty('outline', '2px solid rgba(255,165,0,0.85)', 'important');
+    } else {
+      root.style.removeProperty('outline');
+    }
+  }
+
+  function startPlacementWatch() {
+    let attempts = 0;
+    const maxAttempts = 24;
+    const interval = window.setInterval(() => {
+      attempts += 1;
+      keepBottomLeftAnchored();
+      if (attempts >= maxAttempts) {
+        window.clearInterval(interval);
+      }
+    }, 500);
+    keepBottomLeftAnchored();
+    window.addEventListener('resize', keepBottomLeftAnchored);
+    window.addEventListener('orientationchange', keepBottomLeftAnchored);
   }
 
   function mount() {
@@ -646,6 +689,7 @@
     const container = document.body || document.documentElement;
     container.appendChild(root);
     enforceFallbackVisuals(root);
+    startPlacementWatch();
     console.info('[daz-game-modal] mounted', { rootId: root.id });
     hideInlineStatus();
     bindEvents();
