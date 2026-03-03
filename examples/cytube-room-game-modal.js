@@ -452,6 +452,33 @@
     });
   }
 
+  function setSectionCollapsed(sectionKey, isCollapsed) {
+    const root = document.getElementById('daz-game-modal-root');
+    if (!root || !state.collapsedSections || !Object.prototype.hasOwnProperty.call(state.collapsedSections, sectionKey)) {
+      return;
+    }
+
+    const normalized = Boolean(isCollapsed);
+    const section = root.querySelector(`.daz-game-card[data-section="${sectionKey}"]`);
+    if (!section) {
+      return;
+    }
+
+    const toggle = section.querySelector('[data-action="toggle-section"]');
+    section.classList.toggle('is-collapsed', normalized);
+    section.setAttribute('aria-expanded', String(!normalized));
+    if (toggle) {
+      toggle.textContent = normalized ? '▸' : '▾';
+      toggle.setAttribute('aria-expanded', String(!normalized));
+    }
+    const content = section.querySelector('.daz-game-card-content');
+    if (content) {
+      content.setAttribute('aria-hidden', String(normalized));
+    }
+    state.collapsedSections[sectionKey] = normalized;
+    saveState();
+  }
+
   function applyCommandPanelState() {
     const root = document.getElementById('daz-game-modal-root');
     if (!root) {
@@ -482,6 +509,38 @@
         list.setAttribute('aria-hidden', String(!isOpen));
       }
     });
+  }
+
+  function setCommandPanelOpen(categoryKey, isOpen) {
+    const root = document.getElementById('daz-game-modal-root');
+    if (!root || !state.commandPanels || !Object.prototype.hasOwnProperty.call(state.commandPanels, categoryKey)) {
+      return;
+    }
+
+    const panel = root.querySelector(`.daz-game-command-category[data-command-category="${categoryKey}"]`);
+    if (!panel) {
+      return;
+    }
+
+    const isPanelOpen = Boolean(isOpen);
+    const toggle = panel.querySelector('[data-action="toggle-command-category"]');
+    const list = panel.querySelector('.daz-game-command-list');
+    panel.classList.toggle('is-open', isPanelOpen);
+    panel.setAttribute('aria-expanded', String(isPanelOpen));
+    if (toggle) {
+      const chevron = toggle.querySelector('[data-command-chevron]');
+      if (chevron) {
+        chevron.textContent = isPanelOpen ? '▾' : '▸';
+      } else {
+        toggle.textContent = isPanelOpen ? '▾' : '▸';
+      }
+      toggle.setAttribute('aria-expanded', String(isPanelOpen));
+    }
+    if (list) {
+      list.setAttribute('aria-hidden', String(!isPanelOpen));
+    }
+    state.commandPanels[categoryKey] = isPanelOpen;
+    saveState();
   }
 
   function refreshBalance() {
@@ -808,9 +867,7 @@
         event.stopPropagation();
         const section = actionTarget.getAttribute('data-section-key');
         if (section && state.collapsedSections && Object.prototype.hasOwnProperty.call(state.collapsedSections, section)) {
-          state.collapsedSections[section] = !state.collapsedSections[section];
-          applySectionCollapseState();
-          saveState();
+          setSectionCollapsed(section, !state.collapsedSections[section]);
         }
         return;
       }
@@ -819,9 +876,7 @@
         event.stopPropagation();
         const category = actionTarget.getAttribute('data-command-category');
         if (category && state.commandPanels && Object.prototype.hasOwnProperty.call(state.commandPanels, category)) {
-          state.commandPanels[category] = !state.commandPanels[category];
-          applyCommandPanelState();
-          saveState();
+          setCommandPanelOpen(category, !state.commandPanels[category]);
         }
         return;
       }
