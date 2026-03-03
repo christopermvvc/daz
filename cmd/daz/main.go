@@ -27,6 +27,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/fishing"
 	"github.com/hildolfr/daz/internal/plugins/commands/fortune"
 	"github.com/hildolfr/daz/internal/plugins/commands/games"
+	"github.com/hildolfr/daz/internal/plugins/commands/gitcommit"
 	"github.com/hildolfr/daz/internal/plugins/commands/help"
 	"github.com/hildolfr/daz/internal/plugins/commands/insult"
 	"github.com/hildolfr/daz/internal/plugins/commands/mysterybox"
@@ -242,6 +243,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"fishing", fishing.New()},
 		{"fortune", fortune.New()},
 		{"games", games.New()},
+		{"gitcommit", gitcommit.New()},
 		{"help", help.New()},
 		{"insult", insult.New()},
 		{"mysterybox", mysterybox.New()},
@@ -295,6 +297,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["pissingcontest"] = cfg.GetPluginConfig("pissingcontest")
 	pluginConfigs["fortune"] = cfg.GetPluginConfig("fortune")
 	pluginConfigs["games"] = cfg.GetPluginConfig("games")
+	pluginConfigs["gitcommit"] = cfg.GetPluginConfig("gitcommit")
 	pluginConfigs["help"] = cfg.GetPluginConfig("help")
 	pluginConfigs["quote"] = cfg.GetPluginConfig("quote")
 	pluginConfigs["uptime"] = cfg.GetPluginConfig("uptime")
