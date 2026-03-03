@@ -39,7 +39,10 @@
   const MIN_MODAL_WIDTH = 280;
   const MIN_MODAL_HEIGHT = 220;
   const MINIMIZED_HEIGHT = 38;
+  const MINIMIZED_WIDTH = 220;
   const DEFAULT_MARGIN = 12;
+  const MINIMIZED_ICON = '▢';
+  const OPEN_ICON = '—';
 
   const state = {
     mode: 'open',
@@ -251,7 +254,11 @@
         border-radius: 3px;
         min-width: 30px;
         height: 22px;
+        line-height: 1;
         color: #d4af37;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         background: linear-gradient(135deg, #2d1810 0, #1d1410 100%);
         cursor: pointer;
         padding: 0 8px;
@@ -428,6 +435,28 @@
         height: 38px;
       }
 
+      #daz-game-modal-root.daz-state-minimized #daz-game-modal-header {
+        gap: 0;
+        justify-content: space-between;
+      }
+
+      #daz-game-modal-root.daz-state-minimized #daz-game-modal-title {
+        font-size: 12px;
+        max-width: 120px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      #daz-game-modal-root.daz-state-minimized #daz-game-modal-hint {
+        display: none;
+      }
+
+      #daz-game-modal-root.daz-state-minimized #daz-game-modal-actions {
+        margin-left: auto;
+        flex-shrink: 0;
+      }
+
       #daz-game-modal-root.daz-state-minimized #daz-game-modal-body {
         display: none;
       }
@@ -528,7 +557,7 @@
           <div id="daz-game-modal-title">Paddy's Pub Game Console</div>
           <div id="daz-game-modal-hint">Drag • Resize</div>
           <div id="daz-game-modal-actions">
-            <button type="button" class="daz-game-modal-btn" data-action="toggle-min" title="Minimise">_</button>
+            <button type="button" class="daz-game-modal-btn" data-action="toggle-min" title="Minimise" id="daz-game-modal-min-toggle">_</button>
           </div>
         </div>
         <div id="daz-game-modal-body">
@@ -633,9 +662,16 @@
   function updateModeUI() {
     const root = document.getElementById('daz-game-modal-root');
     const modeTag = document.getElementById('daz-modal-state');
+    const minToggle = document.getElementById('daz-game-modal-min-toggle');
     if (root && modeTag) {
       root.classList.toggle('daz-state-minimized', state.mode === 'minimized');
       modeTag.textContent = state.mode;
+      if (minToggle) {
+        const isMinimized = state.mode === 'minimized';
+        minToggle.textContent = isMinimized ? OPEN_ICON : MINIMIZED_ICON;
+        minToggle.title = isMinimized ? 'Restore' : 'Minimize';
+        minToggle.setAttribute('aria-label', minToggle.title);
+      }
       applyGeometry();
     }
     saveState();
@@ -714,24 +750,30 @@
 
     const normalized = normalizeGeometry();
     const viewport = getViewportBounds();
-    const heightForRender = state.mode === 'minimized' ? MINIMIZED_HEIGHT : normalized.height;
+    const isMinimized = state.mode === 'minimized';
+    const heightForRender = isMinimized ? MINIMIZED_HEIGHT : normalized.height;
+    const widthForRender = isMinimized ? MINIMIZED_WIDTH : normalized.width;
     const maxTop = Math.max(DEFAULT_MARGIN, viewport.height - heightForRender - DEFAULT_MARGIN);
-    const clampedLeft = clamp(normalized.left, DEFAULT_MARGIN, Math.max(DEFAULT_MARGIN, viewport.width - normalized.width - DEFAULT_MARGIN));
+    const clampedLeft = clamp(
+      normalized.left,
+      DEFAULT_MARGIN,
+      Math.max(DEFAULT_MARGIN, viewport.width - widthForRender - DEFAULT_MARGIN),
+    );
     const clampedTop = clamp(normalized.top, DEFAULT_MARGIN, maxTop);
 
     state.left = clampedLeft;
     state.top = clampedTop;
-    if (state.mode === 'open') {
+    if (!isMinimized) {
       state.height = normalized.height;
+      state.width = normalized.width;
     }
-    state.width = normalized.width;
 
     root.style.setProperty('position', 'fixed', 'important');
     root.style.setProperty('left', `${state.left}px`, 'important');
     root.style.setProperty('top', `${state.top}px`, 'important');
     root.style.setProperty('right', 'auto', 'important');
     root.style.setProperty('bottom', 'auto', 'important');
-    root.style.setProperty('width', `${state.width}px`, 'important');
+    root.style.setProperty('width', `${widthForRender}px`, 'important');
     root.style.setProperty('height', `${heightForRender}px`, 'important');
     root.style.setProperty('display', 'block', 'important');
     root.style.setProperty('visibility', 'visible', 'important');
@@ -875,6 +917,8 @@
     if (actionTarget) {
       const action = actionTarget.getAttribute('data-action');
       if (action === 'toggle-min') {
+        event.preventDefault();
+        event.stopPropagation();
         setMode(state.mode === 'minimized' ? 'open' : 'minimized');
         return;
       }
