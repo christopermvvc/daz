@@ -486,7 +486,6 @@ func (p *Plugin) isBotTarget(channel, username string) bool {
 
 	return strings.EqualFold(normalized, resolved)
 }
-
 func (p *Plugin) isUserInRoom(channel, username string) (bool, error) {
 	room := normalizeChannel(channel)
 	normalized := normalizePissTarget(username)
@@ -524,7 +523,6 @@ func (p *Plugin) isUserInRoom(channel, username string) (bool, error) {
 	}
 	return online, nil
 }
-
 func normalizePissTarget(raw string) string {
 	t := strings.TrimSpace(raw)
 	if t == "" {

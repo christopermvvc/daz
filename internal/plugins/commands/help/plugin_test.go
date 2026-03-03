@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -518,6 +520,166 @@ func TestHelpVisibilityParityListAndDetail(t *testing.T) {
 	}
 	if adminDetail == nil || adminDetail.Primary != "uptime" {
 		t.Fatal("expected admin alias lookup for up to resolve to uptime")
+	}
+}
+
+func TestHelpURLForRequest(t *testing.T) {
+	plugin := New().(*Plugin)
+	bus := newMockEventBus()
+
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	plugin.config.HelpBaseURL = "https://example.com/help"
+	nonAdminReq := makeHelpReq("alice", "test", 0, false)
+	adminReq := makeHelpReq("alice", "test", 0, true)
+
+	if got := plugin.helpURLForRequest(nonAdminReq); got != "https://example.com/help" {
+		t.Fatalf("non-admin URL = %q, want %q", got, "https://example.com/help")
+	}
+
+	if got := plugin.helpURLForRequest(adminReq); got != "https://example.com/help" {
+		t.Fatalf("admin URL without admin generator = %q, want %q", got, "https://example.com/help")
+	}
+
+	plugin.adminGenerator = NewHTMLGenerator(plugin.config, plugin.snapshotAllEntries, true, true)
+	if got := plugin.helpURLForRequest(adminReq); got != "https://example.com/admin.html" {
+		t.Fatalf("admin URL with admin generator = %q, want %q", got, "https://example.com/admin.html")
+	}
+}
+
+func TestGenerateHelpHTMLFiltersAdminCommandsFromPublicPage(t *testing.T) {
+	plugin := New().(*Plugin)
+	bus := newMockEventBus()
+
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	outputDir := filepath.Clean(t.TempDir())
+	plugin.config.HTMLOutputPath = outputDir
+
+	plugin.cacheMu.Lock()
+	plugin.commandCache = map[string]*commandEntry{
+		"ping": {
+			Primary:     "ping",
+			PluginName:  "ping",
+			MinRank:     0,
+			Description: "ping command",
+		},
+		"modcmd": {
+			Primary:     "modcmd",
+			PluginName:  "mod",
+			MinRank:     2,
+			Description: "mod only",
+		},
+		"admincmd": {
+			Primary:     "admincmd",
+			PluginName:  "admin",
+			AdminOnly:   true,
+			Description: "admin only",
+		},
+	}
+	plugin.cacheMu.Unlock()
+
+	plugin.generator = NewHTMLGenerator(plugin.config, func() []*commandEntry {
+		return plugin.snapshotEntries(0, false)
+	}, true, false)
+	plugin.adminGenerator = NewHTMLGenerator(plugin.config, plugin.snapshotAllEntries, true, true)
+	plugin.adminGenerator.rootOutputFile = helpAdminOutputFile
+	plugin.adminGenerator.helpOutputFile = filepath.Join(helpAdminOutputDir, helpAdminHelpOutputFile)
+
+	// Prevent any external command execution in tests.
+	plugin.generator.gitRunner = func(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+		return "", nil
+	}
+	plugin.adminGenerator.gitRunner = plugin.generator.gitRunner
+	plugin.generator.deployKeyResolver = func() (string, error) {
+		return "", fmt.Errorf("missing deploy key")
+	}
+	plugin.adminGenerator.deployKeyResolver = plugin.generator.deployKeyResolver
+
+	plugin.generateHelpHTML()
+
+	publicFile := filepath.Join(outputDir, "index.html")
+	publicContents, err := os.ReadFile(publicFile)
+	if err != nil {
+		t.Fatalf("failed to read public help file: %v", err)
+	}
+
+	publicPage := string(publicContents)
+	if !strings.Contains(publicPage, "ping") || !strings.Contains(publicPage, "ping command") {
+		t.Fatalf("expected public page to include ping command: %q", publicPage)
+	}
+	if strings.Contains(publicPage, "admincmd") {
+		t.Fatalf("expected public page to hide admin-only commands: %q", publicPage)
+	}
+	if strings.Contains(publicPage, "modcmd") {
+		t.Fatalf("expected public page to hide rank-restricted commands: %q", publicPage)
+	}
+	if strings.Contains(publicPage, "Some commands require admin") {
+		t.Fatalf("expected public page to avoid restricted notice: %q", publicPage)
+	}
+
+	adminFile := filepath.Join(outputDir, helpAdminOutputFile)
+	adminContents, err := os.ReadFile(adminFile)
+	if err != nil {
+		t.Fatalf("failed to read admin help file: %v", err)
+	}
+	adminPage := string(adminContents)
+	if !strings.Contains(adminPage, "admincmd") {
+		t.Fatalf("expected admin page to include admin-only commands: %q", adminPage)
+	}
+	if !strings.Contains(adminPage, "modcmd") {
+		t.Fatalf("expected admin page to include rank-restricted commands: %q", adminPage)
+	}
+	if !strings.Contains(adminPage, "Some commands require admin") {
+		t.Fatalf("expected admin page to include restricted notice: %q", adminPage)
+	}
+}
+
+func TestStartGeneratesInitialHelpHTML(t *testing.T) {
+	plugin := New().(*Plugin)
+	bus := newMockEventBus()
+
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	plugin.config.HTMLOutputPath = t.TempDir()
+	if err := plugin.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() {
+		if err := plugin.Stop(); err != nil {
+			t.Errorf("Stop() error = %v", err)
+		}
+	}()
+
+	waitForFile := func(path string) bool {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(path); err == nil {
+				return true
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		return false
+	}
+
+	publicHelp := filepath.Join(plugin.config.HTMLOutputPath, "index.html")
+	adminHelp := filepath.Join(plugin.config.HTMLOutputPath, helpAdminOutputFile)
+	adminCommandHelp := filepath.Join(plugin.config.HTMLOutputPath, helpAdminOutputDir, helpAdminHelpOutputFile)
+
+	if !waitForFile(publicHelp) {
+		t.Fatalf("expected startup public help file to be generated: %s", publicHelp)
+	}
+	if !waitForFile(adminHelp) {
+		t.Fatalf("expected startup admin help file to be generated: %s", adminHelp)
+	}
+	if !waitForFile(adminCommandHelp) {
+		t.Fatalf("expected startup admin command help file to be generated: %s", adminCommandHelp)
 	}
 }
 

@@ -29,6 +29,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/help"
 	"github.com/hildolfr/daz/internal/plugins/commands/insult"
 	"github.com/hildolfr/daz/internal/plugins/commands/mysterybox"
+	"github.com/hildolfr/daz/internal/plugins/commands/needs"
 	"github.com/hildolfr/daz/internal/plugins/commands/oddjob"
 	"github.com/hildolfr/daz/internal/plugins/commands/ping"
 	"github.com/hildolfr/daz/internal/plugins/commands/pissingcontest"
@@ -47,6 +48,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/greeter"
 	"github.com/hildolfr/daz/internal/plugins/mediatracker"
 	"github.com/hildolfr/daz/internal/plugins/ollama"
+	"github.com/hildolfr/daz/internal/plugins/playerstate"
 	"github.com/hildolfr/daz/internal/plugins/playlist"
 	"github.com/hildolfr/daz/internal/plugins/retry"
 	"github.com/hildolfr/daz/internal/plugins/sql"
@@ -239,7 +241,9 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"insult", insult.New()},
 		{"mysterybox", mysterybox.New()},
 		{"oddjob", oddjob.New()},
+		{"needs", needs.New()},
 		{"ping", ping.New()},
+		{"playerstate", playerstate.New()},
 		{"pissingcontest", pissingcontest.New()},
 		{"quote", quote.New()},
 		{"uptime", uptime.New()},
@@ -279,6 +283,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["mysterybox"] = cfg.GetPluginConfig("mysterybox")
 	pluginConfigs["oddjob"] = cfg.GetPluginConfig("oddjob")
 	pluginConfigs["ping"] = cfg.GetPluginConfig("ping")
+	pluginConfigs["playerstate"] = cfg.GetPluginConfig("playerstate")
 	pluginConfigs["pissingcontest"] = cfg.GetPluginConfig("pissingcontest")
 	pluginConfigs["fortune"] = cfg.GetPluginConfig("fortune")
 	pluginConfigs["games"] = cfg.GetPluginConfig("games")

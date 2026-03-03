@@ -78,7 +78,7 @@ func TestHelpGenerateAllSkipsInitWhenGitExists(t *testing.T) {
 		return "", nil
 	}
 	generator.deployKeyResolver = func() (string, error) {
-		return "", fmt.Errorf("missing deploy key")
+		return "/tmp/deploy_key", nil
 	}
 	_ = os.Unsetenv("GITHUB_TOKEN")
 
@@ -112,5 +112,111 @@ func TestHelpResetGitStateSkipsWithoutMarker(t *testing.T) {
 	generator.resetGitState()
 	if len(calls) != 0 {
 		t.Fatalf("expected no git calls without marker, got %v", calls)
+	}
+}
+
+func TestHelpGenerateAllUsesConfiguredOutputFiles(t *testing.T) {
+	outputDir := t.TempDir()
+	config := &Config{
+		ShowAliases:       true,
+		GenerateHTML:      true,
+		HTMLOutputPath:    outputDir,
+		HelpBaseURL:       defaultHelpBaseURL,
+		IncludeRestricted: true,
+	}
+	entries := []*commandEntry{
+		{Primary: "ping", Description: "ping the bot"},
+	}
+	generator := NewHTMLGenerator(config, func() []*commandEntry { return entries }, true, true)
+	generator.rootOutputFile = "public-index.html"
+	generator.helpOutputFile = filepath.Join("custom", "index.html")
+	generator.gitRunner = func(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+		return "", nil
+	}
+	generator.deployKeyResolver = func() (string, error) {
+		return "", fmt.Errorf("missing deploy key")
+	}
+
+	if err := generator.GenerateAll(context.Background()); err != nil {
+		t.Fatalf("GenerateAll() error = %v", err)
+	}
+
+	rootOutput := filepath.Join(outputDir, "public-index.html")
+	helperOutput := filepath.Join(outputDir, "custom", "index.html")
+	for _, output := range []string{rootOutput, helperOutput} {
+		contents, err := os.ReadFile(output)
+		if err != nil {
+			t.Fatalf("expected generated output file %s: %v", output, err)
+		}
+		if !strings.Contains(string(contents), "ping the bot") {
+			t.Fatalf("expected generated output in %s to include command", output)
+		}
+	}
+}
+
+func TestHelpGenerateAllWithoutPublishSkipsGitPush(t *testing.T) {
+	outputDir := t.TempDir()
+	config := &Config{
+		ShowAliases:       true,
+		GenerateHTML:      true,
+		HTMLOutputPath:    outputDir,
+		HelpBaseURL:       defaultHelpBaseURL,
+		IncludeRestricted: true,
+	}
+	generator := NewHTMLGenerator(config, func() []*commandEntry {
+		return []*commandEntry{{Primary: "ping", Description: "ping the bot"}}
+	}, true, true)
+
+	called := false
+	generator.gitRunner = func(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+		called = true
+		return "", nil
+	}
+
+	if err := generator.GenerateAllWithoutPublish(context.Background()); err != nil {
+		t.Fatalf("GenerateAllWithoutPublish() error = %v", err)
+	}
+
+	if called {
+		t.Fatalf("expected GenerateAllWithoutPublish to avoid git calls")
+	}
+}
+
+func TestHelpGenerateAllPublishesToGitHub(t *testing.T) {
+	outputDir := t.TempDir()
+	config := &Config{
+		ShowAliases:       true,
+		GenerateHTML:      true,
+		HTMLOutputPath:    outputDir,
+		HelpBaseURL:       defaultHelpBaseURL,
+		IncludeRestricted: true,
+	}
+	generator := NewHTMLGenerator(config, func() []*commandEntry {
+		return []*commandEntry{{Primary: "ping", Description: "ping the bot"}}
+	}, true, true)
+
+	var calls []string
+	generator.gitRunner = func(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+		calls = append(calls, strings.Join(args, " "))
+		return "", nil
+	}
+	generator.deployKeyResolver = func() (string, error) {
+		return "/tmp/deploy_key", nil
+	}
+	_ = os.Unsetenv("GITHUB_TOKEN")
+
+	if err := generator.GenerateAll(context.Background()); err != nil {
+		t.Fatalf("GenerateAll() error = %v", err)
+	}
+
+	found := false
+	for _, call := range calls {
+		if strings.HasPrefix(call, "push ") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected GenerateAll to invoke git push, got calls: %v", calls)
 	}
 }

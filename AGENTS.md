@@ -278,6 +278,21 @@ Notes:
 - `make test`
 - `go test ./internal/... -run TestName`
 
+## Local Runtime (prefer user systemd unit)
+- Use the user unit for running/restarting locally; avoid ad-hoc shell launch commands for daz.
+- Service file: `~/.config/systemd/user/dazza-dev.service`
+- Rebuild and restart flow:
+  - `make build`
+  - `systemctl --user daemon-reload`
+  - `systemctl --user restart dazza-dev.service`
+- Useful status/debug:
+  - `systemctl --user status dazza-dev.service --no-pager`
+  - `journalctl --user -u dazza-dev.service -f`
+- Optional stop/start:
+  - `systemctl --user stop dazza-dev.service`
+  - `systemctl --user start dazza-dev.service`
+- Do not use the system-level unit for local dev/test unless explicitly running as a system service.
+
 ## Legacy User-State Schema (032)
 - Migration file: `scripts/sql/032_user_state_foundation.sql`.
 - Runtime application: `internal/plugins/sql/plugin.go` via `applyExternalMigrations()` in `initializeSchema()`.
@@ -295,3 +310,21 @@ Notes:
 - The bot expects Postgres 14+ per README.
 - The repo uses Go modules; run `go mod download` if needed.
 - Keep log levels configurable via config/env and `logger.SetDebug`.
+
+## Player State API (bladder/alcohol/weed/food/lust)
+- Use `framework.NewPlayerStateClient` in command/game plugins.
+- API client methods for whole-state:
+  - `Get(ctx, channel, username)` → `PlayerState`
+  - `Set(ctx, PlayerStateMutationRequest)` (sparse overwrite)
+  - `Adjust(ctx, PlayerStateMutationRequest)` (deltas)
+- Per-field helper methods:
+  - `SetBladder`, `AdjustBladder`
+  - `SetAlcohol`, `AdjustAlcohol`
+  - `SetWeed`, `AdjustWeed`
+  - `SetFood`, `AdjustFood`
+  - `SetLust`, `AdjustLust`
+- All values are clamped at the store layer to never go below zero.
+- Example usage:
+  - `stateClient := framework.NewPlayerStateClient(bus, "myplugin")`
+  - `stateClient.AdjustBladder(ctx, channel, username, -5)` for bladder drain
+  - `stateClient.AdjustLust(ctx, channel, username, 12)` for lust gain

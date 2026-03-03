@@ -490,6 +490,7 @@ func TestGetDefaultRoutingRules(t *testing.T) {
 	// Check for specific expected rules
 	hasUserJoin := false
 	hasMediaChange := false
+	hasSetCurrent := false
 	hasAnalytics := false
 
 	for _, rule := range rules {
@@ -504,6 +505,11 @@ func TestGetDefaultRoutingRules(t *testing.T) {
 			if rule.TargetPlugin != "mediatracker" {
 				t.Errorf("Expected changeMedia to route to mediatracker, got %s", rule.TargetPlugin)
 			}
+		case "cytube.event.setCurrent":
+			hasSetCurrent = true
+			if rule.TargetPlugin != "mediatracker" {
+				t.Errorf("Expected setCurrent to route to mediatracker, got %s", rule.TargetPlugin)
+			}
 		case "cytube.event.*":
 			hasAnalytics = true
 			if rule.TargetPlugin != "analytics" {
@@ -517,6 +523,9 @@ func TestGetDefaultRoutingRules(t *testing.T) {
 	}
 	if !hasMediaChange {
 		t.Error("Missing changeMedia routing rule")
+	}
+	if !hasSetCurrent {
+		t.Error("Missing setCurrent routing rule")
 	}
 	if !hasAnalytics {
 		t.Error("Missing analytics wildcard routing rule")

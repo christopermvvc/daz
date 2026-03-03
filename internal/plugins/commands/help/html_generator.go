@@ -27,6 +27,8 @@ type HTMLGenerator struct {
 	showAliases       bool
 	includeRestricted bool
 	mu                sync.Mutex
+	rootOutputFile    string
+	helpOutputFile    string
 
 	gitRunner         gitRunner
 	deployKeyResolver func() (string, error)
@@ -40,6 +42,8 @@ func NewHTMLGenerator(config *Config, entryProvider func() []*commandEntry, show
 		entryProvider:     entryProvider,
 		showAliases:       showAliases,
 		includeRestricted: includeRestricted,
+		rootOutputFile:    "index.html",
+		helpOutputFile:    filepath.Join("help", "index.html"),
 		gitRunner:         defaultGitRunner,
 		deployKeyResolver: defaultDeployKeyResolver,
 	}
@@ -152,6 +156,14 @@ func mustResolveHelpFallbackPath() string {
 }
 
 func (g *HTMLGenerator) GenerateAll(ctx context.Context) error {
+	return g.generateAll(ctx, true)
+}
+
+func (g *HTMLGenerator) GenerateAllWithoutPublish(ctx context.Context) error {
+	return g.generateAll(ctx, false)
+}
+
+func (g *HTMLGenerator) generateAll(ctx context.Context, publish bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -164,11 +176,11 @@ func (g *HTMLGenerator) GenerateAll(ctx context.Context) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if err := g.ensureMarkerFile(); err != nil {
-		return err
-	}
 	if err := os.MkdirAll(g.config.HTMLOutputPath, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+	if err := g.ensureMarkerFile(); err != nil {
+		return err
 	}
 
 	entries := g.entryProvider()
@@ -181,16 +193,25 @@ func (g *HTMLGenerator) GenerateAll(ctx context.Context) error {
 		return err
 	}
 
-	outputFile := filepath.Join(g.config.HTMLOutputPath, "help", "index.html")
-	if err := os.MkdirAll(filepath.Dir(outputFile), 0755); err != nil {
-		return fmt.Errorf("failed to create help output directory: %w", err)
-	}
-	if err := os.WriteFile(outputFile, []byte(content), 0644); err != nil {
+	rootOutputFile := filepath.Join(g.config.HTMLOutputPath, g.rootOutputFile)
+	if err := os.WriteFile(rootOutputFile, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write help HTML: %w", err)
 	}
 
-	if err := g.pushToGitHub(ctx); err != nil {
-		logger.Warn("help", "Failed to push help HTML (continuing anyway): %v", err)
+	helperOutputFile := filepath.Join(g.config.HTMLOutputPath, g.helpOutputFile)
+	helperOutputDir := filepath.Dir(helperOutputFile)
+	if err := os.MkdirAll(helperOutputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create help output directory: %w", err)
+	}
+	if err := os.WriteFile(helperOutputFile, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write help HTML: %w", err)
+	}
+
+	if publish {
+		if err := g.pushToGitHub(ctx); err != nil {
+			logger.Warn("help", "Help page generation completed locally but publish failed: %v", err)
+			logger.Warn("help", "Local page artifacts exist at:\n- %s\n- %s", rootOutputFile, helperOutputFile)
+		}
 	}
 
 	logger.Info("help", "Help HTML generation completed")
@@ -360,13 +381,15 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 	}()
 
 	githubToken := os.Getenv("GITHUB_TOKEN")
+	logger.Info("help", "Publishing help pages to GitHub Pages from %s (branch gh-pages)", g.config.HTMLOutputPath)
 
 	runAuthPush := func() error {
 		if githubToken == "" {
 			deployKey, err := g.deployKeyResolver()
 			if err != nil {
-				return fmt.Errorf("no GitHub token configured")
+				return fmt.Errorf("no GitHub token and no deploy key configured")
 			}
+			logger.Info("help", "Using SSH deploy key for help page publish: %s", deployKey)
 			if _, err := g.runGit(ctx, []string{
 				"GIT_TERMINAL_PROMPT=0",
 				"GIT_SSH_COMMAND=ssh -i " + deployKey + " -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new",
@@ -376,6 +399,7 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 			return nil
 		}
 
+		logger.Info("help", "Using GitHub token for help page publish")
 		authURL := fmt.Sprintf("https://x-access-token:%s@github.com/hildolfr/daz.git", githubToken)
 		if _, err := g.runGit(ctx, []string{"GIT_TERMINAL_PROMPT=0"}, "push", authURL, "gh-pages", "--force"); err != nil {
 			return fmt.Errorf("push failed: %w", err)
@@ -426,8 +450,10 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 	}
 	if err := runAuthPush(); err != nil {
 		needsRecovery = true
+		logger.Warn("help", "Help page publish failed during git push: %v", err)
 		return err
 	}
+	logger.Info("help", "Help pages successfully published to GitHub Pages (gh-pages)")
 
 	return nil
 }

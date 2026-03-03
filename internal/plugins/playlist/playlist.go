@@ -34,7 +34,7 @@ type Plugin struct {
 }
 
 type Config struct {
-	AdminOnly bool `json:"admin_only"`
+	AdminOnly *bool `json:"admin_only"`
 }
 
 // PlaylistItem represents a single item in the playlist
@@ -96,7 +96,9 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 			return err
 		}
 		p.config = &cfg
-		p.adminOnly = cfg.AdminOnly
+		if cfg.AdminOnly != nil {
+			p.adminOnly = *cfg.AdminOnly
+		}
 	}
 
 	p.ctx, p.cancel = context.WithCancel(context.Background())

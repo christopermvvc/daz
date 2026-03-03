@@ -449,6 +449,7 @@ func (p *Plugin) applyExternalMigrations(ctx context.Context) error {
 		"scripts/sql/034_tell_pending_unique.sql",
 		"scripts/sql/035_oddjob_stats.sql",
 		"scripts/sql/036_fishing_stats.sql",
+		"scripts/sql/037_player_state_api.sql",
 	}
 
 	for _, migrationFile := range migrationFiles {
