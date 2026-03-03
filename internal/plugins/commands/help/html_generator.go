@@ -403,8 +403,14 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 		}
 	}
 
-	if _, err := g.runGit(ctx, nil, "checkout", "-B", "gh-pages"); err != nil {
-		return fmt.Errorf("failed to checkout gh-pages: %w", err)
+	if _, err := g.runGit(ctx, nil, "fetch", "--depth=1", "origin", "gh-pages"); err != nil {
+		logger.Warn("help", "No existing gh-pages ref fetched from origin: %v", err)
+	}
+
+	if _, err := g.runGit(ctx, nil, "checkout", "-B", "gh-pages", "origin/gh-pages"); err != nil {
+		if _, err := g.runGit(ctx, nil, "checkout", "-B", "gh-pages"); err != nil {
+			return fmt.Errorf("failed to checkout gh-pages: %w", err)
+		}
 	}
 	if _, err := g.runGit(ctx, nil, "add", "."); err != nil {
 		return fmt.Errorf("failed to add files: %w", err)

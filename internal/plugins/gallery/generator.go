@@ -1230,10 +1230,16 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 		}
 	}
 
+	if err := runGitCmd("fetch", "--depth=1", "origin", "gh-pages"); err != nil {
+		logger.Warn("gallery", "No existing gh-pages ref fetched from origin: %v", err)
+	}
+
 	// Switch to gh-pages branch
-	if err := runGitCmd("checkout", "-B", "gh-pages"); err != nil {
-		needsRecovery = true
-		return fmt.Errorf("failed to checkout gh-pages: %w", err)
+	if err := runGitCmd("checkout", "-B", "gh-pages", "origin/gh-pages"); err != nil {
+		if err := runGitCmd("checkout", "-B", "gh-pages"); err != nil {
+			needsRecovery = true
+			return fmt.Errorf("failed to checkout gh-pages: %w", err)
+		}
 	}
 
 	// Add all files
