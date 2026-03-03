@@ -193,3 +193,75 @@ func TestTokenBucketBurst(t *testing.T) {
 		t.Fatal("third request should be rate limited without refill")
 	}
 }
+
+func TestResolveBalanceQueryNonAdminUsesSessionUser(t *testing.T) {
+	t.Parallel()
+
+	p := New().(*Plugin)
+	p.config.DefaultChannel = "always_always_sunny"
+	client := &clientState{
+		profile: authProfile{
+			Username: "alice",
+			Admin:    false,
+			Channels: map[string]struct{}{"always_always_sunny": {}},
+		},
+	}
+
+	channel, username, err := p.resolveBalanceQuery(client, economyBalancePayload{})
+	if err != nil {
+		t.Fatalf("resolveBalanceQuery default payload: %v", err)
+	}
+	if channel != "always_always_sunny" {
+		t.Fatalf("expected default channel, got %q", channel)
+	}
+	if username != "alice" {
+		t.Fatalf("expected session username alice, got %q", username)
+	}
+}
+
+func TestResolveBalanceQueryNonAdminCannotOverrideUser(t *testing.T) {
+	t.Parallel()
+
+	p := New().(*Plugin)
+	p.config.DefaultChannel = "always_always_sunny"
+	client := &clientState{
+		profile: authProfile{
+			Username: "alice",
+			Admin:    false,
+			Channels: map[string]struct{}{"always_always_sunny": {}},
+		},
+	}
+
+	_, _, err := p.resolveBalanceQuery(client, economyBalancePayload{Username: "bob"})
+	if err == nil {
+		t.Fatal("expected non-admin username override to fail")
+	}
+}
+
+func TestResolveBalanceQueryAdminCanOverrideUser(t *testing.T) {
+	t.Parallel()
+
+	p := New().(*Plugin)
+	p.config.DefaultChannel = "always_always_sunny"
+	client := &clientState{
+		profile: authProfile{
+			Username: "admin",
+			Admin:    true,
+			Channels: map[string]struct{}{"always_always_sunny": {}},
+		},
+	}
+
+	channel, username, err := p.resolveBalanceQuery(client, economyBalancePayload{
+		Username: "bob",
+		Channel:  "always_always_sunny",
+	})
+	if err != nil {
+		t.Fatalf("resolveBalanceQuery admin override: %v", err)
+	}
+	if channel != "always_always_sunny" {
+		t.Fatalf("expected channel always_always_sunny, got %q", channel)
+	}
+	if username != "bob" {
+		t.Fatalf("expected overridden username bob, got %q", username)
+	}
+}

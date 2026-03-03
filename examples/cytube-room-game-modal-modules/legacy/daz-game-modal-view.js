@@ -536,7 +536,7 @@
                     <span>Balance</span>
                     <strong id="daz-modal-balance">0</strong>
                   </div>
-                  <div class="daz-game-metric-note">Placeholder only</div>
+                  <div class="daz-game-metric-note" id="daz-modal-currency-note">Syncing live balance...</div>
                 </div>
               </section>
               <section class="daz-game-card daz-game-section" data-section="needs">

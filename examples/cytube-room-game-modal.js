@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const LOADER_BUILD_ID = '94fb3ff22-command-rows-v4';
+  const LOADER_BUILD_ID = 'dd60d6c-live-balance-v1';
   const LOADER_SOURCE = (() => {
     const current = document.currentScript;
     return current && current.src ? current.src : 'inline-or-unknown';
@@ -69,6 +69,14 @@
   const MINIMIZED_ICON = '▢';
   const OPEN_ICON = '—';
   const STATE_SAVE_DEBOUNCE_MS = 250;
+  const WS_TOKEN_STORAGE_KEY = 'daz-wsbridge-token-v1';
+  const WS_URL_STORAGE_KEY = 'daz-wsbridge-url-v1';
+  const WS_QUERY_TOKEN_KEY = 'daz_ws_token';
+  const WS_QUERY_URL_KEY = 'daz_ws_url';
+  const WS_DEFAULT_PORT = '8091';
+  const WS_DEFAULT_PATH = '/ws';
+  const WS_REQUEST_TIMEOUT_MS = 7000;
+  const WS_BALANCE_REFRESH_MS = 30000;
 
   const state = {
     mode: 'open',
@@ -102,6 +110,19 @@
       cmds: false,
       etc: false,
     },
+  };
+
+  const wsState = {
+    socket: null,
+    connected: false,
+    reconnectTimer: null,
+    reconnectAttempts: 0,
+    suppressReconnect: false,
+    requestCounter: 0,
+    pending: new Map(),
+    welcome: null,
+    periodicRefreshTimer: null,
+    balanceInFlight: false,
   };
 
   function clamp(value, min, max) {
@@ -545,11 +566,437 @@
   }
 
   function refreshBalance() {
-    const balance = document.getElementById('daz-modal-balance');
-    if (balance) {
-      balance.textContent = String(state.balance);
+    const balanceNode = document.getElementById('daz-modal-balance');
+    if (!balanceNode) {
+      return;
+    }
+
+    const numericBalance = Number(state.balance);
+    const safeBalance = Number.isFinite(numericBalance) ? Math.round(numericBalance) : 0;
+    state.balance = safeBalance;
+    balanceNode.textContent = `$${safeBalance.toLocaleString('en-US')}`;
+  }
+
+  function setCurrencyNote(noteText) {
+    const note = document.getElementById('daz-modal-currency-note');
+    if (!note) {
+      return;
+    }
+    note.textContent = noteText;
+  }
+
+  function readStorageString(key) {
+    try {
+      const value = window.localStorage.getItem(key);
+      return typeof value === 'string' ? value.trim() : '';
+    } catch (err) {
+      return '';
     }
   }
+
+  function parseQueryStringValue(paramName) {
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      const value = params.get(paramName);
+      return typeof value === 'string' ? value.trim() : '';
+    } catch (err) {
+      return '';
+    }
+  }
+
+  function detectCurrentUsername() {
+    const candidates = [];
+    if (window.CLIENT && typeof window.CLIENT.name === 'string') {
+      candidates.push(window.CLIENT.name);
+    }
+    if (window.USER && typeof window.USER.name === 'string') {
+      candidates.push(window.USER.name);
+    }
+    if (wsState.welcome && typeof wsState.welcome.username === 'string') {
+      candidates.push(wsState.welcome.username);
+    }
+
+    for (let i = 0; i < candidates.length; i += 1) {
+      const candidate = (candidates[i] || '').trim();
+      if (candidate) {
+        return candidate;
+      }
+    }
+    return '';
+  }
+
+  function detectCurrentChannel() {
+    if (window.CHANNEL && typeof window.CHANNEL.name === 'string' && window.CHANNEL.name.trim()) {
+      return window.CHANNEL.name.trim();
+    }
+
+    const path = window.location && typeof window.location.pathname === 'string'
+      ? window.location.pathname
+      : '';
+    const roomMatch = path.match(/^\/r\/([^/]+)/i);
+    if (roomMatch && roomMatch[1]) {
+      return decodeURIComponent(roomMatch[1]).trim();
+    }
+
+    if (wsState.welcome && typeof wsState.welcome.default_channel === 'string') {
+      return wsState.welcome.default_channel.trim();
+    }
+
+    return '';
+  }
+
+  function resolveWsBridgeToken() {
+    const runtimeToken = typeof window.__DAZ_WSBRIDGE_TOKEN === 'string'
+      ? window.__DAZ_WSBRIDGE_TOKEN.trim()
+      : '';
+    if (runtimeToken) {
+      return runtimeToken;
+    }
+
+    const queryToken = parseQueryStringValue(WS_QUERY_TOKEN_KEY);
+    if (queryToken) {
+      return queryToken;
+    }
+
+    return readStorageString(WS_TOKEN_STORAGE_KEY);
+  }
+
+  function resolveWsBridgeBaseURL() {
+    const runtimeURL = typeof window.__DAZ_WSBRIDGE_URL === 'string'
+      ? window.__DAZ_WSBRIDGE_URL.trim()
+      : '';
+    if (runtimeURL) {
+      return runtimeURL;
+    }
+
+    const queryURL = parseQueryStringValue(WS_QUERY_URL_KEY);
+    if (queryURL) {
+      return queryURL;
+    }
+
+    const storedURL = readStorageString(WS_URL_STORAGE_KEY);
+    if (storedURL) {
+      return storedURL;
+    }
+
+    let host = '';
+    try {
+      if (LOADER_SOURCE && LOADER_SOURCE !== 'inline-or-unknown') {
+        host = new URL(LOADER_SOURCE, window.location.href).hostname;
+      }
+    } catch (err) {
+      host = '';
+    }
+
+    if (!host && window.location && window.location.hostname) {
+      host = window.location.hostname;
+    }
+    if (!host) {
+      return '';
+    }
+
+    return `ws://${host}:${WS_DEFAULT_PORT}${WS_DEFAULT_PATH}`;
+  }
+
+  function resolveWsBridgeURL() {
+    const token = resolveWsBridgeToken();
+    if (!token) {
+      return { url: '', token: '' };
+    }
+
+    const base = resolveWsBridgeBaseURL();
+    if (!base) {
+      return { url: '', token: '' };
+    }
+
+    try {
+      const url = new URL(base, window.location.href);
+      if (!url.pathname || url.pathname === '/') {
+        url.pathname = WS_DEFAULT_PATH;
+      }
+      url.searchParams.set('token', token);
+      return { url: url.toString(), token };
+    } catch (err) {
+      return { url: '', token: '' };
+    }
+  }
+
+  function clearPendingWsRequests(reason) {
+    wsState.pending.forEach((pending) => {
+      try {
+        window.clearTimeout(pending.timeoutID);
+      } catch (err) {
+        // no-op
+      }
+      pending.reject(new Error(reason || 'wsbridge request cancelled'));
+    });
+    wsState.pending.clear();
+  }
+
+  function sendWsBridgeRequest(type, payload) {
+    return new Promise((resolve, reject) => {
+      if (!wsState.socket || wsState.socket.readyState !== WebSocket.OPEN || !wsState.connected) {
+        reject(new Error('wsbridge not connected'));
+        return;
+      }
+
+      wsState.requestCounter += 1;
+      const requestID = `ux-${Date.now()}-${wsState.requestCounter}`;
+      const message = {
+        id: requestID,
+        type,
+        payload: payload || {},
+      };
+
+      const timeoutID = window.setTimeout(() => {
+        wsState.pending.delete(requestID);
+        reject(new Error(`wsbridge request timeout (${type})`));
+      }, WS_REQUEST_TIMEOUT_MS);
+
+      wsState.pending.set(requestID, { resolve, reject, timeoutID, type });
+
+      try {
+        wsState.socket.send(JSON.stringify(message));
+      } catch (err) {
+        window.clearTimeout(timeoutID);
+        wsState.pending.delete(requestID);
+        reject(err instanceof Error ? err : new Error('wsbridge send failed'));
+      }
+    });
+  }
+
+  function applyLiveBalance(balanceValue, sourceLabel) {
+    const numericBalance = Number(balanceValue);
+    if (!Number.isFinite(numericBalance)) {
+      return;
+    }
+
+    state.balance = Math.round(numericBalance);
+    refreshBalance();
+    saveState();
+
+    const source = sourceLabel && typeof sourceLabel === 'string' ? sourceLabel : 'wsbridge';
+    setCurrencyNote(`Live via ${source}`);
+  }
+
+  function requestLiveBalance(reason) {
+    if (wsState.balanceInFlight) {
+      return;
+    }
+    if (!wsState.connected || !wsState.socket || wsState.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    wsState.balanceInFlight = true;
+    const username = detectCurrentUsername();
+    const channel = detectCurrentChannel();
+    const payload = {};
+    if (username) {
+      payload.username = username;
+    }
+    if (channel) {
+      payload.channel = channel;
+    }
+
+    sendWsBridgeRequest('economy.get_balance', payload)
+      .then((data) => {
+        if (data && Object.prototype.hasOwnProperty.call(data, 'balance')) {
+          applyLiveBalance(data.balance, 'wsbridge');
+          return;
+        }
+        setCurrencyNote('Live balance unavailable');
+      })
+      .catch((err) => {
+        const message = err && err.message ? err.message : 'unknown error';
+        setCurrencyNote(`Live balance failed: ${message}`);
+      })
+      .finally(() => {
+        wsState.balanceInFlight = false;
+        if (reason === 'open') {
+          window.setTimeout(() => requestLiveBalance('post-open-refresh'), 1200);
+        }
+      });
+  }
+
+  function scheduleWsReconnect() {
+    if (wsState.reconnectTimer) {
+      return;
+    }
+
+    const backoff = Math.min(20000, 1000 * Math.max(1, wsState.reconnectAttempts));
+    wsState.reconnectTimer = window.setTimeout(() => {
+      wsState.reconnectTimer = null;
+      connectWsBridge();
+    }, backoff);
+  }
+
+  function onWsBridgeMessage(event) {
+    if (!event || typeof event.data !== 'string' || !event.data) {
+      return;
+    }
+
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch (err) {
+      return;
+    }
+
+    if (!message || typeof message !== 'object') {
+      return;
+    }
+
+    const messageType = typeof message.type === 'string' ? message.type : '';
+    const requestID = typeof message.id === 'string' ? message.id : '';
+
+    if (messageType === 'welcome') {
+      wsState.welcome = message.data && typeof message.data === 'object' ? message.data : null;
+      const welcomeUser = wsState.welcome && typeof wsState.welcome.username === 'string'
+        ? wsState.welcome.username
+        : '';
+      setCurrencyNote(welcomeUser ? `Bridge connected as ${welcomeUser}` : 'Bridge connected');
+      requestLiveBalance('welcome');
+      return;
+    }
+
+    if (requestID && wsState.pending.has(requestID)) {
+      const pending = wsState.pending.get(requestID);
+      wsState.pending.delete(requestID);
+      window.clearTimeout(pending.timeoutID);
+
+      if (messageType === 'error') {
+        const errorText = message.error && message.error.message ? message.error.message : 'wsbridge error';
+        pending.reject(new Error(errorText));
+        return;
+      }
+
+      pending.resolve(message.data);
+      return;
+    }
+  }
+
+  function connectWsBridge() {
+    const resolved = resolveWsBridgeURL();
+    if (!resolved.token) {
+      setCurrencyNote('Live balance offline (missing ws token)');
+      return;
+    }
+    if (!resolved.url) {
+      setCurrencyNote('Live balance offline (missing ws URL)');
+      return;
+    }
+
+    if (wsState.socket && (wsState.socket.readyState === WebSocket.OPEN || wsState.socket.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    let socket;
+    try {
+      socket = new WebSocket(resolved.url);
+    } catch (err) {
+      setCurrencyNote('Live balance offline (socket init failed)');
+      scheduleWsReconnect();
+      return;
+    }
+
+    wsState.socket = socket;
+    wsState.connected = false;
+
+    socket.addEventListener('open', () => {
+      wsState.connected = true;
+      wsState.reconnectAttempts = 0;
+      setCurrencyNote('Bridge connected');
+      requestLiveBalance('open');
+    });
+
+    socket.addEventListener('message', onWsBridgeMessage);
+
+    socket.addEventListener('close', () => {
+      wsState.connected = false;
+      clearPendingWsRequests('wsbridge disconnected');
+      if (wsState.suppressReconnect) {
+        wsState.suppressReconnect = false;
+        return;
+      }
+      wsState.reconnectAttempts += 1;
+      setCurrencyNote('Bridge reconnecting...');
+      scheduleWsReconnect();
+    });
+
+    socket.addEventListener('error', () => {
+      setCurrencyNote('Bridge connection error');
+    });
+  }
+
+  function resetWsBridgeConnection() {
+    clearPendingWsRequests('wsbridge reset');
+    if (wsState.reconnectTimer) {
+      window.clearTimeout(wsState.reconnectTimer);
+      wsState.reconnectTimer = null;
+    }
+    wsState.connected = false;
+    wsState.reconnectAttempts = 0;
+    if (wsState.socket) {
+      try {
+        wsState.suppressReconnect = true;
+        wsState.socket.close(1000, 'reset');
+      } catch (err) {
+        // no-op
+      }
+      wsState.socket = null;
+    }
+  }
+
+  function ensureBalanceRefreshLoop() {
+    if (wsState.periodicRefreshTimer) {
+      return;
+    }
+
+    wsState.periodicRefreshTimer = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') {
+        return;
+      }
+      requestLiveBalance('interval');
+    }, WS_BALANCE_REFRESH_MS);
+  }
+
+  function handleVisibilityRefresh() {
+    if (document.visibilityState === 'visible') {
+      requestLiveBalance('visibility');
+    }
+  }
+
+  window.__dazGameModalSetWsToken = function setWsToken(token) {
+    const value = typeof token === 'string' ? token.trim() : '';
+    try {
+      if (value) {
+        window.localStorage.setItem(WS_TOKEN_STORAGE_KEY, value);
+      } else {
+        window.localStorage.removeItem(WS_TOKEN_STORAGE_KEY);
+      }
+    } catch (err) {
+      // no-op
+    }
+    resetWsBridgeConnection();
+    connectWsBridge();
+    requestLiveBalance('set-token');
+  };
+
+  window.__dazGameModalSetWsUrl = function setWsUrl(url) {
+    const value = typeof url === 'string' ? url.trim() : '';
+    try {
+      if (value) {
+        window.localStorage.setItem(WS_URL_STORAGE_KEY, value);
+      } else {
+        window.localStorage.removeItem(WS_URL_STORAGE_KEY);
+      }
+    } catch (err) {
+      // no-op
+    }
+    resetWsBridgeConnection();
+    connectWsBridge();
+    requestLiveBalance('set-url');
+  };
 
   function refreshNeeds() {
     const needsRenderer = window.__dazGameModalNeeds;
@@ -916,6 +1363,7 @@
     root.addEventListener('touchstart', onMouseDown);
     window.addEventListener('resize', applyGeometry);
     window.addEventListener('orientationchange', applyGeometry);
+    document.addEventListener('visibilitychange', handleVisibilityRefresh);
     window.addEventListener('pagehide', flushStateNow);
     window.addEventListener('beforeunload', flushStateNow);
   }
@@ -956,6 +1404,9 @@
     applyCommandPanelState();
     updateModeUI();
     saveState();
+    connectWsBridge();
+    ensureBalanceRefreshLoop();
+    requestLiveBalance('mount');
   }
 
   async function bootstrap() {

@@ -29,6 +29,7 @@ const (
 	defaultMaxOutboundQueue         = 256
 	defaultRateLimitPerSecond       = 20.0
 	defaultRateLimitBurst           = 40
+	defaultBalanceTimeout           = 6 * time.Second
 	commandCorrelationWindow        = 8 * time.Second
 )
 
@@ -118,9 +119,15 @@ type commandPayload struct {
 	Channel string `json:"channel,omitempty"`
 }
 
+type economyBalancePayload struct {
+	Channel  string `json:"channel,omitempty"`
+	Username string `json:"username,omitempty"`
+}
+
 type Plugin struct {
 	name      string
 	eventBus  framework.EventBus
+	economy   *framework.EconomyClient
 	config    Config
 	upgrader  websocket.Upgrader
 	ctx       context.Context
@@ -183,6 +190,7 @@ func (p *Plugin) Ready() bool {
 
 func (p *Plugin) Init(configData json.RawMessage, bus framework.EventBus) error {
 	p.eventBus = bus
+	p.economy = framework.NewEconomyClient(bus, p.name)
 	if len(configData) > 0 {
 		if err := json.Unmarshal(configData, &p.config); err != nil {
 			return fmt.Errorf("parse wsbridge config: %w", err)
@@ -539,9 +547,73 @@ func (p *Plugin) handleInbound(client *clientState, envelope inboundEnvelope) er
 			"channel":  channel,
 		})
 		return nil
+	case "economy.get_balance":
+		var payload economyBalancePayload
+		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+			return fmt.Errorf("invalid economy.get_balance payload")
+		}
+		result, err := p.handleEconomyGetBalance(client, payload)
+		if err != nil {
+			return err
+		}
+		p.sendAck(client, envelope.ID, result)
+		return nil
 	default:
 		return fmt.Errorf("unsupported message type %q", envelope.Type)
 	}
+}
+
+func (p *Plugin) handleEconomyGetBalance(client *clientState, payload economyBalancePayload) (map[string]any, error) {
+	channel, username, err := p.resolveBalanceQuery(client, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	if p.economy == nil {
+		return nil, fmt.Errorf("economy client unavailable")
+	}
+
+	ctx := context.Background()
+	if p.ctx != nil {
+		ctx = p.ctx
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, defaultBalanceTimeout)
+	defer cancel()
+
+	balance, err := p.economy.GetBalance(reqCtx, channel, username)
+	if err != nil {
+		return nil, fmt.Errorf("get balance: %w", err)
+	}
+
+	return map[string]any{
+		"channel":  channel,
+		"username": username,
+		"balance":  balance,
+	}, nil
+}
+
+func (p *Plugin) resolveBalanceQuery(client *clientState, payload economyBalancePayload) (string, string, error) {
+	if client == nil {
+		return "", "", fmt.Errorf("session unavailable")
+	}
+	channel, err := p.resolveChannel(client.profile, strings.TrimSpace(payload.Channel))
+	if err != nil {
+		return "", "", err
+	}
+
+	username := strings.TrimSpace(payload.Username)
+	if username == "" {
+		username = strings.TrimSpace(client.profile.Username)
+	}
+	if username == "" {
+		return "", "", fmt.Errorf("username is required")
+	}
+
+	if !client.profile.Admin && !strings.EqualFold(username, strings.TrimSpace(client.profile.Username)) {
+		return "", "", fmt.Errorf("username %q not allowed for session", username)
+	}
+
+	return channel, username, nil
 }
 
 func (p *Plugin) dispatchCommand(client *clientState, requestID string, payload commandPayload) (string, error) {
