@@ -52,6 +52,18 @@ export function isLegacyLoaded() {
   return !!findLegacyScript() || !!window.__dazGameModalActive;
 }
 
+export function getLegacyLoadState() {
+  const legacyScript = findLegacyScript();
+  return {
+    hasLegacyScript: !!legacyScript,
+    legacyScriptSrc: legacyScript && legacyScript.src,
+    legacyScriptReadyState: legacyScript && legacyScript.readyState,
+    legacyScriptLoaded: legacyScript && legacyScript.__dazGameModalLoaded,
+    hasRoot: !!document.getElementById(MODAL_ROOT_ID),
+    hasWindowActive: !!window.__dazGameModalActive,
+  };
+}
+
 export async function loadLegacyBundle() {
   if (isLegacyLoaded() && document.getElementById(MODAL_ROOT_ID)) {
     return;

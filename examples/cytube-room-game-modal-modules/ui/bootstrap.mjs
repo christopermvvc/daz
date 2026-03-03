@@ -1,5 +1,5 @@
 import { hideStatus, showStatus } from './status.mjs';
-import { loadLegacyBundle } from './legacy-loader.mjs';
+import { getLegacyLoadState, loadLegacyBundle } from './legacy-loader.mjs';
 
 window.__dazGameModalMode = 'module-bootstrap';
 window.__dazGameModalLoadError = false;
@@ -16,7 +16,13 @@ export async function start() {
   } catch (error) {
     window.__dazGameModalLoadError = true;
     window.__dazGameModalActive = false;
-    console.warn('[daz-game-modal] module bootstrap failed:', error);
+    const legacyLoadState = getLegacyLoadState();
+    window.__dazGameModalBootstrapFailure = {
+      reason: error && error.message ? error.message : 'unknown',
+      legacy: legacyLoadState,
+      at: Date.now(),
+    };
+    console.warn('[daz-game-modal] module bootstrap failed:', error, legacyLoadState);
     showStatus(`daz game modal: module bootstrap failed (${error && error.message ? error.message : 'unknown'})`, true);
     throw error;
   }
