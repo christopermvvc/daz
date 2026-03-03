@@ -23,6 +23,7 @@ const (
 	pluginName             = "ollama"
 	defaultOllamaURL       = "http://localhost:11434"
 	defaultModel           = "huggingface.co/ArliAI/Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF:latest"
+	defaultKeepAlive       = "5m"
 	defaultRateLimitSecs   = 10  // 10 second rate limit per user
 	defaultFollowUpWindow  = 180 // 3 minute follow-up window
 	operationGenerate      = "generate"
@@ -117,6 +118,7 @@ type Config struct {
 	SystemPrompt string  `json:"system_prompt"`
 	Temperature  float64 `json:"temperature"`
 	MaxTokens    int     `json:"max_tokens"`
+	KeepAlive    string  `json:"keep_alive"`
 
 	// Follow-up question behavior
 	FollowUpEnabled       bool `json:"follow_up_enabled"`
@@ -164,10 +166,11 @@ type Plugin struct {
 
 // OllamaRequest represents a request to the Ollama API
 type OllamaRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Stream   bool      `json:"stream"`
-	Options  Options   `json:"options,omitempty"`
+	Model     string    `json:"model"`
+	Messages  []Message `json:"messages"`
+	Stream    bool      `json:"stream"`
+	KeepAlive string    `json:"keep_alive,omitempty"`
+	Options   Options   `json:"options,omitempty"`
 }
 
 // Message represents a chat message
@@ -201,6 +204,7 @@ func New() framework.Plugin {
 			Enabled:               true,
 			Temperature:           0.7,
 			MaxTokens:             2048, // Increased to allow more complete thoughts
+			KeepAlive:             defaultKeepAlive,
 			SystemPrompt:          defaultSystemPrompt,
 		},
 		userLists:        make(map[string]map[string]bool),
@@ -496,6 +500,11 @@ func (p *Plugin) callOllamaWithModel(
 		ollamaURL = defaultOllamaURL
 	}
 
+	keepAlive := strings.TrimSpace(p.config.KeepAlive)
+	if keepAlive == "" {
+		keepAlive = defaultKeepAlive
+	}
+
 	ollamaReq := OllamaRequest{
 		Model: model,
 		Messages: []Message{
@@ -508,7 +517,8 @@ func (p *Plugin) callOllamaWithModel(
 				Content: userMessage,
 			},
 		},
-		Stream: false,
+		Stream:    false,
+		KeepAlive: keepAlive,
 		Options: Options{
 			Temperature: temperature,
 			NumPredict:  numPredict,

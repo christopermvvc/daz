@@ -715,6 +715,9 @@ func TestHandlePluginRequestGenerateSuccess(t *testing.T) {
 		if req.Model != "test-model" {
 			t.Errorf("expected model 'test-model', got %q", req.Model)
 		}
+		if req.KeepAlive != "5m" {
+			t.Errorf("expected keep_alive '5m', got %q", req.KeepAlive)
+		}
 
 		if len(req.Messages) != 2 {
 			t.Errorf("expected 2 messages, got %d", len(req.Messages))

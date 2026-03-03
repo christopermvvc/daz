@@ -33,7 +33,8 @@
     "ollama": {
       "enabled": true,
       "follow_up_enabled": true,
-      "follow_up_window_seconds": 180
+      "follow_up_window_seconds": 180,
+      "keep_alive": "5m"
     },
     "greeter": {
       "use_greeting_engine": true,
