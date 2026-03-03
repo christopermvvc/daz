@@ -502,6 +502,132 @@ func TestHandlePlaylistEvent_QueuesStagedIngestion(t *testing.T) {
 	}
 }
 
+func TestHandlePlaylistEvent_ModificationQueueActionUpdatesQueue(t *testing.T) {
+	p := NewPlugin(nil)
+	bus := newMockEventBus()
+
+	if err := p.Initialize(bus); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	mod := &framework.PlaylistEvent{
+		CytubeEvent: framework.CytubeEvent{
+			ChannelName: "mod-channel",
+		},
+		Action:   "queue",
+		Position: 2,
+		Items: []framework.QueueItem{
+			{Position: 2, UID: "u-1", MediaID: "m1", MediaType: "yt", Title: "M1", Duration: 100, QueuedBy: "alice"},
+		},
+	}
+
+	if err := p.handlePlaylistEvent(mod); err != nil {
+		t.Fatalf("handlePlaylistEvent(mod queue) failed: %v", err)
+	}
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+
+	hasShift := false
+	hasQueueInsert := false
+	for _, q := range bus.execCalls {
+		if strings.Contains(q, "UPDATE daz_mediatracker_queue SET position = position + 1") {
+			hasShift = true
+		}
+		if strings.Contains(q, "INSERT INTO daz_mediatracker_queue") {
+			hasQueueInsert = true
+		}
+	}
+
+	if !hasShift {
+		t.Fatal("expected queue shift update for playlist queue action")
+	}
+	if !hasQueueInsert {
+		t.Fatal("expected queue insert for playlist queue action")
+	}
+}
+
+func TestHandlePlaylistEvent_ModificationDeleteActionUpdatesQueue(t *testing.T) {
+	p := NewPlugin(nil)
+	bus := newMockEventBus()
+
+	if err := p.Initialize(bus); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	mod := &framework.PlaylistEvent{
+		CytubeEvent: framework.CytubeEvent{
+			ChannelName: "mod-channel",
+		},
+		Action:   "delete",
+		Position: 3,
+	}
+
+	if err := p.handlePlaylistEvent(mod); err != nil {
+		t.Fatalf("handlePlaylistEvent(mod delete) failed: %v", err)
+	}
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+
+	hasDelete := false
+	hasShift := false
+	for _, q := range bus.execCalls {
+		if strings.Contains(q, "DELETE FROM daz_mediatracker_queue") {
+			hasDelete = true
+		}
+		if strings.Contains(q, "UPDATE daz_mediatracker_queue SET position = position - 1") {
+			hasShift = true
+		}
+	}
+
+	if !hasDelete {
+		t.Fatal("expected queue delete for playlist delete action")
+	}
+	if !hasShift {
+		t.Fatal("expected queue shift update for playlist delete action")
+	}
+}
+
+func TestHandlePlaylistEvent_ModificationQueueActionProcessesMultipleItems(t *testing.T) {
+	p := NewPlugin(nil)
+	bus := newMockEventBus()
+
+	if err := p.Initialize(bus); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	mod := &framework.PlaylistEvent{
+		CytubeEvent: framework.CytubeEvent{
+			ChannelName: "multi-channel",
+		},
+		Action:   "queue",
+		Position: 1,
+		Items: []framework.QueueItem{
+			{Position: 1, UID: "u-1", MediaID: "m1", MediaType: "yt", Title: "M1", Duration: 100, QueuedBy: "alice"},
+			{Position: 2, UID: "u-2", MediaID: "m2", MediaType: "yt", Title: "M2", Duration: 110, QueuedBy: "bob"},
+		},
+	}
+
+	if err := p.handlePlaylistEvent(mod); err != nil {
+		t.Fatalf("handlePlaylistEvent(mod multi queue) failed: %v", err)
+	}
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+
+	insertCount := 0
+	for _, q := range bus.execCalls {
+		if strings.Contains(q, "INSERT INTO daz_mediatracker_queue") {
+			insertCount++
+		}
+	}
+
+	if insertCount != 2 {
+		t.Fatalf("expected 2 queue inserts for multi-item playlist queue action, got %d", insertCount)
+	}
+}
+
 func TestProcessQueueUpdate_Full_QueuesStagedIngestion(t *testing.T) {
 	p := NewPlugin(nil)
 	bus := newMockEventBus()

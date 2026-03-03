@@ -1376,12 +1376,74 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 
 	// Check if it's a PlaylistEvent (playlist modification - add/remove/move)
 	if playlistEvent, ok := event.(*framework.PlaylistEvent); ok {
-		logger.Debug("MediaTracker", "Received playlist modification event: %s", playlistEvent.Action)
-		// Existing playlist modification handling can be added here if needed
-		return nil
+		channel := playlistEvent.ChannelName
+		if channel == "" {
+			logger.Warn("MediaTracker", "Skipping playlist modification without channel information")
+			return nil
+		}
+
+		action := normalizePlaylistAction(playlistEvent.Action)
+		if action == "" {
+			logger.Debug("MediaTracker", "Ignoring unsupported playlist action %q for channel %s", playlistEvent.Action, channel)
+			return nil
+		}
+
+		// Playlist actions can include multiple queued items. Process each add in order so
+		// we don't drop items when the payload includes a burst insert.
+		if action == "add" && len(playlistEvent.Items) > 1 {
+			for i, item := range playlistEvent.Items {
+				addPosition := item.Position
+				if addPosition == 0 && (i > 0 || playlistEvent.Position != 0) {
+					addPosition = playlistEvent.Position + i
+				}
+				item.Position = addPosition
+
+				if err := p.processQueueUpdate(&framework.QueueUpdateData{
+					Channel:  channel,
+					Action:   "add",
+					Items:    []framework.QueueItem{item},
+					Position: addPosition,
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+
+		queueUpdate := &framework.QueueUpdateData{
+			Channel:  channel,
+			Action:   action,
+			Items:    playlistEvent.Items,
+			Position: playlistEvent.Position,
+		}
+
+		if action == "move" {
+			queueUpdate.Position = playlistEvent.FromPos
+			queueUpdate.NewPosition = playlistEvent.ToPos
+		}
+
+		logger.Debug("MediaTracker", "Routing playlist modification %q as queue action %q for channel %s", playlistEvent.Action, action, channel)
+		return p.processQueueUpdate(queueUpdate)
 	}
 
 	return nil
+}
+
+func normalizePlaylistAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "add", "queue":
+		return "add"
+	case "remove", "delete":
+		return "remove"
+	case "move", "movevideo":
+		return "move"
+	case "clear":
+		return "clear"
+	case "full":
+		return "full"
+	default:
+		return ""
+	}
 }
 
 func (p *Plugin) enqueuePlaylistIngest(channel string, items []framework.PlaylistItem, eventName string) {
