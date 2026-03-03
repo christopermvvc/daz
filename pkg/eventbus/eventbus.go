@@ -37,7 +37,9 @@ type EventBus struct {
 	dispatchSemCommand chan struct{}
 	dispatchSemNormal  chan struct{}
 	dispatchSemHigh    chan struct{}
+	dispatchSemSQL     chan struct{}
 	dispatchPending    chan struct{}
+	dispatchPendingSQL chan struct{}
 
 	// Track active routers to prevent duplicates
 	activeRouters map[string]bool
@@ -123,7 +125,9 @@ func NewEventBus(config *Config) *EventBus {
 		dispatchSemCommand: make(chan struct{}, commandWorkers),
 		dispatchSemNormal:  make(chan struct{}, normalWorkers),
 		dispatchSemHigh:    make(chan struct{}, highPriorityWorkers),
+		dispatchSemSQL:     make(chan struct{}, computeSQLLaneSize(runtime.GOMAXPROCS(0))),
 		dispatchPending:    make(chan struct{}, workerCount*8),
+		dispatchPendingSQL: make(chan struct{}, workerCount*4),
 		ctx:                ctx,
 		cancel:             cancel,
 	}
@@ -134,6 +138,21 @@ func NewEventBus(config *Config) *EventBus {
 	}
 
 	return eb
+}
+
+func computeSQLLaneSize(gomaxprocs int) int {
+	if gomaxprocs <= 2 {
+		return 1
+	}
+
+	sqlWorkers := gomaxprocs / 2
+	if sqlWorkers < 1 {
+		sqlWorkers = 1
+	}
+	if sqlWorkers > 4 {
+		sqlWorkers = 4
+	}
+	return sqlWorkers
 }
 
 func computeDispatchLaneSizes(gomaxprocs int) (workerCount, commandWorkers, highPriorityWorkers, normalWorkers int) {
@@ -538,9 +557,50 @@ func (eb *EventBus) isCommandPath(msg *eventMessage) bool {
 	return false
 }
 
+func (eb *EventBus) isSQLRequestPath(msg *eventMessage) bool {
+	if msg == nil {
+		return false
+	}
+	switch msg.Type {
+	case "sql.query.request", "sql.exec.request", "sql.batch.request":
+		return true
+	default:
+		return false
+	}
+}
+
 func (eb *EventBus) acquireDispatchSlot(msg *eventMessage) func() {
 	priority := eb.effectivePriority(msg)
 	commandPath := eb.isCommandPath(msg)
+
+	if eb.isSQLRequestPath(msg) {
+		select {
+		case eb.dispatchSemSQL <- struct{}{}:
+			return func() { <-eb.dispatchSemSQL }
+		default:
+		}
+
+		// SQL is a request/response dependency path; allow fallback to reserved high
+		// capacity when the dedicated SQL lane is full.
+		select {
+		case eb.dispatchSemHigh <- struct{}{}:
+			return func() { <-eb.dispatchSemHigh }
+		default:
+		}
+
+		select {
+		case eb.dispatchSemNormal <- struct{}{}:
+			return func() { <-eb.dispatchSemNormal }
+		default:
+		}
+
+		select {
+		case eb.dispatchSemSQL <- struct{}{}:
+			return func() { <-eb.dispatchSemSQL }
+		case <-eb.ctx.Done():
+			return func() {}
+		}
+	}
 
 	if commandPath {
 		select {
@@ -604,6 +664,16 @@ func (eb *EventBus) acquireDispatchSlot(msg *eventMessage) func() {
 
 func (eb *EventBus) acquirePendingDispatchSlot(msg *eventMessage) (func(), bool) {
 	release := func() { <-eb.dispatchPending }
+	releaseSQL := func() { <-eb.dispatchPendingSQL }
+
+	if eb.isSQLRequestPath(msg) {
+		select {
+		case eb.dispatchPendingSQL <- struct{}{}:
+			return releaseSQL, true
+		case <-eb.ctx.Done():
+			return nil, false
+		}
+	}
 
 	if eb.isCommandPath(msg) {
 		select {

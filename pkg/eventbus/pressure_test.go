@@ -166,6 +166,48 @@ func TestAcquireDispatchSlotFallsBackWhenCommandLaneBusy(t *testing.T) {
 	}
 }
 
+func TestAcquireDispatchSlotUsesDedicatedSQLLane(t *testing.T) {
+	eb := NewEventBus(&Config{})
+	msg := &eventMessage{
+		Type:     "sql.exec.request",
+		Metadata: framework.NewEventMetadata("test", "sql.exec.request"),
+	}
+
+	release := eb.acquireDispatchSlot(msg)
+	defer release()
+
+	if got := len(eb.dispatchSemSQL); got != 1 {
+		t.Fatalf("expected SQL dispatch semaphore to be used, got len=%d", got)
+	}
+	if got := len(eb.dispatchSemHigh); got != 0 {
+		t.Fatalf("expected high-priority semaphore to remain unused, got len=%d", got)
+	}
+	if got := len(eb.dispatchSemNormal); got != 0 {
+		t.Fatalf("expected normal semaphore to remain unused, got len=%d", got)
+	}
+}
+
+func TestAcquirePendingDispatchSlotUsesDedicatedSQLPendingLane(t *testing.T) {
+	eb := NewEventBus(&Config{})
+	msg := &eventMessage{
+		Type:     "sql.query.request",
+		Metadata: framework.NewEventMetadata("test", "sql.query.request"),
+	}
+
+	release, admitted := eb.acquirePendingDispatchSlot(msg)
+	if !admitted {
+		t.Fatal("expected SQL pending dispatch slot admission")
+	}
+	defer release()
+
+	if got := len(eb.dispatchPendingSQL); got != 1 {
+		t.Fatalf("expected SQL pending semaphore to be used, got len=%d", got)
+	}
+	if got := len(eb.dispatchPending); got != 0 {
+		t.Fatalf("expected shared pending semaphore to remain unused, got len=%d", got)
+	}
+}
+
 func TestComputeDispatchLaneSizes(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -214,6 +256,27 @@ func TestComputeDispatchLaneSizes(t *testing.T) {
 			}
 			if command+high+normal != workers {
 				t.Fatalf("lane sum mismatch: command=%d high=%d normal=%d workers=%d", command, high, normal, workers)
+			}
+		})
+	}
+}
+
+func TestComputeSQLLaneSize(t *testing.T) {
+	tests := []struct {
+		name       string
+		gomaxprocs int
+		want       int
+	}{
+		{name: "single cpu", gomaxprocs: 1, want: 1},
+		{name: "dual cpu", gomaxprocs: 2, want: 1},
+		{name: "quad cpu", gomaxprocs: 4, want: 2},
+		{name: "large cpu capped", gomaxprocs: 16, want: 4},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := computeSQLLaneSize(tc.gomaxprocs); got != tc.want {
+				t.Fatalf("computeSQLLaneSize(%d) = %d, want %d", tc.gomaxprocs, got, tc.want)
 			}
 		})
 	}
