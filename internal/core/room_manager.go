@@ -603,11 +603,11 @@ func (rm *RoomManager) createEventMetadata(eventType string, roomID string) *fra
 	case "chatMsg":
 		metadata.WithTags("chat", "public", "user-content")
 		metadata.WithLogging("info")
-		metadata.WithPriority(0)
+		metadata.WithPriority(framework.PriorityHigh)
 	case "pm":
 		metadata.WithTags("chat", "private", "user-content")
 		metadata.WithLogging("info")
-		metadata.WithPriority(1) // Higher priority for PMs
+		metadata.WithPriority(framework.PriorityHigh) // Higher priority for PMs
 
 	// User Events
 	case "userJoin":

@@ -33,8 +33,9 @@ type EventBus struct {
 	// Buffer size configuration
 	bufferSizes map[string]int
 
-	// Limit concurrent handler execution
-	dispatchSem chan struct{}
+	// Limit concurrent handler execution with reserved capacity for high-priority events.
+	dispatchSemNormal chan struct{}
+	dispatchSemHigh   chan struct{}
 
 	// Track active routers to prevent duplicates
 	activeRouters map[string]bool
@@ -110,6 +111,17 @@ func NewEventBus(config *Config) *EventBus {
 	if workerCount < 4 {
 		workerCount = 4
 	}
+	highPriorityWorkers := workerCount / 4
+	if highPriorityWorkers < 1 {
+		highPriorityWorkers = 1
+	}
+	if highPriorityWorkers >= workerCount {
+		highPriorityWorkers = workerCount - 1
+	}
+	normalWorkers := workerCount - highPriorityWorkers
+	if normalWorkers < 1 {
+		normalWorkers = 1
+	}
 
 	eb := &EventBus{
 		queues:             make(map[string]*messageQueue),
@@ -120,7 +132,8 @@ func NewEventBus(config *Config) *EventBus {
 		activeRouters:      make(map[string]bool),
 		pendingRequests:    make(map[string]chan *pluginResponse),
 		droppedEvents:      make(map[string]int64),
-		dispatchSem:        make(chan struct{}, workerCount),
+		dispatchSemNormal:  make(chan struct{}, normalWorkers),
+		dispatchSemHigh:    make(chan struct{}, highPriorityWorkers),
 		ctx:                ctx,
 		cancel:             cancel,
 	}
@@ -401,14 +414,14 @@ func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
 
 		// Dispatch to each matching subscriber
 		for _, sub := range matching {
-			eb.dispatchSem <- struct{}{}
+			releaseDispatch := eb.acquireDispatchSlot(msg.Metadata)
 			eb.handlerWg.Add(1)
-			go func(s subscriberInfo, m *eventMessage) {
+			go func(s subscriberInfo, m *eventMessage, releaseFn func()) {
 				defer func() {
 					if r := recover(); r != nil {
 						logger.Error("EventBus", "Handler panic for %s: %v\n%s", eventType, r, debug.Stack())
 					}
-					<-eb.dispatchSem
+					releaseFn()
 					eb.handlerWg.Done()
 				}()
 				timer := prometheus.NewTimer(metrics.EventProcessingDuration.WithLabelValues(eventType))
@@ -420,9 +433,40 @@ func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
 
 				// Track successful processing
 				metrics.EventsProcessed.WithLabelValues(eventType).Inc()
-			}(sub, msg)
+			}(sub, msg, releaseDispatch)
 		}
 	}
+}
+
+func (eb *EventBus) acquireDispatchSlot(metadata *framework.EventMetadata) func() {
+	priority := framework.PriorityNormal
+	if metadata != nil {
+		priority = metadata.Priority
+	}
+
+	// Priority > normal can use reserved high-priority capacity first.
+	if priority > framework.PriorityNormal {
+		select {
+		case eb.dispatchSemHigh <- struct{}{}:
+			return func() { <-eb.dispatchSemHigh }
+		default:
+		}
+
+		// If high-priority workers are busy, opportunistically use normal workers.
+		select {
+		case eb.dispatchSemNormal <- struct{}{}:
+			return func() { <-eb.dispatchSemNormal }
+		default:
+		}
+
+		// If all workers are occupied, wait on reserved high-priority capacity.
+		eb.dispatchSemHigh <- struct{}{}
+		return func() { <-eb.dispatchSemHigh }
+	}
+
+	// Normal-priority events cannot consume reserved high-priority capacity.
+	eb.dispatchSemNormal <- struct{}{}
+	return func() { <-eb.dispatchSemNormal }
 }
 
 // getMatchingSubscribers returns all subscribers that match the event type and tags

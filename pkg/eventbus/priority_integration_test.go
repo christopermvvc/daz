@@ -1,6 +1,7 @@
 package eventbus
 
 import (
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -179,4 +180,76 @@ func TestPriorityQueueDirectly(t *testing.T) {
 	if _, ok := queue.pop(); ok {
 		t.Error("Expected queue to be empty")
 	}
+}
+
+func TestHighPriorityDispatchBypassesNormalSaturation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping timing-sensitive priority dispatch test in short mode")
+	}
+
+	prevMaxProcs := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(prevMaxProcs)
+
+	eb := NewEventBus(&Config{})
+	if err := eb.Start(); err != nil {
+		t.Fatalf("failed to start event bus: %v", err)
+	}
+	defer func() {
+		if err := eb.Stop(); err != nil {
+			t.Errorf("failed to stop event bus: %v", err)
+		}
+	}()
+
+	blockLow := make(chan struct{})
+	lowStarted := make(chan struct{}, 3)
+	highDone := make(chan struct{}, 1)
+
+	if err := eb.Subscribe("saturation.low", func(event framework.Event) error {
+		select {
+		case lowStarted <- struct{}{}:
+		default:
+		}
+		<-blockLow
+		return nil
+	}); err != nil {
+		t.Fatalf("failed to subscribe low handler: %v", err)
+	}
+
+	if err := eb.Subscribe("saturation.high", func(event framework.Event) error {
+		select {
+		case highDone <- struct{}{}:
+		default:
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("failed to subscribe high handler: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := eb.Broadcast("saturation.low", &framework.EventData{}); err != nil {
+			t.Fatalf("failed to broadcast low event %d: %v", i, err)
+		}
+	}
+
+	for i := 0; i < 3; i++ {
+		select {
+		case <-lowStarted:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for low handler %d to start", i+1)
+		}
+	}
+
+	metadata := framework.NewEventMetadata("test", "saturation.high").
+		WithPriority(framework.PriorityHigh)
+	if err := eb.BroadcastWithMetadata("saturation.high", &framework.EventData{}, metadata); err != nil {
+		t.Fatalf("failed to broadcast high-priority event: %v", err)
+	}
+
+	select {
+	case <-highDone:
+	case <-time.After(1 * time.Second):
+		t.Fatal("high-priority event did not dispatch while normal workers were saturated")
+	}
+
+	close(blockLow)
 }

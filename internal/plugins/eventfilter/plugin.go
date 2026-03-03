@@ -1080,6 +1080,8 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 	// Send to specific plugin
 	eventType := fmt.Sprintf("command.%s.execute", targetPlugin)
 	logger.Debug("EventFilter", "Routing command %s to %s via %s", cmdName, targetPlugin, eventType)
+	metadata := framework.NewEventMetadata("eventfilter", eventType).
+		WithPriority(framework.PriorityHigh)
 
 	// Log command execution
 	go func() {
@@ -1091,7 +1093,7 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 		}
 	}()
 
-	err := p.eventBus.Broadcast(eventType, cmdData)
+	err := p.eventBus.BroadcastWithMetadata(eventType, cmdData, metadata)
 	if err != nil {
 		logger.Error("EventFilter", "Failed to route command: %v", err)
 		// Emit failure event for retry
