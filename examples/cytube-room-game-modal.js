@@ -31,13 +31,70 @@
   const STORAGE_MODE_KEY = 'daz-cytube-game-modal-mode-v1';
   const STORAGE_BALANCE_KEY = 'daz-cytube-game-modal-balance-v1';
   const STORAGE_TAB_KEY = 'daz-cytube-game-modal-tab-v1';
+  const STORAGE_LEFT_KEY = 'daz-cytube-game-modal-left-v1';
+  const STORAGE_TOP_KEY = 'daz-cytube-game-modal-top-v1';
+  const STORAGE_WIDTH_KEY = 'daz-cytube-game-modal-width-v1';
+  const STORAGE_HEIGHT_KEY = 'daz-cytube-game-modal-height-v1';
   const DEFAULT_BALANCE = 1250;
+  const MIN_MODAL_WIDTH = 280;
+  const MIN_MODAL_HEIGHT = 220;
+  const MINIMIZED_HEIGHT = 38;
+  const DEFAULT_MARGIN = 12;
 
   const state = {
     mode: 'open',
     balance: DEFAULT_BALANCE,
     tab: 'home',
+    left: null,
+    top: null,
+    width: null,
+    height: null,
   };
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function parseStoredNumber(value, fallback) {
+    if (!value) {
+      return fallback;
+    }
+    const parsed = parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  function getViewportBounds() {
+    return {
+      width: Math.max(window.innerWidth, 320),
+      height: Math.max(window.innerHeight, 240),
+    };
+  }
+
+  function defaultGeometry() {
+    const viewport = getViewportBounds();
+    return {
+      width: clamp(Math.round(viewport.width * 0.38), MIN_MODAL_WIDTH, 840),
+      height: clamp(Math.round(viewport.height * 0.42), MIN_MODAL_HEIGHT, 480),
+    };
+  }
+
+  function normalizeGeometry() {
+    const viewport = getViewportBounds();
+    const defaults = defaultGeometry();
+    const baseWidth = Number.isFinite(state.width) && state.width > 0 ? state.width : defaults.width;
+    const baseHeight = Number.isFinite(state.height) && state.height > 0 ? state.height : defaults.height;
+    const widthCap = Math.max(MIN_MODAL_WIDTH, viewport.width - 16);
+    const heightCap = Math.max(MIN_MODAL_HEIGHT, viewport.height - 16);
+    const openHeight = clamp(baseHeight, MIN_MODAL_HEIGHT, heightCap);
+    const width = clamp(baseWidth, MIN_MODAL_WIDTH, widthCap);
+    const leftDefault = DEFAULT_MARGIN;
+    const topDefault = viewport.height - openHeight - DEFAULT_MARGIN;
+    const maxLeft = Math.max(DEFAULT_MARGIN, viewport.width - width - DEFAULT_MARGIN);
+    const maxTop = Math.max(DEFAULT_MARGIN, viewport.height - openHeight - DEFAULT_MARGIN);
+    const left = clamp(Number.isFinite(state.left) ? state.left : leftDefault, DEFAULT_MARGIN, maxLeft);
+    const top = clamp(Number.isFinite(state.top) ? state.top : topDefault, DEFAULT_MARGIN, maxTop);
+    return { width, height: openHeight, left, top };
+  }
 
   function loadState() {
     try {
@@ -55,6 +112,11 @@
       if (!Number.isNaN(storedBalance)) {
         state.balance = storedBalance;
       }
+
+      state.left = parseStoredNumber(window.localStorage.getItem(STORAGE_LEFT_KEY), null);
+      state.top = parseStoredNumber(window.localStorage.getItem(STORAGE_TOP_KEY), null);
+      state.width = parseStoredNumber(window.localStorage.getItem(STORAGE_WIDTH_KEY), null);
+      state.height = parseStoredNumber(window.localStorage.getItem(STORAGE_HEIGHT_KEY), null);
     } catch (err) {
       // localStorage unavailable in restricted contexts.
     }
@@ -65,6 +127,18 @@
       window.localStorage.setItem(STORAGE_MODE_KEY, state.mode);
       window.localStorage.setItem(STORAGE_BALANCE_KEY, String(state.balance));
       window.localStorage.setItem(STORAGE_TAB_KEY, state.tab);
+      if (Number.isFinite(state.left)) {
+        window.localStorage.setItem(STORAGE_LEFT_KEY, String(Math.round(state.left)));
+      }
+      if (Number.isFinite(state.top)) {
+        window.localStorage.setItem(STORAGE_TOP_KEY, String(Math.round(state.top)));
+      }
+      if (Number.isFinite(state.width)) {
+        window.localStorage.setItem(STORAGE_WIDTH_KEY, String(Math.round(state.width)));
+      }
+      if (Number.isFinite(state.height)) {
+        window.localStorage.setItem(STORAGE_HEIGHT_KEY, String(Math.round(state.height)));
+      }
     } catch (err) {
       // ignore storage failures.
     }
@@ -75,6 +149,7 @@
       #daz-game-modal-root {
         position: fixed;
         left: 12px;
+        top: auto;
         bottom: 12px;
         display: block !important;
         visibility: visible !important;
@@ -83,6 +158,7 @@
         z-index: 2147483647;
         font-family: Cinzel, Georgia, serif;
         pointer-events: auto !important;
+        touch-action: none;
         color: #d4af37;
         letter-spacing: 0.5px;
         user-select: none;
@@ -142,6 +218,23 @@
         padding: 0 8px;
         position: relative;
         z-index: 2;
+        cursor: move;
+        touch-action: none;
+        user-select: none;
+      }
+
+      #daz-game-modal-actions {
+        display: flex;
+        gap: 4px;
+      }
+
+      #daz-game-modal-hint {
+        margin-left: 6px;
+        font-size: 9px;
+        color: rgba(212, 175, 55, 0.78);
+        text-transform: none;
+        letter-spacing: 0.2px;
+        opacity: 0.85;
       }
 
       #daz-game-modal-title {
@@ -344,6 +437,46 @@
         height: 38px;
       }
 
+      #daz-game-modal-resize-handle {
+        position: absolute;
+        right: 3px;
+        bottom: 3px;
+        width: 18px;
+        height: 18px;
+        z-index: 3;
+        cursor: nwse-resize;
+        border-right: 2px solid rgba(212, 175, 55, 0.6);
+        border-bottom: 2px solid rgba(212, 175, 55, 0.6);
+        border-radius: 0 0 8px 0;
+        pointer-events: auto;
+        touch-action: none;
+        background:
+          linear-gradient(135deg, transparent 0 65%, rgba(212, 175, 55, 0.5) 65%, transparent 78%, rgba(255, 255, 255, 0.28) 90%);
+      }
+
+      #daz-game-modal-resize-handle::before,
+      #daz-game-modal-resize-handle::after {
+        content: "";
+        position: absolute;
+        width: 10px;
+        left: 3px;
+        background: rgba(255, 255, 255, 0.25);
+      }
+
+      #daz-game-modal-resize-handle::before {
+        bottom: 7px;
+        height: 1px;
+      }
+
+      #daz-game-modal-resize-handle::after {
+        bottom: 3px;
+        height: 1px;
+      }
+
+      #daz-game-modal-root.daz-state-minimized #daz-game-modal-resize-handle {
+        display: none;
+      }
+
       #daz-game-modal-root.daz-state-minimized::before {
         display: none;
       }
@@ -393,6 +526,7 @@
       <div id="daz-game-modal">
         <div id="daz-game-modal-header">
           <div id="daz-game-modal-title">Paddy's Pub Game Console</div>
+          <div id="daz-game-modal-hint">Drag • Resize</div>
           <div id="daz-game-modal-actions">
             <button type="button" class="daz-game-modal-btn" data-action="toggle-min" title="Minimise">_</button>
           </div>
@@ -476,6 +610,7 @@
             <div id="daz-game-modal-log" aria-live="polite"></div>
           </div>
         </div>
+        <div id="daz-game-modal-resize-handle" title="Resize"></div>
       </div>
     `;
   }
@@ -501,16 +636,9 @@
     if (root && modeTag) {
       root.classList.toggle('daz-state-minimized', state.mode === 'minimized');
       modeTag.textContent = state.mode;
+      applyGeometry();
     }
     saveState();
-  }
-
-  function setMode(nextMode) {
-    if (nextMode !== 'open' && nextMode !== 'minimized') {
-      return;
-    }
-    state.mode = nextMode;
-    updateModeUI();
   }
 
   function setActiveTab(nextTab) {
@@ -573,30 +701,204 @@
     saveState();
   }
 
+  function applyGeometry() {
+    const root = document.getElementById('daz-game-modal-root');
+    if (!root) {
+      return;
+    }
+    if (!Number.isFinite(state.width) || !Number.isFinite(state.height) || state.width <= 0 || state.height <= 0) {
+      const defaults = defaultGeometry();
+      state.width = defaults.width;
+      state.height = defaults.height;
+    }
+
+    const normalized = normalizeGeometry();
+    const viewport = getViewportBounds();
+    const heightForRender = state.mode === 'minimized' ? MINIMIZED_HEIGHT : normalized.height;
+    const maxTop = Math.max(DEFAULT_MARGIN, viewport.height - heightForRender - DEFAULT_MARGIN);
+    const clampedLeft = clamp(normalized.left, DEFAULT_MARGIN, Math.max(DEFAULT_MARGIN, viewport.width - normalized.width - DEFAULT_MARGIN));
+    const clampedTop = clamp(normalized.top, DEFAULT_MARGIN, maxTop);
+
+    state.left = clampedLeft;
+    state.top = clampedTop;
+    if (state.mode === 'open') {
+      state.height = normalized.height;
+    }
+    state.width = normalized.width;
+
+    root.style.setProperty('position', 'fixed', 'important');
+    root.style.setProperty('left', `${state.left}px`, 'important');
+    root.style.setProperty('top', `${state.top}px`, 'important');
+    root.style.setProperty('right', 'auto', 'important');
+    root.style.setProperty('bottom', 'auto', 'important');
+    root.style.setProperty('width', `${state.width}px`, 'important');
+    root.style.setProperty('height', `${heightForRender}px`, 'important');
+    root.style.setProperty('display', 'block', 'important');
+    root.style.setProperty('visibility', 'visible', 'important');
+    root.style.setProperty('z-index', '2147483647', 'important');
+    root.style.setProperty('user-select', 'none', 'important');
+    root.style.setProperty('pointer-events', 'auto', 'important');
+    root.style.setProperty('transform', 'none', 'important');
+    root.style.setProperty('margin', '0', 'important');
+  }
+
+  function getPointerPoint(event) {
+    if (event.touches && event.touches[0]) {
+      return { x: event.touches[0].clientX, y: event.touches[0].clientY };
+    }
+    if (event.changedTouches && event.changedTouches[0]) {
+      return {
+        x: event.changedTouches[0].clientX,
+        y: event.changedTouches[0].clientY,
+      };
+    }
+    return { x: event.clientX, y: event.clientY };
+  }
+
+  function setMode(nextMode) {
+    if (nextMode !== 'open' && nextMode !== 'minimized') {
+      return;
+    }
+    state.mode = nextMode;
+    updateModeUI();
+  }
+
+  let activeInteraction = null;
+
+  function beginInteraction(event, type) {
+    const root = document.getElementById('daz-game-modal-root');
+    if (!root) {
+      return;
+    }
+    const viewport = getViewportBounds();
+    if (type === 'resize' && state.mode === 'minimized') {
+      return;
+    }
+    if (type === 'drag' && !Number.isFinite(state.left)) {
+      state.left = DEFAULT_MARGIN;
+    }
+    if (type === 'drag' && !Number.isFinite(state.top)) {
+      const defaults = defaultGeometry();
+      state.top = viewport.height - defaults.height - DEFAULT_MARGIN;
+    }
+
+    activeInteraction = {
+      type,
+      startX: getPointerPoint(event).x,
+      startY: getPointerPoint(event).y,
+      startLeft: Number.isFinite(state.left) ? state.left : DEFAULT_MARGIN,
+      startTop: Number.isFinite(state.top) ? state.top : viewport.height - state.height - DEFAULT_MARGIN,
+      startWidth: state.width,
+      startHeight: state.height,
+    };
+
+    if (type === 'drag') {
+      root.style.setProperty('cursor', 'grabbing', 'important');
+    }
+
+    document.addEventListener('mousemove', onInteractionMove);
+    document.addEventListener('mouseup', onInteractionStop);
+    document.addEventListener('mouseleave', onInteractionStop);
+    document.addEventListener('touchmove', onInteractionMove, { passive: false });
+    document.addEventListener('touchcancel', onInteractionStop);
+    document.addEventListener('touchend', onInteractionStop);
+    event.preventDefault();
+  }
+
+  function onInteractionMove(event) {
+    if (!activeInteraction) {
+      return;
+    }
+    const source = event.touches && event.touches[0]
+      ? event.touches[0]
+      : event.changedTouches && event.changedTouches[0]
+      ? event.changedTouches[0]
+      : event;
+    const dx = source.clientX - activeInteraction.startX;
+    const dy = source.clientY - activeInteraction.startY;
+
+    if (activeInteraction.type === 'drag') {
+      state.left = activeInteraction.startLeft + dx;
+      state.top = activeInteraction.startTop + dy;
+    } else if (activeInteraction.type === 'resize' && state.mode !== 'minimized') {
+      state.width = activeInteraction.startWidth + dx;
+      state.height = activeInteraction.startHeight + dy;
+    }
+
+    applyGeometry();
+    event.preventDefault();
+  }
+
+  function onInteractionStop() {
+    if (!activeInteraction) {
+      return;
+    }
+    activeInteraction = null;
+    saveState();
+    const root = document.getElementById('daz-game-modal-root');
+    if (root) {
+      root.style.setProperty('cursor', '', 'important');
+    }
+    document.removeEventListener('mousemove', onInteractionMove);
+    document.removeEventListener('mouseup', onInteractionStop);
+    document.removeEventListener('mouseleave', onInteractionStop);
+    document.removeEventListener('touchmove', onInteractionMove);
+    document.removeEventListener('touchcancel', onInteractionStop);
+    document.removeEventListener('touchend', onInteractionStop);
+  }
+
+  function onMouseDown(event) {
+    const isMouse = event.type === 'mousedown';
+    if (isMouse && event.button !== 0) {
+      return;
+    }
+    const root = document.getElementById('daz-game-modal-root');
+    if (!root) {
+      return;
+    }
+    const actionTarget = event.target.closest('[data-action]');
+    const tabTarget = event.target.closest('[data-tab]');
+    if (actionTarget || tabTarget) {
+      return;
+    }
+    if (event.target.closest('#daz-game-modal-resize-handle')) {
+      beginInteraction(event, 'resize');
+      return;
+    }
+    if (event.target.closest('#daz-game-modal-header')) {
+      beginInteraction(event, 'drag');
+    }
+  }
+
+  function onClick(event) {
+    const actionTarget = event.target.closest('[data-action]');
+    if (actionTarget) {
+      const action = actionTarget.getAttribute('data-action');
+      if (action === 'toggle-min') {
+        setMode(state.mode === 'minimized' ? 'open' : 'minimized');
+        return;
+      }
+      onAction(action);
+      return;
+    }
+
+    const tabTarget = event.target.closest('[data-tab]');
+    if (tabTarget) {
+      const nextTab = tabTarget.getAttribute('data-tab');
+      if (nextTab) {
+        setActiveTab(nextTab);
+      }
+    }
+  }
+
   function bindEvents() {
     const root = document.getElementById('daz-game-modal-root');
     if (!root) return;
-
-    root.addEventListener('click', function (event) {
-      const actionTarget = event.target.closest('[data-action]');
-      if (actionTarget) {
-        const action = actionTarget.getAttribute('data-action');
-        if (action === 'toggle-min') {
-          setMode(state.mode === 'minimized' ? 'open' : 'minimized');
-          return;
-        }
-        onAction(action);
-        return;
-      }
-
-      const tabTarget = event.target.closest('[data-tab]');
-      if (tabTarget) {
-        const nextTab = tabTarget.getAttribute('data-tab');
-        if (nextTab) {
-          setActiveTab(nextTab);
-        }
-      }
-    }, true);
+    root.addEventListener('click', onClick, true);
+    root.addEventListener('mousedown', onMouseDown);
+    root.addEventListener('touchstart', onMouseDown);
+    window.addEventListener('resize', applyGeometry);
+    window.addEventListener('orientationchange', applyGeometry);
   }
 
   function maybeInjectStyles() {
@@ -615,9 +917,7 @@
       return;
     }
     root.dataset.fallbackApplied = '1';
-    forceBottomLeftPlacement(root);
-    root.style.setProperty('width', 'clamp(320px, 34vw, 700px)', 'important');
-    root.style.setProperty('height', 'clamp(250px, 36vh, 420px)', 'important');
+    root.style.position = 'fixed';
     root.style.setProperty('display', 'block', 'important');
     root.style.setProperty('visibility', 'visible', 'important');
     root.style.setProperty('z-index', '2147483647', 'important');
@@ -629,51 +929,6 @@
     root.style.setProperty('user-select', 'none', 'important');
     root.style.setProperty('font-family', 'Cinzel, Georgia, serif', 'important');
     root.style.setProperty('letter-spacing', '0.5px', 'important');
-  }
-
-  function forceBottomLeftPlacement(root) {
-    if (!root) {
-      return;
-    }
-    root.style.setProperty('position', 'fixed', 'important');
-    root.style.setProperty('left', '12px', 'important');
-    root.style.setProperty('right', 'auto', 'important');
-    root.style.setProperty('top', 'auto', 'important');
-    root.style.setProperty('bottom', '12px', 'important');
-    root.style.setProperty('transform', 'none', 'important');
-    root.style.setProperty('opacity', '1', 'important');
-    root.style.setProperty('margin', '0', 'important');
-    root.style.setProperty('inset', 'auto auto 12px 12px', 'important');
-  }
-
-  function keepBottomLeftAnchored() {
-    const root = document.getElementById('daz-game-modal-root');
-    if (!root) {
-      return;
-    }
-    forceBottomLeftPlacement(root);
-    const rect = root.getBoundingClientRect();
-    const hiddenOrShifted = rect.width < 40 || rect.height < 40 || rect.left < -1 || rect.top > window.innerHeight || rect.right < 0 || rect.bottom > window.innerHeight + 4;
-    if (hiddenOrShifted) {
-      root.style.setProperty('outline', '2px solid rgba(255,165,0,0.85)', 'important');
-    } else {
-      root.style.removeProperty('outline');
-    }
-  }
-
-  function startPlacementWatch() {
-    let attempts = 0;
-    const maxAttempts = 24;
-    const interval = window.setInterval(() => {
-      attempts += 1;
-      keepBottomLeftAnchored();
-      if (attempts >= maxAttempts) {
-        window.clearInterval(interval);
-      }
-    }, 500);
-    keepBottomLeftAnchored();
-    window.addEventListener('resize', keepBottomLeftAnchored);
-    window.addEventListener('orientationchange', keepBottomLeftAnchored);
   }
 
   function mount() {
@@ -689,7 +944,7 @@
     const container = document.body || document.documentElement;
     container.appendChild(root);
     enforceFallbackVisuals(root);
-    startPlacementWatch();
+    applyGeometry();
     console.info('[daz-game-modal] mounted', { rootId: root.id });
     hideInlineStatus();
     bindEvents();
