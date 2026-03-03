@@ -2,6 +2,9 @@ package gallery
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"os"
@@ -23,6 +26,12 @@ type HTMLGenerator struct {
 }
 
 const defaultGalleryOutputPath = "./data/galleries"
+const galleryPublishStateFile = ".daz_gallery_publish_state.json"
+
+type publishState struct {
+	ContentHash   string    `json:"content_hash"`
+	LastPublished time.Time `json:"last_published"`
+}
 
 // UserGalleryData holds gallery data for a single user
 type UserGalleryData struct {
@@ -1005,6 +1014,63 @@ func (g *HTMLGenerator) markerFilePath() string {
 	return filepath.Join(filepath.Clean(g.config.HTMLOutputPath), galleryMarkerFile)
 }
 
+func (g *HTMLGenerator) publishStatePath() string {
+	return filepath.Join(filepath.Clean(g.config.HTMLOutputPath), galleryPublishStateFile)
+}
+
+func (g *HTMLGenerator) loadPublishState() (publishState, error) {
+	data, err := os.ReadFile(g.publishStatePath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return publishState{}, nil
+		}
+		return publishState{}, err
+	}
+	var state publishState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return publishState{}, err
+	}
+	return state, nil
+}
+
+func (g *HTMLGenerator) savePublishState(state publishState) error {
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(g.publishStatePath(), payload, 0644)
+}
+
+func (g *HTMLGenerator) currentPublishHash() (string, error) {
+	artifactPath := filepath.Join(g.config.HTMLOutputPath, "gallery", "index.html")
+	data, err := os.ReadFile(artifactPath)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func (g *HTMLGenerator) shouldPublish(contentHash string, now time.Time) (bool, string, publishState, error) {
+	state, err := g.loadPublishState()
+	if err != nil {
+		return false, "", publishState{}, err
+	}
+	if state.ContentHash != "" && state.ContentHash == contentHash {
+		return false, "content hash unchanged", state, nil
+	}
+
+	minInterval := time.Duration(g.config.PublishMinIntervalSeconds) * time.Second
+	if minInterval > 0 && !state.LastPublished.IsZero() {
+		elapsed := now.Sub(state.LastPublished)
+		if elapsed < minInterval {
+			return false, fmt.Sprintf("minimum publish interval not reached (%s < %s)", elapsed.Round(time.Second), minInterval), state, nil
+		}
+	}
+
+	return true, "", state, nil
+}
+
 func (g *HTMLGenerator) ensureMarkerFile() error {
 	if !g.isSafeOutputPath() {
 		return fmt.Errorf("unsafe html output path: %s", g.config.HTMLOutputPath)
@@ -1112,6 +1178,18 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 	if err := g.ensureMarkerFile(); err != nil {
 		return fmt.Errorf("failed to write gallery marker file: %w", err)
 	}
+	contentHash, err := g.currentPublishHash()
+	if err != nil {
+		return fmt.Errorf("failed to compute gallery publish hash: %w", err)
+	}
+	shouldPublish, reason, _, err := g.shouldPublish(contentHash, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to evaluate gallery publish state: %w", err)
+	}
+	if !shouldPublish {
+		logger.Info("gallery", "Skipping gallery publish: %s", reason)
+		return nil
+	}
 
 	// Track if we need recovery on normal errors
 
@@ -1164,7 +1242,7 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 		return "", fmt.Errorf("deploy key not found")
 	}
 
-	runAuthPush := func() error {
+	pushOnce := func() error {
 		if githubToken == "" {
 			deployKey, err := resolveDeployKey()
 			if err != nil {
@@ -1201,6 +1279,40 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 
 		logger.Debug("gallery", "Push output: %s", string(output))
 		return nil
+	}
+
+	runAuthPush := func() error {
+		maxAttempts := g.config.PublishRetryMax
+		if maxAttempts < 1 {
+			maxAttempts = 1
+		}
+		backoff := time.Duration(g.config.PublishRetryBackoffMS) * time.Millisecond
+		if backoff <= 0 {
+			backoff = 1500 * time.Millisecond
+		}
+
+		var lastErr error
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			err := pushOnce()
+			if err == nil {
+				return nil
+			}
+			lastErr = err
+			if attempt == maxAttempts || !isPushRetryable(err) {
+				break
+			}
+
+			delay := backoff * time.Duration(1<<(attempt-1))
+			logger.Warn("gallery", "Push attempt %d/%d failed: %v (retrying in %v)", attempt, maxAttempts, err, delay)
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+		return lastErr
 	}
 
 	// Check if git repo already exists
@@ -1271,7 +1383,24 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 		needsRecovery = true
 		return fmt.Errorf("failed to push to GitHub: %w", err)
 	}
+	if err := g.savePublishState(publishState{
+		ContentHash:   contentHash,
+		LastPublished: time.Now().UTC(),
+	}); err != nil {
+		logger.Warn("gallery", "Gallery publish succeeded but failed to persist publish state: %v", err)
+	}
 
 	logger.Debug("gallery", "Successfully pushed to GitHub Pages")
 	return nil
+}
+
+func isPushRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "no GitHub token configured") || strings.Contains(msg, "deploy key not found") {
+		return false
+	}
+	return true
 }

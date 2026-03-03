@@ -22,8 +22,8 @@
 - [x] Add non-critical SQL/background shedding and coalescing under pressure.
 - [x] Debounce reconnect/startup sync so userlist+playlist initialization runs once per reconnect window.
 - [x] Prevent overlapping `mediatracker` staged-ingestion runs per channel/session.
-- [ ] Gate help publish jobs with content-hash checks and a minimum publish interval.
-- [ ] Gate gallery pushes with content-hash checks, minimum interval, and retry backoff.
+- [x] Gate help publish jobs with content-hash checks and a minimum publish interval.
+- [x] Gate gallery pushes with content-hash checks, minimum interval, and retry backoff.
 - [x] Add migration for `daz_ollama_responses` and `daz_ollama_rate_limits`.
 - [x] Add startup schema sanity checks for required Ollama tables.
 - [ ] Tune event bus worker reservations and plugin background concurrency for 1-vCPU deployment.

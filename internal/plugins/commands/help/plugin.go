@@ -20,11 +20,12 @@ import (
 )
 
 type Config struct {
-	ShowAliases       bool   `json:"show_aliases"`
-	GenerateHTML      bool   `json:"generate_html"`
-	HTMLOutputPath    string `json:"html_output_path"`
-	HelpBaseURL       string `json:"help_base_url"`
-	IncludeRestricted bool   `json:"include_restricted"`
+	ShowAliases               bool   `json:"show_aliases"`
+	GenerateHTML              bool   `json:"generate_html"`
+	HTMLOutputPath            string `json:"html_output_path"`
+	HelpBaseURL               string `json:"help_base_url"`
+	IncludeRestricted         bool   `json:"include_restricted"`
+	PublishMinIntervalSeconds int    `json:"publish_min_interval_seconds"`
 }
 
 type Plugin struct {
@@ -82,23 +83,28 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 
 	if len(config) > 0 {
 		p.config = &Config{
-			ShowAliases:       true,
-			GenerateHTML:      true,
-			HTMLOutputPath:    defaultHelpOutputPath,
-			HelpBaseURL:       defaultHelpBaseURL,
-			IncludeRestricted: true,
+			ShowAliases:               true,
+			GenerateHTML:              true,
+			HTMLOutputPath:            defaultHelpOutputPath,
+			HelpBaseURL:               defaultHelpBaseURL,
+			IncludeRestricted:         true,
+			PublishMinIntervalSeconds: 60,
 		}
 		if err := json.Unmarshal(config, &p.config); err != nil {
 			return fmt.Errorf("failed to unmarshal config: %w", err)
 		}
 	} else {
 		p.config = &Config{
-			ShowAliases:       true,
-			GenerateHTML:      true,
-			HTMLOutputPath:    defaultHelpOutputPath,
-			HelpBaseURL:       defaultHelpBaseURL,
-			IncludeRestricted: true,
+			ShowAliases:               true,
+			GenerateHTML:              true,
+			HTMLOutputPath:            defaultHelpOutputPath,
+			HelpBaseURL:               defaultHelpBaseURL,
+			IncludeRestricted:         true,
+			PublishMinIntervalSeconds: 60,
 		}
+	}
+	if p.config.PublishMinIntervalSeconds <= 0 {
+		p.config.PublishMinIntervalSeconds = 60
 	}
 	p.config.HTMLOutputPath = normalizeHelpOutputPath(p.config.HTMLOutputPath)
 	p.config.HelpBaseURL = normalizeHelpBaseURL(p.config.HelpBaseURL)

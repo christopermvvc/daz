@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHelpGenerateAllMissingAuth(t *testing.T) {
@@ -246,5 +247,85 @@ func TestHelpGenerateAllRejectsProjectRootLikePath(t *testing.T) {
 
 	if err := generator.GenerateAllWithoutPublish(context.Background()); err == nil {
 		t.Fatalf("expected unsafe output path error for project-like root path")
+	}
+}
+
+func TestHelpShouldPublishStateGating(t *testing.T) {
+	outputDir := t.TempDir()
+	config := &Config{
+		HTMLOutputPath:            outputDir,
+		PublishMinIntervalSeconds: 60,
+		ShowAliases:               true,
+		GenerateHTML:              true,
+		HelpBaseURL:               defaultHelpBaseURL,
+		IncludeRestricted:         true,
+	}
+
+	generator := NewHTMLGenerator(config, func() []*commandEntry {
+		return []*commandEntry{{Primary: "ping", Description: "ping"}}
+	}, true, true)
+
+	rootOutput := filepath.Join(outputDir, generator.rootOutputFile)
+	if err := os.WriteFile(rootOutput, []byte("content-v1"), 0644); err != nil {
+		t.Fatalf("failed to write root output: %v", err)
+	}
+
+	hashV1, err := generator.currentPublishHash()
+	if err != nil {
+		t.Fatalf("currentPublishHash failed: %v", err)
+	}
+
+	now := time.Now().UTC()
+	should, _, _, err := generator.shouldPublish(hashV1, now)
+	if err != nil {
+		t.Fatalf("shouldPublish failed: %v", err)
+	}
+	if !should {
+		t.Fatal("expected initial publish to be allowed")
+	}
+
+	if err := generator.savePublishState(publishState{
+		ContentHash:   hashV1,
+		LastPublished: now,
+	}); err != nil {
+		t.Fatalf("savePublishState failed: %v", err)
+	}
+
+	should, reason, _, err := generator.shouldPublish(hashV1, now.Add(10*time.Second))
+	if err != nil {
+		t.Fatalf("shouldPublish failed: %v", err)
+	}
+	if should {
+		t.Fatal("expected unchanged hash to skip publish")
+	}
+	if !strings.Contains(reason, "unchanged") {
+		t.Fatalf("expected unchanged reason, got %q", reason)
+	}
+
+	if err := os.WriteFile(rootOutput, []byte("content-v2"), 0644); err != nil {
+		t.Fatalf("failed to write root output v2: %v", err)
+	}
+	hashV2, err := generator.currentPublishHash()
+	if err != nil {
+		t.Fatalf("currentPublishHash failed for v2: %v", err)
+	}
+
+	should, reason, _, err = generator.shouldPublish(hashV2, now.Add(10*time.Second))
+	if err != nil {
+		t.Fatalf("shouldPublish failed for v2: %v", err)
+	}
+	if should {
+		t.Fatal("expected min-interval gating for changed content")
+	}
+	if !strings.Contains(reason, "minimum publish interval") {
+		t.Fatalf("expected min-interval reason, got %q", reason)
+	}
+
+	should, _, _, err = generator.shouldPublish(hashV2, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("shouldPublish failed for delayed publish: %v", err)
+	}
+	if !should {
+		t.Fatal("expected changed content to publish after interval")
 	}
 }

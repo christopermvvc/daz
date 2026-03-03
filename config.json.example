@@ -55,6 +55,18 @@
     "eventfilter": {
       "command_prefix": "!"
     },
+    "help": {
+      "show_aliases": true,
+      "generate_html": true,
+      "include_restricted": true,
+      "publish_min_interval_seconds": 60
+    },
+    "gallery": {
+      "generate_html": true,
+      "publish_min_interval_seconds": 60,
+      "publish_retry_max": 3,
+      "publish_retry_backoff_ms": 1500
+    },
     "mediatracker": {
       "stats_update_interval_minutes": 5,
       "playlist_ingest_batch_size": 20,

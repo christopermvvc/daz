@@ -43,12 +43,15 @@ type Plugin struct {
 
 // Config holds plugin configuration
 type Config struct {
-	MaxImagesPerUser    int           `json:"max_images_per_user"`
-	HealthCheckInterval time.Duration `json:"health_check_interval"`
-	GenerateHTML        bool          `json:"generate_html"`
-	HTMLOutputPath      string        `json:"html_output_path"`
-	EnableHealthCheck   bool          `json:"enable_health_check"`
-	AdminOnly           bool          `json:"admin_only"`
+	MaxImagesPerUser          int           `json:"max_images_per_user"`
+	HealthCheckInterval       time.Duration `json:"health_check_interval"`
+	GenerateHTML              bool          `json:"generate_html"`
+	HTMLOutputPath            string        `json:"html_output_path"`
+	EnableHealthCheck         bool          `json:"enable_health_check"`
+	AdminOnly                 bool          `json:"admin_only"`
+	PublishMinIntervalSeconds int           `json:"publish_min_interval_seconds"`
+	PublishRetryMax           int           `json:"publish_retry_max"`
+	PublishRetryBackoffMS     int           `json:"publish_retry_backoff_ms"`
 }
 
 // New creates a new gallery plugin instance
@@ -56,12 +59,15 @@ func New() framework.Plugin {
 	return &Plugin{
 		name: "gallery",
 		config: &Config{
-			MaxImagesPerUser:    25,
-			HealthCheckInterval: 5 * time.Minute,
-			GenerateHTML:        true,
-			HTMLOutputPath:      "./data/galleries",
-			EnableHealthCheck:   true,
-			AdminOnly:           false,
+			MaxImagesPerUser:          25,
+			HealthCheckInterval:       5 * time.Minute,
+			GenerateHTML:              true,
+			HTMLOutputPath:            "./data/galleries",
+			EnableHealthCheck:         true,
+			AdminOnly:                 false,
+			PublishMinIntervalSeconds: 60,
+			PublishRetryMax:           3,
+			PublishRetryBackoffMS:     1500,
 		},
 	}
 }
@@ -84,6 +90,15 @@ func (p *Plugin) Init(configData json.RawMessage, bus framework.EventBus) error 
 	if p.config.MaxImagesPerUser <= 0 {
 		logger.Warn(p.name, "Invalid max_images_per_user %d, defaulting to 25", p.config.MaxImagesPerUser)
 		p.config.MaxImagesPerUser = 25
+	}
+	if p.config.PublishMinIntervalSeconds <= 0 {
+		p.config.PublishMinIntervalSeconds = 60
+	}
+	if p.config.PublishRetryMax <= 0 {
+		p.config.PublishRetryMax = 3
+	}
+	if p.config.PublishRetryBackoffMS <= 0 {
+		p.config.PublishRetryBackoffMS = 1500
 	}
 
 	p.eventBus = bus

@@ -2,6 +2,7 @@ package gallery
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -190,5 +191,122 @@ func TestGenerateSharedGalleryRejectsProjectRootLikePath(t *testing.T) {
 
 	if err := generator.GenerateSharedGallery(context.Background(), nil); err == nil {
 		t.Fatalf("expected unsafe output path error for project-like root path")
+	}
+}
+
+func TestGalleryShouldPublishStateGating(t *testing.T) {
+	outputDir := t.TempDir()
+	galleryDir := filepath.Join(outputDir, "gallery")
+	if err := os.MkdirAll(galleryDir, 0755); err != nil {
+		t.Fatalf("failed to create gallery dir: %v", err)
+	}
+
+	store := &Store{}
+	config := &Config{
+		HTMLOutputPath:            outputDir,
+		PublishMinIntervalSeconds: 60,
+	}
+	generator := NewHTMLGenerator(store, config)
+
+	indexPath := filepath.Join(galleryDir, "index.html")
+	if err := os.WriteFile(indexPath, []byte("gallery-v1"), 0644); err != nil {
+		t.Fatalf("failed to write gallery index: %v", err)
+	}
+
+	hashV1, err := generator.currentPublishHash()
+	if err != nil {
+		t.Fatalf("currentPublishHash failed: %v", err)
+	}
+
+	now := time.Now().UTC()
+	should, _, _, err := generator.shouldPublish(hashV1, now)
+	if err != nil {
+		t.Fatalf("shouldPublish failed: %v", err)
+	}
+	if !should {
+		t.Fatal("expected initial publish to be allowed")
+	}
+
+	if err := generator.savePublishState(publishState{
+		ContentHash:   hashV1,
+		LastPublished: now,
+	}); err != nil {
+		t.Fatalf("savePublishState failed: %v", err)
+	}
+
+	should, reason, _, err := generator.shouldPublish(hashV1, now.Add(10*time.Second))
+	if err != nil {
+		t.Fatalf("shouldPublish failed: %v", err)
+	}
+	if should {
+		t.Fatal("expected unchanged hash to skip publish")
+	}
+	if !strings.Contains(reason, "unchanged") {
+		t.Fatalf("expected unchanged reason, got %q", reason)
+	}
+
+	if err := os.WriteFile(indexPath, []byte("gallery-v2"), 0644); err != nil {
+		t.Fatalf("failed to write gallery index v2: %v", err)
+	}
+	hashV2, err := generator.currentPublishHash()
+	if err != nil {
+		t.Fatalf("currentPublishHash failed for v2: %v", err)
+	}
+
+	should, reason, _, err = generator.shouldPublish(hashV2, now.Add(10*time.Second))
+	if err != nil {
+		t.Fatalf("shouldPublish failed for v2: %v", err)
+	}
+	if should {
+		t.Fatal("expected min-interval gating for changed content")
+	}
+	if !strings.Contains(reason, "minimum publish interval") {
+		t.Fatalf("expected min-interval reason, got %q", reason)
+	}
+
+	should, _, _, err = generator.shouldPublish(hashV2, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("shouldPublish failed for delayed publish: %v", err)
+	}
+	if !should {
+		t.Fatal("expected changed content to publish after interval")
+	}
+}
+
+func TestIsPushRetryable(t *testing.T) {
+	cases := []struct {
+		name      string
+		err       error
+		retryable bool
+	}{
+		{
+			name:      "nil",
+			err:       nil,
+			retryable: false,
+		},
+		{
+			name:      "missing auth",
+			err:       fmt.Errorf("no GitHub token configured"),
+			retryable: false,
+		},
+		{
+			name:      "missing key",
+			err:       fmt.Errorf("deploy key not found"),
+			retryable: false,
+		},
+		{
+			name:      "transient push failure",
+			err:       fmt.Errorf("push failed: EOF"),
+			retryable: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isPushRetryable(tc.err)
+			if got != tc.retryable {
+				t.Fatalf("isPushRetryable() = %v, want %v", got, tc.retryable)
+			}
+		})
 	}
 }

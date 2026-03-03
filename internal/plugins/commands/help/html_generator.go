@@ -2,6 +2,9 @@ package help
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"os"
@@ -16,10 +19,16 @@ import (
 )
 
 const (
-	defaultHelpOutputPath = "./data/help"
-	defaultHelpBaseURL    = "https://hildolfr.github.io/daz/help/"
-	helpMarkerFile        = ".daz_help_marker"
+	defaultHelpOutputPath  = "./data/help"
+	defaultHelpBaseURL     = "https://hildolfr.github.io/daz/help/"
+	helpMarkerFile         = ".daz_help_marker"
+	helpPublishStatePrefix = ".daz_help_publish_state_"
 )
+
+type publishState struct {
+	ContentHash   string    `json:"content_hash"`
+	LastPublished time.Time `json:"last_published"`
+}
 
 type HTMLGenerator struct {
 	config            *Config
@@ -279,6 +288,71 @@ func (g *HTMLGenerator) markerFilePath() string {
 	return filepath.Join(filepath.Clean(g.config.HTMLOutputPath), helpMarkerFile)
 }
 
+func (g *HTMLGenerator) publishStatePath() string {
+	scope := strings.ReplaceAll(g.rootOutputFile, string(filepath.Separator), "_")
+	scope = strings.ReplaceAll(scope, ".", "_")
+	if scope == "" {
+		scope = "root"
+	}
+	return filepath.Join(filepath.Clean(g.config.HTMLOutputPath), helpPublishStatePrefix+scope+".json")
+}
+
+func (g *HTMLGenerator) loadPublishState() (publishState, error) {
+	path := g.publishStatePath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return publishState{}, nil
+		}
+		return publishState{}, err
+	}
+
+	var state publishState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return publishState{}, err
+	}
+	return state, nil
+}
+
+func (g *HTMLGenerator) savePublishState(state publishState) error {
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(g.publishStatePath(), payload, 0644)
+}
+
+func (g *HTMLGenerator) currentPublishHash() (string, error) {
+	artifactPath := filepath.Join(g.config.HTMLOutputPath, g.rootOutputFile)
+	data, err := os.ReadFile(artifactPath)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func (g *HTMLGenerator) shouldPublish(contentHash string, now time.Time) (bool, string, publishState, error) {
+	state, err := g.loadPublishState()
+	if err != nil {
+		return false, "", publishState{}, err
+	}
+
+	if state.ContentHash != "" && state.ContentHash == contentHash {
+		return false, "content hash unchanged", state, nil
+	}
+
+	minInterval := time.Duration(g.config.PublishMinIntervalSeconds) * time.Second
+	if minInterval > 0 && !state.LastPublished.IsZero() {
+		elapsed := now.Sub(state.LastPublished)
+		if elapsed < minInterval {
+			return false, fmt.Sprintf("minimum publish interval not reached (%s < %s)", elapsed.Round(time.Second), minInterval), state, nil
+		}
+	}
+
+	return true, "", state, nil
+}
+
 func (g *HTMLGenerator) ensureMarkerFile() error {
 	if !g.isSafeOutputPath() {
 		return fmt.Errorf("unsafe html output path: %s", g.config.HTMLOutputPath)
@@ -382,6 +456,18 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 	if err := g.ensureMarkerFile(); err != nil {
 		return fmt.Errorf("failed to write help marker file: %w", err)
 	}
+	contentHash, err := g.currentPublishHash()
+	if err != nil {
+		return fmt.Errorf("failed to compute help publish hash: %w", err)
+	}
+	shouldPublish, reason, _, err := g.shouldPublish(contentHash, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to evaluate help publish state: %w", err)
+	}
+	if !shouldPublish {
+		logger.Info("help", "Skipping help publish for %s: %s", g.rootOutputFile, reason)
+		return nil
+	}
 
 	var needsRecovery bool
 	defer func() {
@@ -463,6 +549,12 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 		needsRecovery = true
 		logger.Warn("help", "Help page publish failed during git push: %v", err)
 		return err
+	}
+	if err := g.savePublishState(publishState{
+		ContentHash:   contentHash,
+		LastPublished: time.Now().UTC(),
+	}); err != nil {
+		logger.Warn("help", "Help publish succeeded but failed to persist publish state: %v", err)
 	}
 	logger.Info("help", "Help pages successfully published to GitHub Pages (gh-pages)")
 
