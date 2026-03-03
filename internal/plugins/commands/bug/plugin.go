@@ -708,7 +708,7 @@ func randomSuffix(bytesLen int) (string, error) {
 		bytesLen = 2
 	}
 	buf := make([]byte, bytesLen)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := io.ReadFull(rand.Reader, buf); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
