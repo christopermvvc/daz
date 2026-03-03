@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,17 +19,36 @@ type mockDelivery struct {
 	err           error
 }
 
+type mockBroadcast struct {
+	eventType string
+	data      *framework.EventData
+}
+
+type mockQuery struct {
+	query string
+}
+
+type mockExec struct {
+	query string
+}
+
 // MockEventBus implements framework.EventBus for testing
 type MockEventBus struct {
 	mu            sync.RWMutex
 	subscriptions map[string][]framework.EventHandler
 	deliveries    []mockDelivery
+	broadcasts    []mockBroadcast
+	queries       []mockQuery
+	execs         []mockExec
 }
 
 func NewMockEventBus() *MockEventBus {
 	return &MockEventBus{
 		subscriptions: make(map[string][]framework.EventHandler),
 		deliveries:    make([]mockDelivery, 0),
+		broadcasts:    make([]mockBroadcast, 0),
+		queries:       make([]mockQuery, 0),
+		execs:         make([]mockExec, 0),
 	}
 }
 
@@ -52,6 +72,12 @@ func (m *MockEventBus) UnsubscribeWithTags(pattern string, handler framework.Eve
 }
 
 func (m *MockEventBus) Broadcast(eventType string, data *framework.EventData) error {
+	m.mu.Lock()
+	m.broadcasts = append(m.broadcasts, mockBroadcast{
+		eventType: eventType,
+		data:      data,
+	})
+	m.mu.Unlock()
 	return nil
 }
 
@@ -60,6 +86,12 @@ func (m *MockEventBus) BroadcastWithMetadata(eventType string, data *framework.E
 }
 
 func (m *MockEventBus) Send(target string, eventType string, data *framework.EventData) error {
+	m.mu.Lock()
+	m.broadcasts = append(m.broadcasts, mockBroadcast{
+		eventType: eventType,
+		data:      data,
+	})
+	m.mu.Unlock()
 	return nil
 }
 
@@ -68,6 +100,47 @@ func (m *MockEventBus) SendWithMetadata(target string, eventType string, data *f
 }
 
 func (m *MockEventBus) Request(ctx context.Context, target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) (*framework.EventData, error) {
+	if eventType == "sql.exec.request" && data != nil && data.SQLExecRequest != nil {
+		m.mu.Lock()
+		m.execs = append(m.execs, mockExec{query: data.SQLExecRequest.Query})
+		m.mu.Unlock()
+		return &framework.EventData{
+			SQLExecResponse: &framework.SQLExecResponse{
+				Success:      true,
+				RowsAffected: 1,
+			},
+		}, nil
+	}
+
+	if eventType == "sql.query.request" && data != nil && data.SQLQueryRequest != nil {
+		query := strings.ToLower(data.SQLQueryRequest.Query)
+
+		m.mu.Lock()
+		m.queries = append(m.queries, mockQuery{query: query})
+		m.mu.Unlock()
+
+		// hasAlreadyResponded query expects a count column and one row.
+		if strings.Contains(query, "select count(*)") && strings.Contains(query, "daz_ollama_responses") {
+			countBytes, _ := json.Marshal(0)
+			return &framework.EventData{
+				SQLQueryResponse: &framework.SQLQueryResponse{
+					Success: true,
+					Columns: []string{"count"},
+					Rows:    [][]json.RawMessage{{countBytes}},
+				},
+			}, nil
+		}
+
+		// Default success path with no rows for rate limit and history queries.
+		return &framework.EventData{
+			SQLQueryResponse: &framework.SQLQueryResponse{
+				Success: true,
+				Columns: []string{},
+				Rows:    [][]json.RawMessage{},
+			},
+		}, nil
+	}
+
 	return nil, nil
 }
 
@@ -264,6 +337,236 @@ func TestMessageFreshness(t *testing.T) {
 	err := plugin.handleChatMessage(event)
 	if err != nil {
 		t.Errorf("handleChatMessage returned error: %v", err)
+	}
+}
+
+func TestFollowUpSessionLifecycle(t *testing.T) {
+	plugin := &Plugin{
+		config: &Config{
+			FollowUpEnabled: true,
+		},
+		followUpSessions: make(map[string]time.Time),
+	}
+
+	plugin.setFollowUpSession("testchannel", "alice")
+
+	key := plugin.followUpSessionKey("testchannel", "alice")
+	if !plugin.hasActiveFollowUpSession("testchannel", "alice", time.Now()) {
+		t.Fatalf("expected follow-up session to be active for key %s", key)
+	}
+
+	plugin.clearFollowUpSession("testchannel", "alice")
+	if plugin.hasActiveFollowUpSession("testchannel", "alice", time.Now()) {
+		t.Fatalf("expected follow-up session to be cleared for key %s", key)
+	}
+
+	plugin.followUpSessions[key] = time.Now().Add(-time.Minute)
+	if plugin.hasActiveFollowUpSession("testchannel", "alice", time.Now()) {
+		t.Fatalf("expected expired follow-up session to be inactive for key %s", key)
+	}
+}
+
+func waitForBroadcastType(
+	t *testing.T,
+	bus *MockEventBus,
+	eventType string,
+	expected int,
+	timeout time.Duration,
+) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		bus.mu.Lock()
+		count := 0
+		for _, event := range bus.broadcasts {
+			if event.eventType == eventType {
+				count++
+			}
+		}
+		bus.mu.Unlock()
+
+		if count >= expected {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for %d event(s) of type %s", expected, eventType)
+}
+
+func TestHandleChatMessageFollowUpQuestionWithoutMention(t *testing.T) {
+	bus := NewMockEventBus()
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST request, got %s", r.Method)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if r.URL.Path != "/api/chat" {
+			t.Errorf("expected /api/chat path, got %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, err := w.Write([]byte(`{"message":{"content":"you bet"}}`))
+		if err != nil {
+			t.Fatalf("failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	plugin := New()
+	ollamaPlugin, ok := plugin.(*Plugin)
+	if !ok {
+		t.Fatalf("New() returned %T", plugin)
+	}
+
+	if err := ollamaPlugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	ollamaPlugin.config.FollowUpEnabled = true
+	ollamaPlugin.config.FollowUpWindowSeconds = 120
+	ollamaPlugin.config.OllamaURL = server.URL
+	ollamaPlugin.botName = "Dazza"
+	ollamaPlugin.userLists = map[string]map[string]bool{
+		"testchannel": {"alice": true},
+	}
+
+	initialExpiry := time.Now().Add(3 * time.Minute)
+	ollamaPlugin.followUpSessions[ollamaPlugin.followUpSessionKey("testchannel", "alice")] = initialExpiry
+	key := ollamaPlugin.followUpSessionKey("testchannel", "alice")
+
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "alice",
+				Message:     "really?",
+				Channel:     "testchannel",
+				MessageTime: time.Now().UnixMilli(),
+			},
+		},
+	}
+
+	if err := ollamaPlugin.handleChatMessage(event); err != nil {
+		t.Fatalf("handleChatMessage returned error: %v", err)
+	}
+
+	waitForBroadcastType(t, bus, "cytube.send", 1, 2*time.Second)
+
+	bus.mu.Lock()
+	sendCount := 0
+	var sentMessage string
+	for _, event := range bus.broadcasts {
+		if event.eventType == "cytube.send" && event.data != nil && event.data.RawMessage != nil {
+			sendCount++
+			sentMessage = event.data.RawMessage.Message
+		}
+	}
+	bus.mu.Unlock()
+
+	if sendCount != 1 {
+		t.Fatalf("expected 1 send event, got %d", sendCount)
+	}
+	if sentMessage != "you bet" {
+		t.Fatalf("expected sent message %q, got %q", "you bet", sentMessage)
+	}
+	if serverCalls != 1 {
+		t.Fatalf("expected 1 ollama request, got %d", serverCalls)
+	}
+
+	ollamaPlugin.followUpMu.RLock()
+	refreshedExpiry := ollamaPlugin.followUpSessions[key]
+	ollamaPlugin.followUpMu.RUnlock()
+	if !refreshedExpiry.After(initialExpiry) {
+		t.Fatalf("expected follow-up session to be refreshed beyond %v, got %v", initialExpiry, refreshedExpiry)
+	}
+}
+
+func TestHandleChatMessageFollowUpDisabledIgnoresQuestionWithoutMention(t *testing.T) {
+	bus := NewMockEventBus()
+	plugin := New()
+	ollamaPlugin, ok := plugin.(*Plugin)
+	if !ok {
+		t.Fatalf("New() returned %T", plugin)
+	}
+
+	if err := ollamaPlugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	ollamaPlugin.config.FollowUpEnabled = false
+	ollamaPlugin.config.Enabled = true
+	ollamaPlugin.botName = "Dazza"
+	ollamaPlugin.userLists = map[string]map[string]bool{
+		"testchannel": {"alice": true},
+	}
+
+	key := ollamaPlugin.followUpSessionKey("testchannel", "alice")
+	ollamaPlugin.followUpSessions[key] = time.Now().Add(3 * time.Minute)
+
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "alice",
+				Message:     "really?",
+				Channel:     "testchannel",
+				MessageTime: time.Now().UnixMilli(),
+			},
+		},
+	}
+
+	if err := ollamaPlugin.handleChatMessage(event); err != nil {
+		t.Fatalf("handleChatMessage returned error: %v", err)
+	}
+
+	// Allow any asynchronous activity to flush; this path should not respond.
+	time.Sleep(100 * time.Millisecond)
+
+	if len(bus.broadcasts) != 0 {
+		t.Fatalf("expected no send events when follow-up mode is disabled, got %d", len(bus.broadcasts))
+	}
+
+	if _, ok := ollamaPlugin.followUpSessions[key]; !ok {
+		t.Fatalf("expected follow-up session to remain tracked when disabled path is ignored")
+	}
+}
+
+func TestHandleChatMessageClearsFollowUpOnNonQuestion(t *testing.T) {
+	plugin := &Plugin{
+		config: &Config{
+			Enabled:               true,
+			FollowUpEnabled:       true,
+			FollowUpWindowSeconds: 180,
+		},
+		userLists: map[string]map[string]bool{
+			"testchannel": {"alice": true},
+		},
+		followUpSessions: make(map[string]time.Time),
+		botName:          "Dazza",
+	}
+
+	plugin.followUpSessions[plugin.followUpSessionKey("testchannel", "alice")] = time.Now().Add(3 * time.Minute)
+	key := plugin.followUpSessionKey("testchannel", "alice")
+
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "alice",
+				Message:     "thanks for that",
+				Channel:     "testchannel",
+				MessageTime: time.Now().UnixMilli(),
+			},
+		},
+	}
+
+	err := plugin.handleChatMessage(event)
+	if err != nil {
+		t.Fatalf("handleChatMessage returned error: %v", err)
+	}
+
+	if _, ok := plugin.followUpSessions[key]; ok {
+		t.Fatalf("expected follow-up session to be cleared for key %s", key)
 	}
 }
 

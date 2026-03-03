@@ -30,6 +30,11 @@
     "eventfilter": {
       "command_prefix": "!"
     },
+    "ollama": {
+      "enabled": true,
+      "follow_up_enabled": false,
+      "follow_up_window_seconds": 180
+    },
     "greeter": {
       "use_greeting_engine": true,
       "fortune_probability": 0.20

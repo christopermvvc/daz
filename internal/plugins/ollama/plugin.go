@@ -23,7 +23,8 @@ const (
 	pluginName             = "ollama"
 	defaultOllamaURL       = "http://localhost:11434"
 	defaultModel           = "huggingface.co/ArliAI/Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF:latest"
-	defaultRateLimitSecs   = 10 // 10 second rate limit per user
+	defaultRateLimitSecs   = 10  // 10 second rate limit per user
+	defaultFollowUpWindow  = 180 // 3 minute follow-up window
 	operationGenerate      = "generate"
 	messageFreshnessWindow = 30 * time.Second
 	maxResponseLength      = 500 // Increased for more complete responses
@@ -55,6 +56,10 @@ type Config struct {
 	SystemPrompt string  `json:"system_prompt"`
 	Temperature  float64 `json:"temperature"`
 	MaxTokens    int     `json:"max_tokens"`
+
+	// Follow-up question behavior
+	FollowUpEnabled       bool `json:"follow_up_enabled"`
+	FollowUpWindowSeconds int  `json:"follow_up_window_seconds"`
 }
 
 // Plugin implements the ollama chat functionality
@@ -81,6 +86,10 @@ type Plugin struct {
 	// Current users in channels (channel -> username -> true)
 	userLists     map[string]map[string]bool
 	userListMutex sync.RWMutex
+
+	// Active follow-up sessions for users: channel:username -> expiry time
+	followUpSessions map[string]time.Time
+	followUpMu       sync.RWMutex
 
 	// Metrics
 	totalRequests      int64
@@ -123,16 +132,19 @@ func New() framework.Plugin {
 	return &Plugin{
 		name: pluginName,
 		config: &Config{
-			OllamaURL:        defaultOllamaURL,
-			Model:            defaultModel,
-			RateLimitSeconds: defaultRateLimitSecs,
-			Enabled:          true,
-			Temperature:      0.7,
-			MaxTokens:        2048, // Increased to allow more complete thoughts
-			SystemPrompt:     defaultSystemPrompt,
+			OllamaURL:             defaultOllamaURL,
+			Model:                 defaultModel,
+			RateLimitSeconds:      defaultRateLimitSecs,
+			FollowUpEnabled:       false,
+			FollowUpWindowSeconds: defaultFollowUpWindow,
+			Enabled:               true,
+			Temperature:           0.7,
+			MaxTokens:             2048, // Increased to allow more complete thoughts
+			SystemPrompt:          defaultSystemPrompt,
 		},
-		userLists: make(map[string]map[string]bool),
-		readyChan: make(chan struct{}),
+		userLists:        make(map[string]map[string]bool),
+		followUpSessions: make(map[string]time.Time),
+		readyChan:        make(chan struct{}),
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second, // Increased for larger models
 		},
@@ -184,6 +196,9 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 	if p.config.MaxTokens == 0 {
 		p.config.MaxTokens = 2048 // Increased for better responses
+	}
+	if p.config.FollowUpWindowSeconds == 0 {
+		p.config.FollowUpWindowSeconds = defaultFollowUpWindow
 	}
 	if p.config.SystemPrompt == "" {
 		p.config.SystemPrompt = defaultSystemPrompt
@@ -648,13 +663,32 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		}
 	}
 
+	// Determine if this message should be handled as a follow-up or new mention.
+	isQuestion := strings.HasSuffix(strings.TrimSpace(message), "?")
+	isFollowUpQuestion := false
+
+	if p.config != nil && p.config.FollowUpEnabled && p.hasActiveFollowUpSession(channel, username, time.UnixMilli(messageTime)) {
+		if isQuestion {
+			isFollowUpQuestion = true
+		} else {
+			logger.Debug(p.name, "Ending follow-up session for user %s in %s (message is not a question)", username, channel)
+			p.clearFollowUpSession(channel, username)
+		}
+	}
+
 	// Check if message mentions the bot
-	if !p.isBotMentioned(message) {
-		logger.Debug(p.name, "Message does not mention bot name '%s'", p.botName)
+	isBotMentioned := p.isBotMentioned(message)
+	if !isBotMentioned && !isFollowUpQuestion {
+		logger.Debug(p.name, "Message does not mention bot name '%s' and no active follow-up", p.botName)
 		return nil
 	}
 
-	logger.Info(p.name, "Bot mentioned by %s in %s: %s", username, channel, message)
+	shouldTrackFollowUp := p.config != nil &&
+		p.config.FollowUpEnabled &&
+		isQuestion &&
+		(isBotMentioned || isFollowUpQuestion)
+
+	logger.Info(p.name, "Responding to %s in %s: %s", username, channel, message)
 
 	// Check message freshness (within 30 seconds)
 	messageAge := time.Since(time.UnixMilli(messageTime))
@@ -686,7 +720,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 
 	// Generate and send response
 	p.wg.Add(1)
-	go p.generateAndSendResponse(channel, username, message, messageHash, messageTime)
+	go p.generateAndSendResponse(channel, username, message, messageHash, messageTime, shouldTrackFollowUp)
 
 	return nil
 }
@@ -714,6 +748,81 @@ func (p *Plugin) calculateMessageHash(channel, username, message string, timesta
 	data := fmt.Sprintf("%s:%s:%s:%d", channel, username, message, timestamp)
 	hash := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(hash[:])
+}
+
+func (p *Plugin) hasActiveFollowUpSession(channel, username string, now time.Time) bool {
+	if p.config == nil || !p.config.FollowUpEnabled {
+		return false
+	}
+
+	if p.followUpSessions == nil {
+		return false
+	}
+
+	key := p.followUpSessionKey(channel, username)
+
+	p.followUpMu.RLock()
+	expiresAt, ok := p.followUpSessions[key]
+	p.followUpMu.RUnlock()
+	if !ok {
+		return false
+	}
+
+	if !now.Before(expiresAt) {
+		p.clearFollowUpSession(channel, username)
+		return false
+	}
+
+	return true
+}
+
+func (p *Plugin) setFollowUpSession(channel, username string) {
+	if p.config == nil || !p.config.FollowUpEnabled {
+		return
+	}
+
+	windowSeconds := p.config.FollowUpWindowSeconds
+	if windowSeconds <= 0 {
+		windowSeconds = defaultFollowUpWindow
+	}
+
+	expiresAt := time.Now().Add(time.Duration(windowSeconds) * time.Second)
+
+	p.followUpMu.Lock()
+	if p.followUpSessions == nil {
+		p.followUpSessions = make(map[string]time.Time)
+	}
+	p.followUpSessions[p.followUpSessionKey(channel, username)] = expiresAt
+	p.followUpMu.Unlock()
+}
+
+func (p *Plugin) clearFollowUpSession(channel, username string) {
+	if p.followUpSessions == nil {
+		return
+	}
+
+	p.followUpMu.Lock()
+	delete(p.followUpSessions, p.followUpSessionKey(channel, username))
+	p.followUpMu.Unlock()
+}
+
+func (p *Plugin) cleanupFollowUpSessions() {
+	if p.followUpSessions == nil {
+		return
+	}
+
+	now := time.Now()
+	p.followUpMu.Lock()
+	for key, expiresAt := range p.followUpSessions {
+		if !now.Before(expiresAt) {
+			delete(p.followUpSessions, key)
+		}
+	}
+	p.followUpMu.Unlock()
+}
+
+func (p *Plugin) followUpSessionKey(channel, username string) string {
+	return strings.ToLower(channel) + ":" + strings.ToLower(username)
 }
 
 // hasAlreadyResponded checks if we've already responded to this message
@@ -796,7 +905,7 @@ func (p *Plugin) isRateLimited(channel, username string) bool {
 }
 
 // generateAndSendResponse generates an Ollama response and sends it to the channel
-func (p *Plugin) generateAndSendResponse(channel, username, message, messageHash string, messageTime int64) {
+func (p *Plugin) generateAndSendResponse(channel, username, message, messageHash string, messageTime int64, shouldTrackFollowUp bool) {
 	defer p.wg.Done()
 
 	// Increment total requests
@@ -852,6 +961,10 @@ func (p *Plugin) generateAndSendResponse(channel, username, message, messageHash
 	p.metricsLock.Lock()
 	p.successfulRequests++
 	p.metricsLock.Unlock()
+
+	if shouldTrackFollowUp {
+		p.setFollowUpSession(channel, username)
+	}
 }
 
 // getChatHistory fetches recent chat messages from the database
@@ -1104,6 +1217,8 @@ func (p *Plugin) cleanupOldRecords() {
 				logger.Debug(p.name, "Cleaned up %d old rate limit records", rateLimitRows)
 			}
 
+			p.cleanupFollowUpSessions()
+
 			cancel()
 		}
 	}
@@ -1123,6 +1238,10 @@ func (p *Plugin) Stop() error {
 	if p.cancel != nil {
 		p.cancel()
 	}
+
+	p.followUpMu.Lock()
+	p.followUpSessions = make(map[string]time.Time)
+	p.followUpMu.Unlock()
 
 	// Wait for goroutines to finish
 	p.wg.Wait()
