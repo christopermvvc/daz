@@ -203,6 +203,7 @@ func TestHandleCommandAdminChat(t *testing.T) {
 		t.Fatalf("Init error: %v", err)
 	}
 	p.resolveCommit = func() string { return "Current git commit: deadbeefcaf0" }
+	p.rewriteMessage = nil
 
 	if err := p.handleCommand(mkCommandEvent("alice", "chan", false, true)); err != nil {
 		t.Fatalf("handleCommand error: %v", err)
@@ -248,6 +249,70 @@ func TestHandleCommandNonAdminDenied(t *testing.T) {
 	t.Fatalf("expected cytube.send response")
 }
 
+func TestHandleCommandAdminChatUsesSpeechFlavor(t *testing.T) {
+	bus := &mockEventBus{}
+	p := New().(*Plugin)
+	if err := p.Init(nil, bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+	p.resolveCommit = func() string { return "Current git commit: deadbeefcaf0 (dirty)" }
+	p.rewriteMessage = func(ctx context.Context, req framework.SpeechFlavorRewriteRequest) (framework.SpeechFlavorRewriteResponse, error) {
+		_ = ctx
+		_ = req
+		return framework.SpeechFlavorRewriteResponse{
+			Text: "oi mate deadbeefcaf0 still dirty",
+		}, nil
+	}
+
+	if err := p.handleCommand(mkCommandEvent("alice", "chan", false, true)); err != nil {
+		t.Fatalf("handleCommand error: %v", err)
+	}
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	for _, b := range bus.broadcasts {
+		if b.eventType == "cytube.send" && b.data != nil && b.data.RawMessage != nil {
+			if b.data.RawMessage.Message != "oi mate deadbeefcaf0 still dirty" {
+				t.Fatalf("got %q, want flavored message", b.data.RawMessage.Message)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected cytube.send response")
+}
+
+func TestHandleCommandAdminChatFlavorFallbackWhenCommitMissing(t *testing.T) {
+	bus := &mockEventBus{}
+	p := New().(*Plugin)
+	if err := p.Init(nil, bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+	p.resolveCommit = func() string { return "Current git commit: deadbeefcaf0" }
+	p.rewriteMessage = func(ctx context.Context, req framework.SpeechFlavorRewriteRequest) (framework.SpeechFlavorRewriteResponse, error) {
+		_ = ctx
+		_ = req
+		return framework.SpeechFlavorRewriteResponse{
+			Text: "yeah mate latest build running",
+		}, nil
+	}
+
+	if err := p.handleCommand(mkCommandEvent("alice", "chan", false, true)); err != nil {
+		t.Fatalf("handleCommand error: %v", err)
+	}
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	for _, b := range bus.broadcasts {
+		if b.eventType == "cytube.send" && b.data != nil && b.data.RawMessage != nil {
+			if b.data.RawMessage.Message != "Current git commit: deadbeefcaf0" {
+				t.Fatalf("got %q, want original message fallback", b.data.RawMessage.Message)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected cytube.send response")
+}
+
 func TestHandleCommandAdminPM(t *testing.T) {
 	bus := &mockEventBus{}
 	p := New().(*Plugin)
@@ -255,6 +320,7 @@ func TestHandleCommandAdminPM(t *testing.T) {
 		t.Fatalf("Init error: %v", err)
 	}
 	p.resolveCommit = func() string { return "Current git commit: deadbeefcaf0" }
+	p.rewriteMessage = nil
 
 	if err := p.handleCommand(mkCommandEvent("alice", "chan", true, true)); err != nil {
 		t.Fatalf("handleCommand error: %v", err)
@@ -290,6 +356,49 @@ func TestDefaultCommitMessageUsesInjectedBuildInfo(t *testing.T) {
 	want := "Current git commit: deadbeefcafe (dirty)"
 	if got != want {
 		t.Fatalf("defaultCommitMessage() = %q, want %q", got, want)
+	}
+}
+
+func TestCommitDetailsPreserved(t *testing.T) {
+	tests := []struct {
+		name      string
+		original  string
+		rewritten string
+		want      bool
+	}{
+		{
+			name:      "preserved hash",
+			original:  "Current git commit: deadbeefcaf0",
+			rewritten: "oi mate deadbeefcaf0 is running",
+			want:      true,
+		},
+		{
+			name:      "missing hash",
+			original:  "Current git commit: deadbeefcaf0",
+			rewritten: "oi mate latest build",
+			want:      false,
+		},
+		{
+			name:      "dirty preserved",
+			original:  "Current git commit: deadbeefcaf0 (dirty)",
+			rewritten: "deadbeefcaf0 still dirty mate",
+			want:      true,
+		},
+		{
+			name:      "dirty dropped",
+			original:  "Current git commit: deadbeefcaf0 (dirty)",
+			rewritten: "deadbeefcaf0 running",
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := commitDetailsPreserved(tt.original, tt.rewritten)
+			if got != tt.want {
+				t.Fatalf("commitDetailsPreserved(%q, %q)=%v want %v", tt.original, tt.rewritten, got, tt.want)
+			}
+		})
 	}
 }
 

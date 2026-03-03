@@ -7,19 +7,26 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hildolfr/daz/internal/buildinfo"
 	"github.com/hildolfr/daz/internal/framework"
 	"github.com/hildolfr/daz/internal/logger"
 )
 
+var commitHashPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{7,40}\b`)
+
 type Plugin struct {
-	name     string
-	eventBus framework.EventBus
-	running  bool
+	name              string
+	eventBus          framework.EventBus
+	running           bool
+	speechFlavor      *framework.SpeechFlavorClient
+	rewriteMessage    func(ctx context.Context, req framework.SpeechFlavorRewriteRequest) (framework.SpeechFlavorRewriteResponse, error)
+	rewriteTimeoutDur time.Duration
 
 	mu     sync.RWMutex
 	ctx    context.Context
@@ -35,6 +42,9 @@ func New() framework.Plugin {
 func (p *Plugin) Init(_ json.RawMessage, bus framework.EventBus) error {
 	p.eventBus = bus
 	p.ctx, p.cancel = context.WithCancel(context.Background())
+	p.speechFlavor = framework.NewSpeechFlavorClient(bus, p.name)
+	p.rewriteMessage = p.speechFlavor.Rewrite
+	p.rewriteTimeoutDur = 2 * time.Second
 	if p.resolveCommit == nil {
 		p.resolveCommit = defaultCommitMessage
 	}
@@ -139,10 +149,52 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	message := "This command is admin-only."
 	if isAdmin {
 		message = p.resolveCommit()
+		message = p.maybeFlavorMessage(channel, username, message)
 	}
 
 	_ = p.sendResponse(username, channel, isPM, message)
 	return nil
+}
+
+func (p *Plugin) maybeFlavorMessage(channel, username, message string) string {
+	base := strings.TrimSpace(message)
+	if base == "" || p.rewriteMessage == nil {
+		return message
+	}
+
+	ctx := context.Background()
+	if p.ctx != nil {
+		ctx = p.ctx
+	}
+
+	timeout := p.rewriteTimeoutDur
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	preserveTokens := true
+	resp, err := p.rewriteMessage(reqCtx, framework.SpeechFlavorRewriteRequest{
+		Channel:        channel,
+		Username:       username,
+		Text:           base,
+		PreserveTokens: &preserveTokens,
+	})
+	if err != nil {
+		return message
+	}
+
+	rewritten := strings.TrimSpace(resp.Text)
+	if rewritten == "" {
+		return message
+	}
+
+	if !commitDetailsPreserved(base, rewritten) {
+		return message
+	}
+
+	return rewritten
 }
 
 func (p *Plugin) sendResponse(username, channel string, isPM bool, message string) error {
@@ -268,4 +320,18 @@ func formatCommitMessage(revision, modified string) (string, bool) {
 	}
 
 	return fmt.Sprintf("Current git commit: %s", revision), true
+}
+
+func commitDetailsPreserved(original, rewritten string) bool {
+	hash := commitHashPattern.FindString(original)
+	if hash != "" && !strings.Contains(strings.ToLower(rewritten), strings.ToLower(hash)) {
+		return false
+	}
+
+	if strings.Contains(strings.ToLower(original), "(dirty)") &&
+		!strings.Contains(strings.ToLower(rewritten), "dirty") {
+		return false
+	}
+
+	return true
 }
