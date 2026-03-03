@@ -77,6 +77,13 @@
       "follow_up_min_interval_ms": 2500,
       "keep_alive": "5m"
     },
+    "speechflavor": {
+      "enabled": true,
+      "preserve_tokens": true,
+      "max_tokens": 96,
+      "temperature": 0.6,
+      "timeout_ms": 5000
+    },
     "greeter": {
       "use_greeting_engine": true,
       "enforce_question_greeting": true,

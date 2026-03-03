@@ -55,6 +55,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/playerstate"
 	"github.com/hildolfr/daz/internal/plugins/playlist"
 	"github.com/hildolfr/daz/internal/plugins/retry"
+	"github.com/hildolfr/daz/internal/plugins/speechflavor"
 	"github.com/hildolfr/daz/internal/plugins/sql"
 	"github.com/hildolfr/daz/internal/plugins/usertracker"
 	"github.com/hildolfr/daz/pkg/eventbus"
@@ -263,6 +264,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"update", update.New()},
 		{"playlist", playlist.New()},
 		{"ollama", ollama.New()},
+		{"speechflavor", speechflavor.New()},
 		{"scratchie", scratchie.New()},
 	}
 
@@ -310,6 +312,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["playlist"] = cfg.GetPluginConfig("playlist")
 	pluginConfigs["gallery"] = cfg.GetPluginConfig("gallery")
 	pluginConfigs["ollama"] = cfg.GetPluginConfig("ollama")
+	pluginConfigs["speechflavor"] = cfg.GetPluginConfig("speechflavor")
 	pluginConfigs["scratchie"] = cfg.GetPluginConfig("scratchie")
 	pluginConfigs["update"] = cfg.GetPluginConfig("update")
 	pluginConfigs["signspinning"] = cfg.GetPluginConfig("signspinning")
