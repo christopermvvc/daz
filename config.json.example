@@ -30,6 +30,9 @@
     "eventfilter": {
       "command_prefix": "!"
     },
+    "greeter": {
+      "use_greeting_engine": true
+    },
     "economy": {},
     "pissingcontest": {
       "bot_username": "",

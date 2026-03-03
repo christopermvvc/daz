@@ -114,7 +114,7 @@ func New() framework.Plugin {
 			CooldownMinutes:    30,
 			Enabled:            true,
 			DefaultGreeting:    "Welcome back, %s!",
-			UseGreetingEngine:  false,
+			UseGreetingEngine:  true,
 			EnableFortune:      true,
 			FortuneProbability: 0.50,
 		},
