@@ -128,6 +128,24 @@ func (b *testEventBus) hasPrivateMessage(eventType, username, prefix string) boo
 	return false
 }
 
+func (b *testEventBus) hasMessageContaining(eventType, channel, fragment string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for _, bcast := range b.broadcasts {
+		if bcast.eventType != eventType || bcast.data == nil || bcast.data.RawMessage == nil {
+			continue
+		}
+		if channel != "" && bcast.data.RawMessage.Channel != channel {
+			continue
+		}
+		if strings.Contains(bcast.data.RawMessage.Message, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
 func mkUpdateCommandEvent(username, channel, isPM string) *framework.DataEvent {
 	return &framework.DataEvent{
 		Data: &framework.EventData{
@@ -371,6 +389,9 @@ func TestRunUpdateCycleRestartInterruptionIsNotReportedAsFailure(t *testing.T) {
 	if !bus.hasMessage("cytube.send", "always_always_sunny", "alice: pulled commit new456") {
 		t.Fatalf("expected pull/restart status message")
 	}
+	if !bus.hasMessage("cytube.send", "always_always_sunny", "alice: pulled commit new456 — new subject (build ") {
+		t.Fatalf("expected pull/restart status message to include build duration")
+	}
 	if bus.hasMessage("cytube.send", "always_always_sunny", "alice: Build succeeded for new456, but restart failed:") {
 		t.Fatalf("did not expect false restart failure message for self-restart interruption")
 	}
@@ -428,8 +449,32 @@ func TestRunUpdateCycleRestartFailureStillReported(t *testing.T) {
 
 	p.runUpdateCycle("always_always_sunny", "alice")
 
-	if !bus.hasMessage("cytube.send", "always_always_sunny", "alice: Build succeeded for new456, but restart failed: exit status 4: access denied") {
+	if !bus.hasMessage("cytube.send", "always_always_sunny", "alice: Build (") {
+		t.Fatalf("expected restart failure output to include build duration")
+	}
+	if !bus.hasMessageContaining("cytube.send", "always_always_sunny", "succeeded for new456, but restart failed: exit status 4: access denied") {
 		t.Fatalf("expected concrete restart failure to be reported")
+	}
+}
+
+func TestFormatBuildDuration(t *testing.T) {
+	tests := []struct {
+		name string
+		in   time.Duration
+		want string
+	}{
+		{name: "zero", in: 0, want: "0s"},
+		{name: "milliseconds", in: 345 * time.Millisecond, want: "350ms"},
+		{name: "seconds", in: 1349 * time.Millisecond, want: "1.3s"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatBuildDuration(tt.in)
+			if got != tt.want {
+				t.Fatalf("formatBuildDuration(%v) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
 	}
 }
 

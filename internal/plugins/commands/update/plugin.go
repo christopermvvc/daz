@@ -303,13 +303,16 @@ func (p *Plugin) runUpdateCycle(channel, username string) {
 		return
 	}
 
+	buildStarted := time.Now()
 	if err := p.runCommand(ctx, p.config.RepoPath, p.config.BuildCommand...); err != nil {
 		p.logf("ERROR", "build failed for %s (%s): %v", username, current.short, err)
 		p.sendChat(channel, fmt.Sprintf("%s: Update failed while rebuilding: %v", username, err))
 		return
 	}
+	buildDuration := time.Since(buildStarted)
+	buildDurationText := formatBuildDuration(buildDuration)
 
-	p.sendChat(channel, fmt.Sprintf("%s: pulled commit %s — %s. Restarting daz service now.", username, current.short, current.subj))
+	p.sendChat(channel, fmt.Sprintf("%s: pulled commit %s — %s (build %s). Restarting daz service now.", username, current.short, current.subj, buildDurationText))
 	p.logf("INFO", "update built new commit for %s: %s", username, current.short)
 
 	if err := p.runCommand(ctx, p.config.RepoPath, p.config.RestartCommand...); err != nil {
@@ -318,12 +321,12 @@ func (p *Plugin) runUpdateCycle(channel, username string) {
 			return
 		}
 		p.logf("ERROR", "restart failed for %s after commit %s: %v", username, current.short, err)
-		p.sendChat(channel, fmt.Sprintf("%s: Build succeeded for %s, but restart failed: %v", username, current.short, err))
+		p.sendChat(channel, fmt.Sprintf("%s: Build (%s) succeeded for %s, but restart failed: %v", username, buildDurationText, current.short, err))
 		return
 	}
 
 	p.logf("INFO", "update complete for %s at %s", username, current.short)
-	p.sendChat(channel, fmt.Sprintf("%s: Update complete. Running commit %s — %s", username, current.short, current.subj))
+	p.sendChat(channel, fmt.Sprintf("%s: Update complete in %s build time. Running commit %s — %s", username, buildDurationText, current.short, current.subj))
 }
 
 func (p *Plugin) runUpdateCommand(command []string, dir string, ctx context.Context) error {
@@ -426,6 +429,16 @@ func isExpectedRestartInterruption(err error) bool {
 
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "signal: killed") || strings.Contains(msg, "signal: terminated")
+}
+
+func formatBuildDuration(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	if d < time.Second {
+		return d.Round(10 * time.Millisecond).String()
+	}
+	return d.Round(100 * time.Millisecond).String()
 }
 
 func (p *Plugin) sendChat(channel, message string) {
