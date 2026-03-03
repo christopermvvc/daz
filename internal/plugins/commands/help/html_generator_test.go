@@ -37,7 +37,7 @@ func TestHelpGenerateAllMissingAuth(t *testing.T) {
 		t.Fatalf("GenerateAll() error = %v", err)
 	}
 
-	outputFile := filepath.Join(outputDir, "index.html")
+	outputFile := filepath.Join(outputDir, "help", "index.html")
 	contents, err := os.ReadFile(outputFile)
 	if err != nil {
 		t.Fatalf("expected index.html to be written: %v", err)

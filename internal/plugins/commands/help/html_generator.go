@@ -181,7 +181,10 @@ func (g *HTMLGenerator) GenerateAll(ctx context.Context) error {
 		return err
 	}
 
-	outputFile := filepath.Join(g.config.HTMLOutputPath, "index.html")
+	outputFile := filepath.Join(g.config.HTMLOutputPath, "help", "index.html")
+	if err := os.MkdirAll(filepath.Dir(outputFile), 0755); err != nil {
+		return fmt.Errorf("failed to create help output directory: %w", err)
+	}
 	if err := os.WriteFile(outputFile, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write help HTML: %w", err)
 	}
@@ -412,7 +415,7 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 			return fmt.Errorf("failed to checkout gh-pages: %w", err)
 		}
 	}
-	if _, err := g.runGit(ctx, nil, "add", "."); err != nil {
+	if _, err := g.runGit(ctx, nil, "add", "-A", "help/"); err != nil {
 		return fmt.Errorf("failed to add files: %w", err)
 	}
 	if _, err := g.runGit(ctx, nil, "commit", "-m", "Update help pages"); err != nil {
