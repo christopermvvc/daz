@@ -19,11 +19,14 @@ import (
 )
 
 const (
-	pluginName        = "greeter"
-	defaultCooldown   = 30 * time.Minute
-	greetingQueueSize = 100
-	minGreetingDelay  = 15 * time.Second
-	maxGreetingDelay  = 3 * time.Minute
+	pluginName         = "greeter"
+	defaultCooldown    = 30 * time.Minute
+	greetingQueueSize  = 100
+	minGreetingDelay   = 15 * time.Second
+	maxGreetingDelay   = 3 * time.Minute
+	baseGreetingPrompt = "Create a short, casual one-line welcome greeting for %s. Keep it in character as a laid-back Australian Dazza."
+	followupPromptHint = " Also, ask a follow-up question so the user can answer."
+	questionEndHint    = " End your greeting with a question mark."
 )
 
 // Config holds greeter plugin configuration
@@ -40,6 +43,10 @@ type Config struct {
 	EnableFortune bool `json:"enable_fortune"`
 	// Probability of sending a fortune after a successful greeting (0.0-1.0)
 	FortuneProbability float64 `json:"fortune_probability"`
+	// Require greeting responses to end with a question mark.
+	EnforceQuestionGreeting bool `json:"enforce_question_greeting"`
+	// Enable follow-up mode for generated greetings so users can continue without mention.
+	EnableFollowUpMode bool `json:"enable_follow_up_mode"`
 }
 
 // Plugin implements the greeter functionality
@@ -111,12 +118,14 @@ func New() framework.Plugin {
 		skipProbability:  0.6 + getRandomFloat64()*0.2, // 60-80% skip rate
 		channelJoinTimes: make(map[string]time.Time),
 		config: &Config{
-			CooldownMinutes:    30,
-			Enabled:            true,
-			DefaultGreeting:    "Welcome back, %s!",
-			UseGreetingEngine:  true,
-			EnableFortune:      true,
-			FortuneProbability: 0.20,
+			CooldownMinutes:         30,
+			Enabled:                 true,
+			DefaultGreeting:         "Welcome back, %s!",
+			UseGreetingEngine:       true,
+			EnableFortune:           true,
+			FortuneProbability:      0.20,
+			EnforceQuestionGreeting: true,
+			EnableFollowUpMode:      true,
 		},
 	}
 }
@@ -166,6 +175,12 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 				}
 				if enableFortune, ok := rawConfig["enable_fortune"].(bool); ok {
 					p.config.EnableFortune = enableFortune
+				}
+				if enforceQuestion, ok := rawConfig["enforce_question_greeting"].(bool); ok {
+					p.config.EnforceQuestionGreeting = enforceQuestion
+				}
+				if followUpMode, ok := rawConfig["enable_follow_up_mode"].(bool); ok {
+					p.config.EnableFollowUpMode = followUpMode
 				}
 				if fortuneProb, ok := rawConfig["fortune_probability"].(float64); ok {
 					// Validate probability range
@@ -685,6 +700,7 @@ func (p *Plugin) sendGreeting(req *greetingRequest) {
 			}
 		}
 	}
+	greeting = p.ensureQuestionGreeting(greeting)
 
 	// Send the greeting
 	msgData := &framework.EventData{
@@ -766,11 +782,12 @@ func (p *Plugin) getGreetingFromOllama(channel, username string, rank int) strin
 	}
 
 	req := framework.OllamaGenerateRequest{
-		Channel:      channel,
-		Username:     username,
-		Message:      fmt.Sprintf("Create a short, casual one-line welcome greeting for %s. Keep it in character as a laid-back Australian Dazza.", username),
-		ExtraContext: extraContext,
-		MaxTokens:    96,
+		Channel:        channel,
+		Username:       username,
+		Message:        p.buildGreetingPrompt(username),
+		ExtraContext:   extraContext,
+		MaxTokens:      96,
+		EnableFollowUp: p.config.EnableFollowUpMode,
 	}
 
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
@@ -788,7 +805,7 @@ func (p *Plugin) getGreetingFromOllama(channel, username string, rank int) strin
 		return ""
 	}
 
-	return greeting
+	return p.ensureQuestionGreeting(greeting)
 }
 
 // getRandomFloat64 returns a cryptographically secure random float64 in [0, 1)
@@ -803,7 +820,7 @@ func (p *Plugin) getGreetingFromEngine(channel, username string, rank int) strin
 		"channel":  channel,
 		"username": username,
 		"rank":     fmt.Sprintf("%d", rank),
-		"message":  fmt.Sprintf("Create a short, casual one-line welcome greeting for %s. Keep it in character as a laid-back Australian Dazza.", username),
+		"message":  p.buildGreetingPrompt(username),
 	})
 	if err != nil {
 		logger.Warn(p.name, "Failed to build greetingengine request payload: %v", err)
@@ -841,11 +858,43 @@ func (p *Plugin) getGreetingFromEngine(channel, username string, rank int) strin
 	// Extract greeting from response
 	if resp != nil && resp.PluginResponse != nil {
 		if greeting, ok := resp.PluginResponse.Data.KeyValue["greeting"]; ok {
-			return greeting
+			return p.ensureQuestionGreeting(greeting)
 		}
 	}
 
 	return ""
+}
+
+func (p *Plugin) buildGreetingPrompt(username string) string {
+	prompt := fmt.Sprintf(baseGreetingPrompt, username)
+	if p.config.EnforceQuestionGreeting {
+		prompt += questionEndHint
+	}
+	if p.config.EnableFollowUpMode {
+		prompt += followupPromptHint
+	}
+	return prompt
+}
+
+func (p *Plugin) ensureQuestionGreeting(message string) string {
+	message = strings.TrimSpace(message)
+	if !p.config.EnforceQuestionGreeting {
+		return message
+	}
+
+	if message == "" {
+		return message
+	}
+
+	message = strings.TrimRight(message, " \t\r\n")
+	message = strings.TrimRight(message, ".!?;:")
+	message = strings.TrimRight(message, " \t\r\n")
+
+	if strings.HasSuffix(message, "?") {
+		return message
+	}
+
+	return message + "?"
 }
 
 // loadCooldowns loads recent cooldowns from the database

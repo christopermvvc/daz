@@ -19,6 +19,7 @@ type OllamaGenerateRequest struct {
 	IncludeHistory bool              `json:"include_history"`
 	HistoryLimit   int               `json:"history_limit,omitempty"`
 	ExtraContext   map[string]string `json:"extra_context,omitempty"`
+	EnableFollowUp bool              `json:"enable_follow_up"`
 }
 
 // OllamaGenerateResponse is the shared response type for generated text.

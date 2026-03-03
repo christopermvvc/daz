@@ -38,6 +38,8 @@
     },
     "greeter": {
       "use_greeting_engine": true,
+      "enforce_question_greeting": true,
+      "enable_follow_up_mode": true,
       "fortune_probability": 0.20
     },
     "economy": {},

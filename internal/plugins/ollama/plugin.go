@@ -414,6 +414,10 @@ func (p *Plugin) handleGenerateRequest(req *framework.PluginRequest) {
 		return
 	}
 
+	if payload.EnableFollowUp {
+		p.startFollowUpSession(payload.Channel, payload.Username)
+	}
+
 	p.deliverGenerateResponse(req, strings.TrimSpace(response), model)
 }
 
@@ -897,6 +901,18 @@ func (p *Plugin) hasActiveFollowUpSession(channel, username string, now time.Tim
 
 func (p *Plugin) setFollowUpSession(channel, username string) {
 	if p.config == nil || !p.config.FollowUpEnabled {
+		return
+	}
+
+	p.startFollowUpSession(channel, username)
+}
+
+func (p *Plugin) startFollowUpSession(channel, username string) {
+	if channel == "" || username == "" {
+		return
+	}
+
+	if p.config == nil {
 		return
 	}
 
