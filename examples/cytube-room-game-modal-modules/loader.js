@@ -10,7 +10,6 @@
   const current = document.currentScript;
   const base = current && current.src ? current.src.replace(/[^/]+$/, '') : '';
   const moduleUrl = `${base}ui/bootstrap.mjs`;
-  const legacyUrl = `${base}../cytube-room-game-modal.js`;
   const MODULE_READY_TIMEOUT_MS = 6500;
   const MODULE_LOAD_TIMEOUT_MS = 5000;
   const ERROR_CLEAR_DELAY_MS = 4000;
@@ -103,33 +102,13 @@
     ]);
   }
 
-  function loadLegacyFallback() {
-    if (!legacyUrl) {
-      throw new Error('daz game modal: unable to resolve legacy fallback URL');
-    }
-    appendStatus('daz game modal: using legacy fallback...');
-    return Promise.race([
-      loadScript(legacyUrl, 'text/javascript'),
-      waitFor(() => false, MODULE_READY_TIMEOUT_MS, `daz game modal: legacy script timeout (${legacyUrl})`),
-    ]);
-  }
-
   function hasModalReady() {
     return !!document.getElementById('daz-game-modal-root') || !!window.__dazGameModalActive;
   }
 
   async function bootstrap() {
     if (!supportsModules) {
-      appendStatus('daz game modal: module scripts unsupported in this browser, using legacy', true);
-      try {
-        await loadLegacyFallback();
-        await waitFor(hasModalReady, MODULE_READY_TIMEOUT_MS, 'daz game modal: legacy fallback did not mount');
-        clearStatus();
-      } catch (error) {
-        appendStatusAndError(
-          `daz game modal: legacy fallback failed (${error && error.message ? error.message : 'unknown'})`,
-        );
-      }
+      appendStatus('daz game modal: browser does not support module scripts', true);
       return;
     }
 
@@ -151,16 +130,9 @@
       }
       throw new Error('daz game modal: no modal root after module bootstrap');
     } catch (moduleError) {
-      appendStatus(`daz game modal: module bootstrap failed, fallback to legacy (${moduleError && moduleError.message ? moduleError.message : 'unknown'})`);
-      try {
-        await loadLegacyFallback();
-        await waitFor(hasModalReady, MODULE_READY_TIMEOUT_MS, 'daz game modal: legacy fallback did not mount');
-        setTimeout(clearStatus, 1200);
-      } catch (legacyError) {
-        appendStatusAndError(
-          `daz game modal: legacy fallback failed (${legacyError && legacyError.message ? legacyError.message : 'unknown'})`,
-        );
-      }
+      appendStatusAndError(
+        `daz game modal: module bootstrap failed (${moduleError && moduleError.message ? moduleError.message : 'unknown'})`,
+      );
     }
   }
 
