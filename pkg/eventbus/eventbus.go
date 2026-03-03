@@ -425,7 +425,7 @@ func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
 					eb.handlerWg.Done()
 				}()
 
-				releaseDispatch := eb.acquireDispatchSlot(m.Metadata)
+				releaseDispatch := eb.acquireDispatchSlot(m)
 				defer releaseDispatch()
 				timer := prometheus.NewTimer(metrics.EventProcessingDuration.WithLabelValues(eventType))
 				defer timer.ObserveDuration()
@@ -441,11 +441,38 @@ func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
 	}
 }
 
-func (eb *EventBus) acquireDispatchSlot(metadata *framework.EventMetadata) func() {
+func (eb *EventBus) effectivePriority(msg *eventMessage) int {
 	priority := framework.PriorityNormal
-	if metadata != nil {
-		priority = metadata.Priority
+	if msg != nil && msg.Metadata != nil {
+		priority = msg.Metadata.Priority
 	}
+	if priority > framework.PriorityNormal {
+		return priority
+	}
+	if msg == nil {
+		return priority
+	}
+
+	if strings.HasPrefix(msg.Type, "command.") {
+		return framework.PriorityHigh
+	}
+
+	if msg.Type == "plugin.request" && msg.Data != nil && msg.Data.PluginRequest != nil {
+		req := msg.Data.PluginRequest
+		if req.Type == "execute" && req.From == "eventfilter" {
+			return framework.PriorityHigh
+		}
+	}
+
+	if msg.Type == "cytube.event.chatMsg" || msg.Type == "cytube.event.pm" {
+		return framework.PriorityHigh
+	}
+
+	return priority
+}
+
+func (eb *EventBus) acquireDispatchSlot(msg *eventMessage) func() {
+	priority := eb.effectivePriority(msg)
 
 	// Priority > normal can use reserved high-priority capacity first.
 	if priority > framework.PriorityNormal {
@@ -483,10 +510,7 @@ func (eb *EventBus) acquireDispatchSlot(metadata *framework.EventMetadata) func(
 func (eb *EventBus) acquirePendingDispatchSlot(msg *eventMessage) (func(), bool) {
 	release := func() { <-eb.dispatchPending }
 
-	priority := framework.PriorityNormal
-	if msg != nil && msg.Metadata != nil {
-		priority = msg.Metadata.Priority
-	}
+	priority := eb.effectivePriority(msg)
 
 	if priority > framework.PriorityNormal {
 		select {

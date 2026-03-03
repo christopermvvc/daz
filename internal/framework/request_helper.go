@@ -105,6 +105,35 @@ func newRequestMetrics() *RequestMetrics {
 // requestMetrics is the global metrics instance
 var requestMetrics = newRequestMetrics()
 
+var commandPrioritySources = map[string]struct{}{
+	"about":          {},
+	"bong":           {},
+	"clap":           {},
+	"couchcoins":     {},
+	"eventfilter":    {},
+	"fishing":        {},
+	"fortune":        {},
+	"games":          {},
+	"gitcommit":      {},
+	"help":           {},
+	"insult":         {},
+	"mysterybox":     {},
+	"needs":          {},
+	"oddjob":         {},
+	"ping":           {},
+	"pissingcontest": {},
+	"quote":          {},
+	"random":         {},
+	"remind":         {},
+	"scratchie":      {},
+	"seen":           {},
+	"signspinning":   {},
+	"tell":           {},
+	"update":         {},
+	"uptime":         {},
+	"weather":        {},
+}
+
 // init registers all request metrics
 func init() {
 	prometheus.MustRegister(
@@ -219,6 +248,7 @@ func (h *RequestHelper) requestWithRetry(
 		Target:        target,
 		Timeout:       config.Timeout,
 	}
+	metadata.WithPriority(h.inferRequestPriority(target, eventType, config))
 
 	// Update correlation ID in SQL request data if present
 	// This ensures the SQL plugin uses the same correlation ID that EventBus is tracking
@@ -286,6 +316,41 @@ func (h *RequestHelper) requestWithRetry(
 	// All attempts failed
 	requestMetrics.RequestsFailed.WithLabelValues(target, eventType, config.MetricName).Inc()
 	return nil, fmt.Errorf("request failed after %d attempts: %w", config.MaxRetries+1, lastErr)
+}
+
+func (h *RequestHelper) inferRequestPriority(target string, eventType string, config RequestConfig) int {
+	if target != "sql" {
+		return PriorityNormal
+	}
+
+	// Command and admin paths should not queue behind bulk ingestion and logging traffic.
+	if isCommandPrioritySource(h.source) {
+		return PriorityHigh
+	}
+
+	// Fast SQL requests are generally user-facing and should get elevated dispatch priority.
+	if config.Timeout <= 5*time.Second {
+		return PriorityHigh
+	}
+
+	// Critical SQL requests should prefer urgent dispatch.
+	if config.Timeout > 30*time.Second {
+		return PriorityUrgent
+	}
+
+	return PriorityNormal
+}
+
+func isCommandPrioritySource(source string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(source))
+	if normalized == "" {
+		return false
+	}
+	if strings.HasPrefix(normalized, "command.") || strings.HasPrefix(normalized, "commands.") {
+		return true
+	}
+	_, ok := commandPrioritySources[normalized]
+	return ok
 }
 
 // isRetryableError determines if an error is retryable

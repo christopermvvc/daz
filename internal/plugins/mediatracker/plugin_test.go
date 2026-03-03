@@ -502,6 +502,82 @@ func TestHandlePlaylistEvent_QueuesStagedIngestion(t *testing.T) {
 	}
 }
 
+func TestHandlePlaylistEvent_IgnoresDuplicateFullPayloadWithinWindow(t *testing.T) {
+	p := NewPlugin(nil)
+	bus := newMockEventBus()
+
+	if err := p.Initialize(bus); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	playlist := &framework.PlaylistArrayEvent{
+		CytubeEvent: framework.CytubeEvent{
+			ChannelName: "dupe-channel",
+		},
+		Items: []framework.PlaylistItem{
+			{Position: 0, MediaID: "a1", MediaType: "yt", Title: "A1", Duration: 100, QueuedBy: "u1"},
+			{Position: 1, MediaID: "a2", MediaType: "yt", Title: "A2", Duration: 120, QueuedBy: "u2"},
+		},
+	}
+
+	if err := p.handlePlaylistEvent(playlist); err != nil {
+		t.Fatalf("first handlePlaylistEvent failed: %v", err)
+	}
+
+	p.mu.RLock()
+	firstReq := p.pendingPlaylistIngest["dupe-channel"]
+	p.mu.RUnlock()
+
+	if err := p.handlePlaylistEvent(playlist); err != nil {
+		t.Fatalf("second handlePlaylistEvent failed: %v", err)
+	}
+
+	p.mu.RLock()
+	secondReq, ok := p.pendingPlaylistIngest["dupe-channel"]
+	pendingCount := len(p.pendingPlaylistIngest)
+	p.mu.RUnlock()
+
+	if !ok {
+		t.Fatal("expected staged playlist ingestion to remain queued")
+	}
+	if pendingCount != 1 {
+		t.Fatalf("expected one pending staged ingestion request, got %d", pendingCount)
+	}
+	if !secondReq.enqueued.Equal(firstReq.enqueued) {
+		t.Fatal("expected duplicate full payload to be ignored without replacing queued request")
+	}
+}
+
+func TestEnqueuePlaylistIngest_SkipsIdenticalInFlightPayload(t *testing.T) {
+	p := NewPlugin(nil)
+	bus := newMockEventBus()
+
+	if err := p.Initialize(bus); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	items := []framework.PlaylistItem{
+		{Position: 0, MediaID: "a1", MediaType: "yt", Title: "A1", Duration: 100, QueuedBy: "u1"},
+		{Position: 1, MediaID: "a2", MediaType: "yt", Title: "A2", Duration: 120, QueuedBy: "u2"},
+	}
+
+	signature := playlistSignature(items)
+
+	p.mu.Lock()
+	p.playlistIngestActive["inflight-channel"] = signature
+	p.mu.Unlock()
+
+	p.enqueuePlaylistIngest("inflight-channel", items, "playlist event")
+
+	p.mu.RLock()
+	pendingCount := len(p.pendingPlaylistIngest)
+	p.mu.RUnlock()
+
+	if pendingCount != 0 {
+		t.Fatalf("expected identical in-flight payload to skip enqueue, got %d pending", pendingCount)
+	}
+}
+
 func TestHandlePlaylistEvent_ModificationQueueActionUpdatesQueue(t *testing.T) {
 	p := NewPlugin(nil)
 	bus := newMockEventBus()

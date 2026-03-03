@@ -2,6 +2,7 @@ package framework
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -10,10 +11,12 @@ import (
 
 // testEventBus implements EventBus interface for testing request functionality
 type testEventBus struct {
-	requestCount int
-	shouldFail   bool
-	failCount    int
-	delay        time.Duration
+	requestCount   int
+	shouldFail     bool
+	failCount      int
+	delay          time.Duration
+	lastMetadata   *EventMetadata
+	metadataByType map[string]*EventMetadata
 }
 
 func newTestEventBus() *testEventBus {
@@ -22,6 +25,14 @@ func newTestEventBus() *testEventBus {
 
 func (t *testEventBus) Request(ctx context.Context, target string, eventType string, data *EventData, metadata *EventMetadata) (*EventData, error) {
 	t.requestCount++
+	if metadata != nil {
+		copyMetadata := *metadata
+		t.lastMetadata = &copyMetadata
+		if t.metadataByType == nil {
+			t.metadataByType = make(map[string]*EventMetadata)
+		}
+		t.metadataByType[eventType] = &copyMetadata
+	}
 
 	// Add delay if configured
 	if t.delay > 0 {
@@ -35,6 +46,29 @@ func (t *testEventBus) Request(ctx context.Context, target string, eventType str
 	// Simulate failures
 	if t.shouldFail && t.requestCount <= t.failCount {
 		return nil, errors.New("temporary failure")
+	}
+
+	if eventType == "sql.exec.request" && data != nil && data.SQLExecRequest != nil {
+		return &EventData{
+			SQLExecResponse: &SQLExecResponse{
+				ID:            data.SQLExecRequest.ID,
+				CorrelationID: data.SQLExecRequest.CorrelationID,
+				Success:       true,
+				RowsAffected:  1,
+			},
+		}, nil
+	}
+
+	if eventType == "sql.query.request" && data != nil && data.SQLQueryRequest != nil {
+		return &EventData{
+			SQLQueryResponse: &SQLQueryResponse{
+				ID:            data.SQLQueryRequest.ID,
+				CorrelationID: data.SQLQueryRequest.CorrelationID,
+				Success:       true,
+				Columns:       []string{"value"},
+				Rows:          [][]json.RawMessage{},
+			},
+		}, nil
 	}
 
 	// Return success response
@@ -390,5 +424,73 @@ func TestRequestHelper_MaxRetries(t *testing.T) {
 	expectedRequests := 2
 	if bus.requestCount != expectedRequests {
 		t.Errorf("Expected %d requests, got %d", expectedRequests, bus.requestCount)
+	}
+}
+
+func TestSQLRequestPriority_CommandSourceIsHigh(t *testing.T) {
+	bus := newTestEventBus()
+	helper := NewSQLRequestHelper(bus, "update")
+
+	if _, err := helper.NormalExec(context.Background(), "SELECT 1"); err != nil {
+		t.Fatalf("expected SQL exec to succeed: %v", err)
+	}
+
+	metadata := bus.metadataByType["sql.exec.request"]
+	if metadata == nil {
+		t.Fatal("expected metadata for sql.exec.request")
+	}
+	if metadata.Priority != PriorityHigh {
+		t.Fatalf("expected high priority for command source, got %d", metadata.Priority)
+	}
+}
+
+func TestSQLRequestPriority_BackgroundSourceNormal(t *testing.T) {
+	bus := newTestEventBus()
+	helper := NewSQLRequestHelper(bus, "mediatracker")
+
+	if _, err := helper.NormalQuery(context.Background(), "SELECT 1"); err != nil {
+		t.Fatalf("expected SQL query to succeed: %v", err)
+	}
+
+	metadata := bus.metadataByType["sql.query.request"]
+	if metadata == nil {
+		t.Fatal("expected metadata for sql.query.request")
+	}
+	if metadata.Priority != PriorityNormal {
+		t.Fatalf("expected normal priority for background source, got %d", metadata.Priority)
+	}
+}
+
+func TestSQLRequestPriority_FastRequestsAreHigh(t *testing.T) {
+	bus := newTestEventBus()
+	helper := NewSQLRequestHelper(bus, "mediatracker")
+
+	if _, err := helper.FastQuery(context.Background(), "SELECT 1"); err != nil {
+		t.Fatalf("expected SQL query to succeed: %v", err)
+	}
+
+	metadata := bus.metadataByType["sql.query.request"]
+	if metadata == nil {
+		t.Fatal("expected metadata for sql.query.request")
+	}
+	if metadata.Priority != PriorityHigh {
+		t.Fatalf("expected high priority for fast SQL request, got %d", metadata.Priority)
+	}
+}
+
+func TestSQLRequestPriority_CriticalRequestsAreUrgent(t *testing.T) {
+	bus := newTestEventBus()
+	helper := NewSQLRequestHelper(bus, "mediatracker")
+
+	if _, err := helper.CriticalExec(context.Background(), "SELECT 1"); err != nil {
+		t.Fatalf("expected SQL exec to succeed: %v", err)
+	}
+
+	metadata := bus.metadataByType["sql.exec.request"]
+	if metadata == nil {
+		t.Fatal("expected metadata for sql.exec.request")
+	}
+	if metadata.Priority != PriorityUrgent {
+		t.Fatalf("expected urgent priority for critical SQL request, got %d", metadata.Priority)
 	}
 }

@@ -953,3 +953,101 @@ func TestHandleUserlistJoinQueuesRequests(t *testing.T) {
 		t.Fatalf("expected rank 2, got %d", user.Rank)
 	}
 }
+
+func TestHandleUserListStart_DebouncesDuplicateStarts(t *testing.T) {
+	bus := &MockEventBus{
+		subs: make(map[string][]framework.EventHandler),
+	}
+
+	plugin := &Plugin{
+		name:               "usertracker",
+		eventBus:           bus,
+		sqlClient:          framework.NewSQLClient(bus, "usertracker"),
+		config:             &Config{UserlistDebounceMS: 2000},
+		users:              make(map[string]*UserState),
+		processingUserlist: make(map[string]bool),
+		userlistStartTimes: make(map[string]time.Time),
+		userlistEndTimes:   make(map[string]time.Time),
+	}
+
+	first := &framework.DataEvent{
+		Data: &framework.EventData{
+			RawMessage: &framework.RawMessageData{
+				Message: "10",
+				Channel: "debounce-channel",
+			},
+		},
+	}
+
+	second := &framework.DataEvent{
+		Data: &framework.EventData{
+			RawMessage: &framework.RawMessageData{
+				Message: "10",
+				Channel: "debounce-channel",
+			},
+		},
+	}
+
+	if err := plugin.handleUserListStart(first); err != nil {
+		t.Fatalf("first handleUserListStart failed: %v", err)
+	}
+	if err := plugin.handleUserListStart(second); err != nil {
+		t.Fatalf("second handleUserListStart failed: %v", err)
+	}
+
+	if len(bus.execs) != 1 {
+		t.Fatalf("expected a single deactivate exec for debounced starts, got %d", len(bus.execs))
+	}
+}
+
+func TestHandleUserListEnd_DebouncesDuplicateEnds(t *testing.T) {
+	bus := &MockEventBus{
+		subs: make(map[string][]framework.EventHandler),
+	}
+
+	plugin := &Plugin{
+		name:               "usertracker",
+		eventBus:           bus,
+		sqlClient:          framework.NewSQLClient(bus, "usertracker"),
+		config:             &Config{UserlistDebounceMS: 2000},
+		processingUserlist: map[string]bool{"debounce-channel": true},
+		userlistStartTimes: map[string]time.Time{"debounce-channel": time.Now().UTC()},
+		userlistEndTimes:   make(map[string]time.Time),
+	}
+
+	first := &framework.DataEvent{
+		Data: &framework.EventData{
+			RawMessage: &framework.RawMessageData{
+				Message: "10",
+				Channel: "debounce-channel",
+			},
+		},
+	}
+
+	second := &framework.DataEvent{
+		Data: &framework.EventData{
+			RawMessage: &framework.RawMessageData{
+				Message: "10",
+				Channel: "debounce-channel",
+			},
+		},
+	}
+
+	if err := plugin.handleUserListEnd(first); err != nil {
+		t.Fatalf("first handleUserListEnd failed: %v", err)
+	}
+	if err := plugin.handleUserListEnd(second); err != nil {
+		t.Fatalf("second handleUserListEnd failed: %v", err)
+	}
+
+	if len(bus.execs) != 1 {
+		t.Fatalf("expected a single history exec for debounced ends, got %d", len(bus.execs))
+	}
+
+	plugin.userlistMutex.RLock()
+	processing := plugin.processingUserlist["debounce-channel"]
+	plugin.userlistMutex.RUnlock()
+	if processing {
+		t.Fatal("expected channel to be out of processing state after userlist.end")
+	}
+}

@@ -42,6 +42,8 @@ type Plugin struct {
 
 	// Userlist processing state
 	processingUserlist map[string]bool
+	userlistStartTimes map[string]time.Time
+	userlistEndTimes   map[string]time.Time
 	userlistMutex      sync.RWMutex
 	userlistJoinQueue  chan userlistJoinRequest
 
@@ -63,6 +65,7 @@ type Config struct {
 	// Userlist ingestion throttling
 	UserlistJoinDelayMS  int `json:"userlist_join_delay_ms"`
 	UserlistJoinQueueMax int `json:"userlist_join_queue_max"`
+	UserlistDebounceMS   int `json:"userlist_debounce_ms"`
 }
 
 type userlistJoinRequest struct {
@@ -75,6 +78,7 @@ type userlistJoinRequest struct {
 const (
 	defaultUserlistJoinDelayMS  = 15
 	defaultUserlistJoinQueueMax = 2000
+	defaultUserlistDebounceMS   = 3000
 )
 
 // UserState tracks current state of a user
@@ -94,10 +98,13 @@ func New() framework.Plugin {
 			InactivityTimeout:    30 * time.Minute,
 			UserlistJoinDelayMS:  defaultUserlistJoinDelayMS,
 			UserlistJoinQueueMax: defaultUserlistJoinQueueMax,
+			UserlistDebounceMS:   defaultUserlistDebounceMS,
 		},
 		users:              make(map[string]*UserState),
 		readyChan:          make(chan struct{}),
 		processingUserlist: make(map[string]bool),
+		userlistStartTimes: make(map[string]time.Time),
+		userlistEndTimes:   make(map[string]time.Time),
 		status: framework.PluginStatus{
 			Name:  "usertracker",
 			State: "initialized",
@@ -128,6 +135,7 @@ func NewPlugin(config *Config) *Plugin {
 			InactivityTimeout:    30 * time.Minute,
 			UserlistJoinDelayMS:  defaultUserlistJoinDelayMS,
 			UserlistJoinQueueMax: defaultUserlistJoinQueueMax,
+			UserlistDebounceMS:   defaultUserlistDebounceMS,
 		}
 	}
 
@@ -137,6 +145,8 @@ func NewPlugin(config *Config) *Plugin {
 		users:              make(map[string]*UserState),
 		readyChan:          make(chan struct{}),
 		processingUserlist: make(map[string]bool),
+		userlistStartTimes: make(map[string]time.Time),
+		userlistEndTimes:   make(map[string]time.Time),
 		status: framework.PluginStatus{
 			Name:  "usertracker",
 			State: "initialized",
@@ -180,6 +190,9 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 	if p.config.UserlistJoinQueueMax <= 0 {
 		p.config.UserlistJoinQueueMax = defaultUserlistJoinQueueMax
+	}
+	if p.config.UserlistDebounceMS <= 0 {
+		p.config.UserlistDebounceMS = defaultUserlistDebounceMS
 	}
 
 	p.eventBus = bus
@@ -672,9 +685,29 @@ func (p *Plugin) handleUserListStart(event framework.Event) error {
 
 	channel := dataEvent.Data.RawMessage.Channel
 	userCount := dataEvent.Data.RawMessage.Message
+	now := time.Now().UTC()
+	debounceWindow := time.Duration(p.config.UserlistDebounceMS) * time.Millisecond
 
 	p.userlistMutex.Lock()
+	if p.processingUserlist == nil {
+		p.processingUserlist = make(map[string]bool)
+	}
+	if p.userlistStartTimes == nil {
+		p.userlistStartTimes = make(map[string]time.Time)
+	}
+	if p.userlistEndTimes == nil {
+		p.userlistEndTimes = make(map[string]time.Time)
+	}
+
+	if lastStart, exists := p.userlistStartTimes[channel]; exists && now.Sub(lastStart) < debounceWindow {
+		p.userlistMutex.Unlock()
+		logger.Debug("UserTracker", "Ignoring duplicate userlist.start for channel %s within %v", channel, debounceWindow)
+		return nil
+	}
+
 	p.processingUserlist[channel] = true
+	p.userlistStartTimes[channel] = now
+	delete(p.userlistEndTimes, channel)
 	p.userlistMutex.Unlock()
 
 	logger.Info("UserTracker", "Starting userlist processing for channel %s with %s users", channel, userCount)
@@ -715,9 +748,25 @@ func (p *Plugin) handleUserListEnd(event framework.Event) error {
 
 	channel := dataEvent.Data.RawMessage.Channel
 	userCount := dataEvent.Data.RawMessage.Message
+	now := time.Now().UTC()
+	debounceWindow := time.Duration(p.config.UserlistDebounceMS) * time.Millisecond
 
 	p.userlistMutex.Lock()
+	if p.processingUserlist == nil {
+		p.processingUserlist = make(map[string]bool)
+	}
+	if p.userlistEndTimes == nil {
+		p.userlistEndTimes = make(map[string]time.Time)
+	}
+
+	if lastEnd, exists := p.userlistEndTimes[channel]; exists && now.Sub(lastEnd) < debounceWindow {
+		p.userlistMutex.Unlock()
+		logger.Debug("UserTracker", "Ignoring duplicate userlist.end for channel %s within %v", channel, debounceWindow)
+		return nil
+	}
+
 	delete(p.processingUserlist, channel)
+	p.userlistEndTimes[channel] = now
 	p.userlistMutex.Unlock()
 
 	logger.Info("UserTracker", "Completed userlist processing for channel %s with %s users", channel, userCount)
@@ -731,11 +780,11 @@ func (p *Plugin) handleUserListEnd(event framework.Event) error {
 	// Create proper JSON metadata
 	metadataMap := map[string]interface{}{
 		"user_count_message": userCount,
-		"timestamp":          time.Now().UTC().Format(time.RFC3339),
+		"timestamp":          now.Format(time.RFC3339),
 	}
 	metadataJSON, _ := json.Marshal(metadataMap)
 
-	err := p.sqlClient.Exec(historySQL, channel, time.Now().UTC(), string(metadataJSON))
+	err := p.sqlClient.Exec(historySQL, channel, now, string(metadataJSON))
 	if err != nil {
 		logger.Error("UserTracker", "Error recording userlist sync history: %v", err)
 	}

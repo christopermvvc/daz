@@ -83,3 +83,41 @@ func TestShouldNotDropHighPriorityEvents(t *testing.T) {
 		t.Fatal("did not expect high-priority event to be dropped")
 	}
 }
+
+func TestEffectivePriorityPromotesCommandEvents(t *testing.T) {
+	eb := NewEventBus(&Config{})
+
+	msg := &eventMessage{
+		Type: "command.update.execute",
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				From: "eventfilter",
+				Type: "execute",
+			},
+		},
+		Metadata: framework.NewEventMetadata("test", "command.update.execute"),
+	}
+
+	if got := eb.effectivePriority(msg); got != framework.PriorityHigh {
+		t.Fatalf("expected command event effective priority high, got %d", got)
+	}
+}
+
+func TestEffectivePriorityPromotesEventfilterPluginExecRequests(t *testing.T) {
+	eb := NewEventBus(&Config{})
+
+	msg := &eventMessage{
+		Type: "plugin.request",
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				From: "eventfilter",
+				Type: "execute",
+			},
+		},
+		Metadata: framework.NewEventMetadata("test", "plugin.request"),
+	}
+
+	if got := eb.effectivePriority(msg); got != framework.PriorityHigh {
+		t.Fatalf("expected eventfilter execute request effective priority high, got %d", got)
+	}
+}

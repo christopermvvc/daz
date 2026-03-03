@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/hildolfr/daz/internal/logger"
+	"hash/fnv"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/internal/logger"
 	"github.com/hildolfr/daz/pkg/eventbus"
 )
 
@@ -44,13 +45,15 @@ type Plugin struct {
 
 	// Playlist ingestion queue for staged, throttled startup/reconnect processing
 	pendingPlaylistIngest map[string]playlistIngestRequest
+	playlistIngestActive  map[string]string
 	playlistIngestNotify  chan struct{}
 	startupGraceUntil     time.Time
 }
 
 type playlistInfo struct {
-	time  time.Time
-	count int
+	time      time.Time
+	count     int
+	signature string
 }
 
 // Config holds mediatracker plugin configuration
@@ -76,7 +79,10 @@ type playlistIngestRequest struct {
 	items     []framework.PlaylistItem
 	enqueued  time.Time
 	eventName string
+	signature string
 }
+
+const playlistIngestDedupWindow = 15 * time.Second
 
 // MediaState tracks current media playing
 type MediaState struct {
@@ -114,6 +120,7 @@ func New() framework.Plugin {
 		lastPlaylistInfo:         make(map[string]*playlistInfo),
 		pendingSetCurrentIndexes: make(map[string]int),
 		pendingPlaylistIngest:    make(map[string]playlistIngestRequest),
+		playlistIngestActive:     make(map[string]string),
 		playlistIngestNotify:     make(chan struct{}, 1),
 	}
 }
@@ -160,6 +167,7 @@ func NewPlugin(config *Config) *Plugin {
 		lastPlaylistInfo:         make(map[string]*playlistInfo),
 		pendingSetCurrentIndexes: make(map[string]int),
 		pendingPlaylistIngest:    make(map[string]playlistIngestRequest),
+		playlistIngestActive:     make(map[string]string),
 		playlistIngestNotify:     make(chan struct{}, 1),
 	}
 }
@@ -1383,6 +1391,7 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 			logger.Warn("MediaTracker", "Skipping playlist event without channel information")
 			return nil
 		}
+		signature := playlistSignature(playlistArray.Items)
 
 		p.mu.Lock()
 		if p.lastPlaylistInfo == nil {
@@ -1390,17 +1399,23 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 		}
 
 		if lastInfo, exists := p.lastPlaylistInfo[channel]; exists {
-			if time.Since(lastInfo.time) < 2*time.Second && lastInfo.count == len(playlistArray.Items) {
+			if time.Since(lastInfo.time) < playlistIngestDedupWindow && lastInfo.signature == signature {
 				p.mu.Unlock()
-				logger.Debug("MediaTracker", "Ignoring duplicate playlist event for channel %s (%d items, %v since last)",
-					channel, len(playlistArray.Items), time.Since(lastInfo.time))
+				logger.Debug(
+					"MediaTracker",
+					"Ignoring duplicate playlist event for channel %s (%d items, %v since last)",
+					channel,
+					len(playlistArray.Items),
+					time.Since(lastInfo.time),
+				)
 				return nil
 			}
 		}
 
 		p.lastPlaylistInfo[channel] = &playlistInfo{
-			time:  time.Now(),
-			count: len(playlistArray.Items),
+			time:      time.Now(),
+			count:     len(playlistArray.Items),
+			signature: signature,
 		}
 		p.mu.Unlock()
 
@@ -1489,17 +1504,32 @@ func (p *Plugin) enqueuePlaylistIngest(channel string, items []framework.Playlis
 	// Copy to avoid retaining/reusing slices owned by Cytube event structs.
 	itemCopy := make([]framework.PlaylistItem, len(items))
 	copy(itemCopy, items)
+	signature := playlistSignature(itemCopy)
 
 	req := playlistIngestRequest{
 		channel:   channel,
 		items:     itemCopy,
 		enqueued:  time.Now(),
 		eventName: eventName,
+		signature: signature,
 	}
 
 	p.mu.Lock()
 	if p.pendingPlaylistIngest == nil {
 		p.pendingPlaylistIngest = make(map[string]playlistIngestRequest)
+	}
+	if p.playlistIngestActive == nil {
+		p.playlistIngestActive = make(map[string]string)
+	}
+	if activeSignature, active := p.playlistIngestActive[channel]; active && activeSignature == signature {
+		p.mu.Unlock()
+		logger.Debug("MediaTracker", "Skipping staged playlist ingestion enqueue for channel %s: identical payload already in-flight", channel)
+		return
+	}
+	if pending, exists := p.pendingPlaylistIngest[channel]; exists && pending.signature == signature {
+		p.mu.Unlock()
+		logger.Debug("MediaTracker", "Skipping staged playlist ingestion enqueue for channel %s: identical payload already queued", channel)
+		return
 	}
 	p.pendingPlaylistIngest[channel] = req
 	pendingCount := len(p.pendingPlaylistIngest)
@@ -1555,6 +1585,26 @@ func (p *Plugin) processPlaylistIngest(req playlistIngestRequest) {
 	if req.channel == "" {
 		return
 	}
+	if req.signature == "" {
+		req.signature = playlistSignature(req.items)
+	}
+
+	p.mu.Lock()
+	if p.playlistIngestActive == nil {
+		p.playlistIngestActive = make(map[string]string)
+	}
+	if activeSignature, active := p.playlistIngestActive[req.channel]; active && activeSignature == req.signature {
+		p.mu.Unlock()
+		logger.Debug("MediaTracker", "Skipping duplicate staged playlist ingestion already active for channel %s", req.channel)
+		return
+	}
+	p.playlistIngestActive[req.channel] = req.signature
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		delete(p.playlistIngestActive, req.channel)
+		p.mu.Unlock()
+	}()
 
 	start := time.Now()
 	totalItems := len(req.items)
@@ -1697,6 +1747,21 @@ func toPlaylistItems(items []framework.QueueItem) []framework.PlaylistItem {
 		})
 	}
 	return result
+}
+
+func playlistSignature(items []framework.PlaylistItem) string {
+	hasher := fnv.New64a()
+	for _, item := range items {
+		_, _ = hasher.Write([]byte(item.UID))
+		_, _ = hasher.Write([]byte{0})
+		_, _ = hasher.Write([]byte(strconv.Itoa(item.Position)))
+		_, _ = hasher.Write([]byte{0})
+		_, _ = hasher.Write([]byte(item.MediaID))
+		_, _ = hasher.Write([]byte{0})
+		_, _ = hasher.Write([]byte(item.MediaType))
+		_, _ = hasher.Write([]byte{0})
+	}
+	return fmt.Sprintf("%d:%x", len(items), hasher.Sum64())
 }
 
 func toQueueItems(items []framework.PlaylistItem) []framework.QueueItem {
