@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -543,6 +544,115 @@ func TestProcessQueueUpdate_Full_QueuesStagedIngestion(t *testing.T) {
 	bus.mu.Unlock()
 	if execCalls != 0 {
 		t.Fatalf("expected no immediate SQL execs for full queue update, got %d", execCalls)
+	}
+}
+
+func TestProcessPlaylistIngest_PhasedSQLWrites(t *testing.T) {
+	p := NewPlugin(&Config{
+		StatsUpdateInterval:     5 * time.Minute,
+		PlaylistIngestBatchSize: 2,
+		PlaylistIngestPauseMS:   0,
+		PlaylistPhase2DelayMS:   0,
+	})
+	bus := newMockEventBus()
+
+	if err := p.Initialize(bus); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	req := playlistIngestRequest{
+		channel: "phase-channel",
+		items: []framework.PlaylistItem{
+			{Position: 0, MediaID: "p1", MediaType: "yt", Title: "P1", Duration: 100, QueuedBy: "u1"},
+			{Position: 1, MediaID: "p2", MediaType: "yt", Title: "P2", Duration: 110, QueuedBy: "u2"},
+			{Position: 2, MediaID: "p3", MediaType: "yt", Title: "P3", Duration: 120, QueuedBy: "u3"},
+		},
+		eventName: "playlist event",
+		enqueued:  time.Now(),
+	}
+
+	p.processPlaylistIngest(req)
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+
+	deleteQueueCount := 0
+	queueInsertCount := 0
+	libraryInsertCount := 0
+	for _, q := range bus.execCalls {
+		if strings.Contains(q, "DELETE FROM daz_mediatracker_queue") {
+			deleteQueueCount++
+		}
+		if strings.Contains(q, "INSERT INTO daz_mediatracker_queue") {
+			queueInsertCount++
+		}
+		if strings.Contains(q, "INSERT INTO daz_mediatracker_library") {
+			libraryInsertCount++
+		}
+	}
+
+	if deleteQueueCount != 1 {
+		t.Fatalf("expected 1 queue delete in phase 1, got %d", deleteQueueCount)
+	}
+	// 3 items with batch size 2 => 2 queue inserts, then 2 library inserts.
+	if queueInsertCount != 2 {
+		t.Fatalf("expected 2 queue batch inserts, got %d", queueInsertCount)
+	}
+	if libraryInsertCount != 2 {
+		t.Fatalf("expected 2 library batch inserts, got %d", libraryInsertCount)
+	}
+}
+
+func TestPlaylistIngestWorker_ProcessesCoalescedLatestPayload(t *testing.T) {
+	p := NewPlugin(&Config{
+		StatsUpdateInterval:     5 * time.Minute,
+		PlaylistIngestBatchSize: 2,
+		PlaylistIngestPauseMS:   0,
+		PlaylistPhase2DelayMS:   0,
+	})
+	bus := newMockEventBus()
+
+	if err := p.Initialize(bus); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Queue two payloads for the same channel before worker starts.
+	// The second should replace the first in pendingPlaylistIngest.
+	p.enqueuePlaylistIngest("worker-channel", []framework.PlaylistItem{
+		{Position: 0, MediaID: "old", MediaType: "yt", Title: "Old", Duration: 90, QueuedBy: "u1"},
+	}, "playlist event")
+	p.enqueuePlaylistIngest("worker-channel", []framework.PlaylistItem{
+		{Position: 0, MediaID: "new1", MediaType: "yt", Title: "New1", Duration: 91, QueuedBy: "u1"},
+		{Position: 1, MediaID: "new2", MediaType: "yt", Title: "New2", Duration: 92, QueuedBy: "u2"},
+		{Position: 2, MediaID: "new3", MediaType: "yt", Title: "New3", Duration: 93, QueuedBy: "u3"},
+	}, "playlist event")
+
+	p.wg.Add(1)
+	go p.runPlaylistIngestWorker()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		bus.mu.Lock()
+		execCount := len(bus.execCalls)
+		bus.mu.Unlock()
+		// 3 items, batch size 2 => 1 delete + 2 queue inserts + 2 library inserts
+		if execCount >= 5 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for worker ingestion, only saw %d SQL exec calls", execCount)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	p.cancel()
+	p.wg.Wait()
+
+	p.mu.RLock()
+	pending := len(p.pendingPlaylistIngest)
+	p.mu.RUnlock()
+	if pending != 0 {
+		t.Fatalf("expected worker to drain pending playlist ingest map, got %d entries", pending)
 	}
 }
 
