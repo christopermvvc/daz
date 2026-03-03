@@ -3,7 +3,7 @@
 
   const MIN_NEED = 0;
   const MAX_NEED = 100;
-  const NEED_SEGMENTS = 8;
+  const NEED_SEGMENTS = 5;
 
   function clampNeed(value) {
     const parsed = Number.parseInt(value, 10);
@@ -21,7 +21,7 @@
       if (meter) {
         const segments = Math.round((value / MAX_NEED) * NEED_SEGMENTS);
         const filled = Math.max(0, Math.min(NEED_SEGMENTS, segments));
-        meter.textContent = `${'🟢'.repeat(filled)}${'⚪'.repeat(Math.max(0, NEED_SEGMENTS - filled))}`;
+        meter.textContent = `${'🟢'.repeat(filled)}${'⬜'.repeat(Math.max(0, NEED_SEGMENTS - filled))}`;
       }
     });
   }

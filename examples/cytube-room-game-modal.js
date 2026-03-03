@@ -407,9 +407,9 @@
         return;
       }
       const value = clamp(rawValue, MIN_NEED, MAX_NEED);
-      const segmentCount = 8;
+      const segmentCount = 5;
       const filled = Math.round((value / MAX_NEED) * segmentCount);
-      meter.textContent = `${'🟢'.repeat(Math.max(0, filled))}${'⚪'.repeat(Math.max(0, segmentCount - filled))}`;
+      meter.textContent = `${'🟢'.repeat(Math.max(0, filled))}${'⬜'.repeat(Math.max(0, segmentCount - filled))}`;
     });
   }
 

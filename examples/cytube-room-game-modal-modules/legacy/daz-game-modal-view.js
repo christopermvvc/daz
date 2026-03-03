@@ -175,7 +175,7 @@
       .daz-game-need-row {
         display: flex;
         align-items: center;
-        justify-content: space-between;
+        justify-content: flex-start;
         gap: 6px;
         min-height: 14px;
       }
@@ -190,17 +190,23 @@
 
       .daz-game-need-meter {
         font-size: 9px;
-        letter-spacing: 1px;
+        letter-spacing: 0;
         line-height: 1.1;
         color: #d4af37;
-        text-align: right;
+        text-align: left;
         min-height: 10px;
-        min-width: 60px;
-        flex: 1 1 auto;
+        width: 34px;
+        min-width: 34px;
+        max-width: 34px;
+        flex: 0 0 auto;
         color: #a08050;
         white-space: nowrap;
         overflow: hidden;
-        padding-left: 6px;
+        padding-left: 2px;
+      }
+
+      .daz-game-need-meter i {
+        font-style: normal;
       }
 
       .daz-game-buff-list {
@@ -355,23 +361,23 @@
               <div class="daz-game-needs-grid">
                 <div class="daz-game-need-row">
                   <span class="daz-game-need-emoji">💧</span>
-                  <span class="daz-game-need-meter" id="daz-modal-need-bladder-meter" aria-hidden="true">• • •</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-bladder-meter" aria-hidden="true">🟢⬜⬜⬜⬜</span>
                 </div>
                 <div class="daz-game-need-row">
                   <span class="daz-game-need-emoji">🍺</span>
-                  <span class="daz-game-need-meter" id="daz-modal-need-alcohol-meter" aria-hidden="true">• • •</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-alcohol-meter" aria-hidden="true">🟢⬜⬜⬜⬜</span>
                 </div>
                 <div class="daz-game-need-row">
                   <span class="daz-game-need-emoji">🌿</span>
-                  <span class="daz-game-need-meter" id="daz-modal-need-weed-meter" aria-hidden="true">• • •</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-weed-meter" aria-hidden="true">🟢⬜⬜⬜⬜</span>
                 </div>
                 <div class="daz-game-need-row">
                   <span class="daz-game-need-emoji">🍗</span>
-                  <span class="daz-game-need-meter" id="daz-modal-need-food-meter" aria-hidden="true">• • •</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-food-meter" aria-hidden="true">🟢⬜⬜⬜⬜</span>
                 </div>
                 <div class="daz-game-need-row">
                   <span class="daz-game-need-emoji">💘</span>
-                  <span class="daz-game-need-meter" id="daz-modal-need-lust-meter" aria-hidden="true">• • •</span>
+                  <span class="daz-game-need-meter" id="daz-modal-need-lust-meter" aria-hidden="true">🟢⬜⬜⬜⬜</span>
                 </div>
               </div>
             </section>
