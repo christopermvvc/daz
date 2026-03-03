@@ -1,6 +1,8 @@
 package wsbridge
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -263,5 +265,96 @@ func TestResolveBalanceQueryAdminCanOverrideUser(t *testing.T) {
 	}
 	if username != "bob" {
 		t.Fatalf("expected overridden username bob, got %q", username)
+	}
+}
+
+func TestMapEconomyErrorToWSError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		err         error
+		wantCode    string
+		wantMessage string
+	}{
+		{
+			name: "invalid argument",
+			err: &framework.EconomyError{
+				ErrorCode: "INVALID_ARGUMENT",
+				Message:   "channel is required",
+			},
+			wantCode:    "BAD_REQUEST",
+			wantMessage: "channel is required",
+		},
+		{
+			name: "db unavailable",
+			err: &framework.EconomyError{
+				ErrorCode: "DB_UNAVAILABLE",
+				Message:   "db down",
+			},
+			wantCode:    "BACKEND_UNAVAILABLE",
+			wantMessage: "balance service unavailable",
+		},
+		{
+			name: "unknown economy",
+			err: &framework.EconomyError{
+				ErrorCode: "SOMETHING_ELSE",
+				Message:   "oops",
+			},
+			wantCode:    "BACKEND_ERROR",
+			wantMessage: "balance lookup failed",
+		},
+		{
+			name:        "generic error",
+			err:         errors.New("boom"),
+			wantCode:    "BACKEND_ERROR",
+			wantMessage: "balance lookup failed",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gotCode, gotMessage := mapEconomyErrorToWSError(tc.err)
+			if gotCode != tc.wantCode || gotMessage != tc.wantMessage {
+				t.Fatalf("mapEconomyErrorToWSError() = (%q, %q), want (%q, %q)", gotCode, gotMessage, tc.wantCode, tc.wantMessage)
+			}
+		})
+	}
+}
+
+func TestHandleInboundEconomyBackendUnavailableErrorCode(t *testing.T) {
+	t.Parallel()
+
+	p := New().(*Plugin)
+	p.config.DefaultChannel = "always_always_sunny"
+	client := &clientState{
+		profile: authProfile{
+			Username: "alice",
+			Admin:    false,
+			Channels: map[string]struct{}{"always_always_sunny": {}},
+		},
+	}
+	payload, err := json.Marshal(economyBalancePayload{})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	err = p.handleInbound(client, inboundEnvelope{
+		ID:      "req-1",
+		Type:    "economy.get_balance",
+		Payload: payload,
+	})
+	if err == nil {
+		t.Fatal("expected inbound error")
+	}
+
+	var inboundErr *wsInboundError
+	if !errors.As(err, &inboundErr) {
+		t.Fatalf("expected wsInboundError, got %T", err)
+	}
+	if inboundErr.code != "BACKEND_UNAVAILABLE" {
+		t.Fatalf("expected BACKEND_UNAVAILABLE, got %q", inboundErr.code)
 	}
 }

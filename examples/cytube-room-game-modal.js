@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const LOADER_BUILD_ID = 'dd60d6c-live-balance-v1';
+  const LOADER_BUILD_ID = '8849a35-live-balance-v2';
   const LOADER_SOURCE = (() => {
     const current = document.currentScript;
     return current && current.src ? current.src : 'inline-or-unknown';
@@ -19,12 +19,23 @@
   }
 
   const priorBuild = window.__dazGameModalBuild || null;
-  if (priorBuild && priorBuild !== LOADER_BUILD_ID && existingRoot) {
+  if (priorBuild && priorBuild !== LOADER_BUILD_ID) {
+    if (typeof window.__dazGameModalCleanup === 'function') {
+      try {
+        window.__dazGameModalCleanup({ removeRoot: true, reason: 'build-replace' });
+      } catch (err) {
+        // Ignore stale cleanup failures and continue with replacement.
+      }
+    }
+
     console.warn('[daz-game-modal] replacing older build', {
       previousBuild: priorBuild,
       nextBuild: LOADER_BUILD_ID,
     });
-    existingRoot.remove();
+    const staleRoot = document.getElementById('daz-game-modal-root');
+    if (staleRoot) {
+      staleRoot.remove();
+    }
   }
 
   window.__dazGameModalActive = true;
@@ -73,6 +84,8 @@
   const WS_URL_STORAGE_KEY = 'daz-wsbridge-url-v1';
   const WS_QUERY_TOKEN_KEY = 'daz_ws_token';
   const WS_QUERY_URL_KEY = 'daz_ws_url';
+  const WS_QUERY_HOST_KEY = 'daz_ws_host';
+  const WS_RUNTIME_HOST_KEY = '__DAZ_WSBRIDGE_HOST';
   const WS_DEFAULT_PORT = '8091';
   const WS_DEFAULT_PATH = '/ws';
   const WS_REQUEST_TIMEOUT_MS = 7000;
@@ -124,6 +137,9 @@
     periodicRefreshTimer: null,
     balanceInFlight: false,
   };
+
+  let boundRoot = null;
+  let isDestroyed = false;
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -661,6 +677,35 @@
     return readStorageString(WS_TOKEN_STORAGE_KEY);
   }
 
+  function parseHostFromURL(rawURL) {
+    if (!rawURL || typeof rawURL !== 'string') {
+      return '';
+    }
+    try {
+      const parsed = new URL(rawURL, window.location.href);
+      return parsed.hostname ? parsed.hostname.trim() : '';
+    } catch (err) {
+      return '';
+    }
+  }
+
+  function isBlockedDefaultHost(hostname) {
+    const host = (hostname || '').trim().toLowerCase();
+    if (!host) {
+      return true;
+    }
+
+    const blockedSuffixes = [
+      'cytu.be',
+      'github.io',
+      'github.com',
+      'githubusercontent.com',
+      'raw.githubusercontent.com',
+    ];
+
+    return blockedSuffixes.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+  }
+
   function resolveWsBridgeBaseURL() {
     const runtimeURL = typeof window.__DAZ_WSBRIDGE_URL === 'string'
       ? window.__DAZ_WSBRIDGE_URL.trim()
@@ -679,23 +724,33 @@
       return storedURL;
     }
 
-    let host = '';
-    try {
-      if (LOADER_SOURCE && LOADER_SOURCE !== 'inline-or-unknown') {
-        host = new URL(LOADER_SOURCE, window.location.href).hostname;
-      }
-    } catch (err) {
-      host = '';
+    const runtimeHost = typeof window[WS_RUNTIME_HOST_KEY] === 'string'
+      ? window[WS_RUNTIME_HOST_KEY].trim()
+      : '';
+    if (runtimeHost) {
+      return `ws://${runtimeHost}:${WS_DEFAULT_PORT}${WS_DEFAULT_PATH}`;
     }
 
-    if (!host && window.location && window.location.hostname) {
-      host = window.location.hostname;
-    }
-    if (!host) {
-      return '';
+    const queryHost = parseQueryStringValue(WS_QUERY_HOST_KEY);
+    if (queryHost) {
+      return `ws://${queryHost}:${WS_DEFAULT_PORT}${WS_DEFAULT_PATH}`;
     }
 
-    return `ws://${host}:${WS_DEFAULT_PORT}${WS_DEFAULT_PATH}`;
+    const loaderHost = LOADER_SOURCE && LOADER_SOURCE !== 'inline-or-unknown'
+      ? parseHostFromURL(LOADER_SOURCE)
+      : '';
+    if (loaderHost && !isBlockedDefaultHost(loaderHost)) {
+      return `ws://${loaderHost}:${WS_DEFAULT_PORT}${WS_DEFAULT_PATH}`;
+    }
+
+    const pageHost = window.location && typeof window.location.hostname === 'string'
+      ? window.location.hostname.trim()
+      : '';
+    if (pageHost && !isBlockedDefaultHost(pageHost)) {
+      return `ws://${pageHost}:${WS_DEFAULT_PORT}${WS_DEFAULT_PATH}`;
+    }
+
+    return '';
   }
 
   function resolveWsBridgeURL() {
@@ -780,6 +835,9 @@
   }
 
   function requestLiveBalance(reason) {
+    if (isDestroyed) {
+      return;
+    }
     if (wsState.balanceInFlight) {
       return;
     }
@@ -819,6 +877,9 @@
   }
 
   function scheduleWsReconnect() {
+    if (isDestroyed) {
+      return;
+    }
     if (wsState.reconnectTimer) {
       return;
     }
@@ -831,6 +892,9 @@
   }
 
   function onWsBridgeMessage(event) {
+    if (isDestroyed) {
+      return;
+    }
     if (!event || typeof event.data !== 'string' || !event.data) {
       return;
     }
@@ -876,6 +940,9 @@
   }
 
   function connectWsBridge() {
+    if (isDestroyed) {
+      return;
+    }
     const resolved = resolveWsBridgeURL();
     if (!resolved.token) {
       setCurrencyNote('Live balance offline (missing ws token)');
@@ -948,6 +1015,9 @@
   }
 
   function ensureBalanceRefreshLoop() {
+    if (isDestroyed) {
+      return;
+    }
     if (wsState.periodicRefreshTimer) {
       return;
     }
@@ -961,6 +1031,9 @@
   }
 
   function handleVisibilityRefresh() {
+    if (isDestroyed) {
+      return;
+    }
     if (document.visibilityState === 'visible') {
       requestLiveBalance('visibility');
     }
@@ -1358,6 +1431,7 @@
   function bindEvents() {
     const root = document.getElementById('daz-game-modal-root');
     if (!root) return;
+    boundRoot = root;
     root.addEventListener('click', onClick, true);
     root.addEventListener('mousedown', onMouseDown);
     root.addEventListener('touchstart', onMouseDown);
@@ -1366,6 +1440,46 @@
     document.addEventListener('visibilitychange', handleVisibilityRefresh);
     window.addEventListener('pagehide', flushStateNow);
     window.addEventListener('beforeunload', flushStateNow);
+  }
+
+  function unbindEvents() {
+    if (boundRoot) {
+      boundRoot.removeEventListener('click', onClick, true);
+      boundRoot.removeEventListener('mousedown', onMouseDown);
+      boundRoot.removeEventListener('touchstart', onMouseDown);
+      boundRoot = null;
+    }
+    window.removeEventListener('resize', applyGeometry);
+    window.removeEventListener('orientationchange', applyGeometry);
+    document.removeEventListener('visibilitychange', handleVisibilityRefresh);
+    window.removeEventListener('pagehide', flushStateNow);
+    window.removeEventListener('beforeunload', flushStateNow);
+  }
+
+  function cleanupModal(options) {
+    const opts = options && typeof options === 'object' ? options : {};
+    isDestroyed = true;
+    onInteractionStop();
+    flushStateNow();
+    unbindEvents();
+
+    if (wsState.periodicRefreshTimer) {
+      window.clearInterval(wsState.periodicRefreshTimer);
+      wsState.periodicRefreshTimer = null;
+    }
+
+    resetWsBridgeConnection();
+
+    if (opts.removeRoot) {
+      const root = document.getElementById('daz-game-modal-root');
+      if (root) {
+        root.remove();
+      }
+    }
+
+    if (window.__dazGameModalBuild === LOADER_BUILD_ID) {
+      window.__dazGameModalActive = false;
+    }
   }
 
   function maybeInjectStyles() {
@@ -1432,6 +1546,8 @@
       throw err;
     }
   }
+
+  window.__dazGameModalCleanup = cleanupModal;
 
   bootstrap();
 })();

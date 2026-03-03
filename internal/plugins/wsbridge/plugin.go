@@ -3,6 +3,7 @@ package wsbridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -108,6 +109,22 @@ type outboundEnvelope struct {
 type wsMessage struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+type wsInboundError struct {
+	code    string
+	message string
+}
+
+func (e *wsInboundError) Error() string {
+	return e.message
+}
+
+func newWSInboundError(code, message string) error {
+	return &wsInboundError{
+		code:    strings.TrimSpace(code),
+		message: strings.TrimSpace(message),
+	}
 }
 
 type subscribePayload struct {
@@ -504,7 +521,22 @@ func (p *Plugin) readPump(client *clientState) {
 		}
 
 		if err := p.handleInbound(client, envelope); err != nil {
-			p.sendError(client, envelope.ID, "BAD_REQUEST", err.Error())
+			var inboundErr *wsInboundError
+			if errors.As(err, &inboundErr) && inboundErr != nil {
+				code := strings.TrimSpace(inboundErr.code)
+				if code == "" {
+					code = "BAD_REQUEST"
+				}
+				msg := strings.TrimSpace(inboundErr.message)
+				if msg == "" {
+					msg = "request failed"
+				}
+				p.sendError(client, envelope.ID, code, msg)
+				continue
+			}
+
+			logger.Error(p.name, "inbound handling failed: %v", err)
+			p.sendError(client, envelope.ID, "INTERNAL", "internal error")
 		}
 	}
 }
@@ -517,18 +549,18 @@ func (p *Plugin) handleInbound(client *clientState, envelope inboundEnvelope) er
 	case "subscribe":
 		var payload subscribePayload
 		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-			return fmt.Errorf("invalid subscribe payload")
+			return newWSInboundError("BAD_REQUEST", "invalid subscribe payload")
 		}
 		topics, err := p.subscribe(client, payload.Topics)
 		if err != nil {
-			return err
+			return newWSInboundError("BAD_REQUEST", err.Error())
 		}
 		p.sendAck(client, envelope.ID, map[string]any{"topics": topics})
 		return nil
 	case "unsubscribe":
 		var payload subscribePayload
 		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-			return fmt.Errorf("invalid unsubscribe payload")
+			return newWSInboundError("BAD_REQUEST", "invalid unsubscribe payload")
 		}
 		topics := p.unsubscribe(client, payload.Topics)
 		p.sendAck(client, envelope.ID, map[string]any{"topics": topics})
@@ -536,11 +568,11 @@ func (p *Plugin) handleInbound(client *clientState, envelope inboundEnvelope) er
 	case "command.execute":
 		var payload commandPayload
 		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-			return fmt.Errorf("invalid command payload")
+			return newWSInboundError("BAD_REQUEST", "invalid command payload")
 		}
 		channel, err := p.dispatchCommand(client, envelope.ID, payload)
 		if err != nil {
-			return err
+			return newWSInboundError("BAD_REQUEST", err.Error())
 		}
 		p.sendAck(client, envelope.ID, map[string]any{
 			"accepted": true,
@@ -550,7 +582,7 @@ func (p *Plugin) handleInbound(client *clientState, envelope inboundEnvelope) er
 	case "economy.get_balance":
 		var payload economyBalancePayload
 		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-			return fmt.Errorf("invalid economy.get_balance payload")
+			return newWSInboundError("BAD_REQUEST", "invalid economy.get_balance payload")
 		}
 		result, err := p.handleEconomyGetBalance(client, payload)
 		if err != nil {
@@ -559,18 +591,18 @@ func (p *Plugin) handleInbound(client *clientState, envelope inboundEnvelope) er
 		p.sendAck(client, envelope.ID, result)
 		return nil
 	default:
-		return fmt.Errorf("unsupported message type %q", envelope.Type)
+		return newWSInboundError("BAD_REQUEST", fmt.Sprintf("unsupported message type %q", envelope.Type))
 	}
 }
 
 func (p *Plugin) handleEconomyGetBalance(client *clientState, payload economyBalancePayload) (map[string]any, error) {
 	channel, username, err := p.resolveBalanceQuery(client, payload)
 	if err != nil {
-		return nil, err
+		return nil, newWSInboundError("BAD_REQUEST", err.Error())
 	}
 
 	if p.economy == nil {
-		return nil, fmt.Errorf("economy client unavailable")
+		return nil, newWSInboundError("BACKEND_UNAVAILABLE", "balance service unavailable")
 	}
 
 	ctx := context.Background()
@@ -582,7 +614,9 @@ func (p *Plugin) handleEconomyGetBalance(client *clientState, payload economyBal
 
 	balance, err := p.economy.GetBalance(reqCtx, channel, username)
 	if err != nil {
-		return nil, fmt.Errorf("get balance: %w", err)
+		code, message := mapEconomyErrorToWSError(err)
+		logger.Warn(p.name, "economy.get_balance failed for %s/%s: %v", channel, username, err)
+		return nil, newWSInboundError(code, message)
 	}
 
 	return map[string]any{
@@ -614,6 +648,36 @@ func (p *Plugin) resolveBalanceQuery(client *clientState, payload economyBalance
 	}
 
 	return channel, username, nil
+}
+
+func mapEconomyErrorToWSError(err error) (string, string) {
+	if err == nil {
+		return "BACKEND_ERROR", "balance lookup failed"
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return "BACKEND_TIMEOUT", "balance lookup timed out"
+	}
+
+	var economyErr *framework.EconomyError
+	if errors.As(err, &economyErr) && economyErr != nil {
+		switch strings.TrimSpace(economyErr.ErrorCode) {
+		case "INVALID_ARGUMENT", "INVALID_AMOUNT":
+			msg := strings.TrimSpace(economyErr.Message)
+			if msg == "" {
+				msg = "invalid balance query"
+			}
+			return "BAD_REQUEST", msg
+		case "DB_UNAVAILABLE":
+			return "BACKEND_UNAVAILABLE", "balance service unavailable"
+		case "DB_ERROR", "INTERNAL":
+			return "BACKEND_ERROR", "balance lookup failed"
+		default:
+			return "BACKEND_ERROR", "balance lookup failed"
+		}
+	}
+
+	return "BACKEND_ERROR", "balance lookup failed"
 }
 
 func (p *Plugin) dispatchCommand(client *clientState, requestID string, payload commandPayload) (string, error) {
