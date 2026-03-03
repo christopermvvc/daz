@@ -19,14 +19,15 @@ import (
 )
 
 const (
-	pluginName         = "greeter"
-	defaultCooldown    = 30 * time.Minute
-	greetingQueueSize  = 100
-	minGreetingDelay   = 15 * time.Second
-	maxGreetingDelay   = 3 * time.Minute
-	baseGreetingPrompt = "Create a short, casual one-line welcome greeting for %s. Keep it in character as a laid-back Australian Dazza."
-	followupPromptHint = " Also, ask a follow-up question so the user can answer."
-	questionEndHint    = " End your greeting with a question mark."
+	pluginName           = "greeter"
+	defaultCooldown      = 30 * time.Minute
+	greetingQueueSize    = 100
+	minGreetingDelay     = 15 * time.Second
+	maxGreetingDelay     = 3 * time.Minute
+	baseGreetingPrompt   = "Create a short, casual one-line welcome greeting for %s. Keep it in character as a laid-back Australian Dazza."
+	followupPromptHint   = " Also, ask a follow-up question so the user can answer."
+	questionEndHint      = " End your greeting with a question mark."
+	followUpGreetingMode = "greeting"
 )
 
 // Config holds greeter plugin configuration
@@ -782,12 +783,14 @@ func (p *Plugin) getGreetingFromOllama(channel, username string, rank int) strin
 	}
 
 	req := framework.OllamaGenerateRequest{
-		Channel:        channel,
-		Username:       username,
-		Message:        p.buildGreetingPrompt(username),
-		ExtraContext:   extraContext,
-		MaxTokens:      96,
-		EnableFollowUp: p.config.EnableFollowUpMode,
+		Channel:            channel,
+		Username:           username,
+		Message:            p.buildGreetingPrompt(username),
+		ExtraContext:       extraContext,
+		MaxTokens:          96,
+		EnableFollowUp:     p.config.EnableFollowUpMode,
+		FollowUpMode:       followUpGreetingMode,
+		FollowUpRespondAll: true,
 	}
 
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)

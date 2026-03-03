@@ -80,6 +80,8 @@ func TestGetGreetingFromOllamaAppliesQuestionMark(t *testing.T) {
 				return false
 			}
 			assert.True(t, payload.EnableFollowUp)
+			assert.Equal(t, followUpGreetingMode, payload.FollowUpMode)
+			assert.True(t, payload.FollowUpRespondAll)
 			assert.Contains(t, payload.Message, questionEndHint)
 			assert.Contains(t, payload.Message, followupPromptHint)
 			return true

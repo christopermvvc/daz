@@ -67,16 +67,13 @@ func TestHandleGenerateRequestStartsFollowUpSession(t *testing.T) {
 
 	key := ollamaPlugin.followUpSessionKey("testchannel", "alice")
 	ollamaPlugin.followUpMu.RLock()
-	expiresAt := ollamaPlugin.followUpSessions[key]
+	session, hasSessionEntry := ollamaPlugin.followUpSessions[key]
 	ollamaPlugin.followUpMu.RUnlock()
-	ollamaPlugin.followUpMu.RLock()
-	_, hasSession := ollamaPlugin.followUpSessions[key]
-	ollamaPlugin.followUpMu.RUnlock()
-	if !hasSession {
+	if !hasSessionEntry {
 		t.Fatalf("expected follow-up session for key %s", key)
 	}
-	if !expiresAt.After(time.Now()) {
-		t.Fatalf("expected follow-up session expiry in future, got %v", expiresAt)
+	if !session.ExpiresAt.After(time.Now()) {
+		t.Fatalf("expected follow-up session expiry in future, got %v", session.ExpiresAt)
 	}
 	if serverCalls != 1 {
 		t.Fatalf("expected 1 ollama API call, got %d", serverCalls)

@@ -370,10 +370,10 @@ func TestFollowUpSessionLifecycle(t *testing.T) {
 		config: &Config{
 			FollowUpEnabled: true,
 		},
-		followUpSessions: make(map[string]time.Time),
+		followUpSessions: make(map[string]followUpSession),
 	}
 
-	plugin.setFollowUpSession("testchannel", "alice")
+	plugin.setFollowUpSession("testchannel", "alice", plugin.defaultFollowUpSettings())
 
 	key := plugin.followUpSessionKey("testchannel", "alice")
 	if !plugin.hasActiveFollowUpSession("testchannel", "alice", time.Now()) {
@@ -385,7 +385,9 @@ func TestFollowUpSessionLifecycle(t *testing.T) {
 		t.Fatalf("expected follow-up session to be cleared for key %s", key)
 	}
 
-	plugin.followUpSessions[key] = time.Now().Add(-time.Minute)
+	plugin.followUpSessions[key] = followUpSession{
+		ExpiresAt: time.Now().Add(-time.Minute),
+	}
 	if plugin.hasActiveFollowUpSession("testchannel", "alice", time.Now()) {
 		t.Fatalf("expected expired follow-up session to be inactive for key %s", key)
 	}
@@ -460,8 +462,21 @@ func TestHandleChatMessageFollowUpQuestionWithoutMention(t *testing.T) {
 	}
 
 	initialExpiry := time.Now().Add(30 * time.Second)
-	ollamaPlugin.followUpSessions[ollamaPlugin.followUpSessionKey("testchannel", "alice")] = initialExpiry
+	ollamaPlugin.followUpSessions[ollamaPlugin.followUpSessionKey("testchannel", "alice")] = followUpSession{
+		ExpiresAt:      initialExpiry,
+		Origin:         followUpOriginMention,
+		MaxMessages:    4,
+		MinIntervalMS:  2500,
+		RespondAll:     false,
+		LastResponseAt: time.Time{},
+	}
 	key := ollamaPlugin.followUpSessionKey("testchannel", "alice")
+	if _, has := ollamaPlugin.getActiveFollowUpSession("testchannel", "alice", time.Now()); !has {
+		t.Fatalf("follow-up session not active")
+	}
+	if _, has := ollamaPlugin.getActiveFollowUpSession("testchannel", "alice", time.UnixMilli(time.Now().UnixMilli())); !has {
+		t.Fatalf("follow-up session not active at message timestamp")
+	}
 
 	event := &framework.DataEvent{
 		Data: &framework.EventData{
@@ -473,9 +488,30 @@ func TestHandleChatMessageFollowUpQuestionWithoutMention(t *testing.T) {
 			},
 		},
 	}
+	if !ollamaPlugin.isLikelyQuestion(event.Data.ChatMessage.Message) {
+		t.Fatalf("expected question-like message")
+	}
+	session, hasFollowUpSession := ollamaPlugin.getActiveFollowUpSession(
+		"testchannel",
+		"alice",
+		time.UnixMilli(event.Data.ChatMessage.MessageTime),
+	)
+	if !hasFollowUpSession {
+		t.Fatalf("expected active follow-up for message")
+	}
+	if !ollamaPlugin.isUserInChannel("testchannel", "alice") {
+		t.Fatalf("expected user to be tracked in channel")
+	}
+	if session.MaxMessages <= 0 {
+		t.Fatalf("expected max messages to be set in existing session")
+	}
 
 	if err := ollamaPlugin.handleChatMessage(event); err != nil {
 		t.Fatalf("handleChatMessage returned error: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if serverCalls != 1 {
+		t.Fatalf("expected ollama request before wait, got %d", serverCalls)
 	}
 
 	waitForBroadcastType(t, bus, "cytube.send", 1, 2*time.Second)
@@ -504,7 +540,7 @@ func TestHandleChatMessageFollowUpQuestionWithoutMention(t *testing.T) {
 	ollamaPlugin.followUpMu.RLock()
 	refreshedExpiry := ollamaPlugin.followUpSessions[key]
 	ollamaPlugin.followUpMu.RUnlock()
-	if !refreshedExpiry.After(initialExpiry) {
+	if !refreshedExpiry.ExpiresAt.After(initialExpiry) {
 		t.Fatalf("expected follow-up session to be refreshed beyond %v, got %v", initialExpiry, refreshedExpiry)
 	}
 }
@@ -528,7 +564,9 @@ func TestHandleChatMessageFollowUpDisabledIgnoresQuestionWithoutMention(t *testi
 	}
 
 	key := ollamaPlugin.followUpSessionKey("testchannel", "alice")
-	ollamaPlugin.followUpSessions[key] = time.Now().Add(3 * time.Minute)
+	ollamaPlugin.followUpSessions[key] = followUpSession{
+		ExpiresAt: time.Now().Add(3 * time.Minute),
+	}
 
 	event := &framework.DataEvent{
 		Data: &framework.EventData{
@@ -567,11 +605,18 @@ func TestHandleChatMessageClearsFollowUpOnNonQuestion(t *testing.T) {
 		userLists: map[string]map[string]bool{
 			"testchannel": {"alice": true},
 		},
-		followUpSessions: make(map[string]time.Time),
+		followUpSessions: make(map[string]followUpSession),
 		botName:          "Dazza",
 	}
 
-	plugin.followUpSessions[plugin.followUpSessionKey("testchannel", "alice")] = time.Now().Add(3 * time.Minute)
+	plugin.followUpSessions[plugin.followUpSessionKey("testchannel", "alice")] = followUpSession{
+		ExpiresAt:      time.Now().Add(3 * time.Minute),
+		MaxMessages:    4,
+		MinIntervalMS:  2500,
+		Origin:         followUpOriginMention,
+		RespondAll:     false,
+		LastResponseAt: time.Now().Add(-3 * time.Second),
+	}
 	key := plugin.followUpSessionKey("testchannel", "alice")
 
 	event := &framework.DataEvent{
@@ -592,6 +637,70 @@ func TestHandleChatMessageClearsFollowUpOnNonQuestion(t *testing.T) {
 
 	if _, ok := plugin.followUpSessions[key]; ok {
 		t.Fatalf("expected follow-up session to be cleared for key %s", key)
+	}
+}
+
+func TestHandleChatMessageGreetingFollowUpSkipsWhenNoOtherHumans(t *testing.T) {
+	bus := NewMockEventBus()
+	plugin := New()
+	ollamaPlugin, ok := plugin.(*Plugin)
+	if !ok {
+		t.Fatalf("New() returned %T", plugin)
+	}
+
+	if err := ollamaPlugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	ollamaPlugin.config.FollowUpEnabled = true
+	ollamaPlugin.config.FollowUpWindowSeconds = 120
+	ollamaPlugin.botName = "Dazza"
+	ollamaPlugin.userLists = map[string]map[string]bool{
+		"testchannel": {
+			"alice": true,
+			"Dazza": true,
+		},
+	}
+
+	key := ollamaPlugin.followUpSessionKey("testchannel", "alice")
+	ollamaPlugin.followUpSessions[key] = followUpSession{
+		ExpiresAt:      time.Now().Add(3 * time.Minute),
+		Origin:         followUpOriginGreeting,
+		MaxMessages:    4,
+		MinIntervalMS:  2500,
+		RespondAll:     true,
+		LastResponseAt: time.Now().Add(-3 * time.Second),
+	}
+
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "alice",
+				Message:     "okay",
+				Channel:     "testchannel",
+				MessageTime: time.Now().UnixMilli(),
+			},
+		},
+	}
+
+	err := ollamaPlugin.handleChatMessage(event)
+	if err != nil {
+		t.Fatalf("handleChatMessage returned error: %v", err)
+	}
+
+	// This path should not generate a response, because the only active follow-up is from
+	// a greeting and there are no other humans in channel.
+	time.Sleep(150 * time.Millisecond)
+	bus.mu.Lock()
+	for _, event := range bus.broadcasts {
+		if event.eventType == "cytube.send" {
+			t.Fatalf("unexpected send event for no-human follow-up block")
+		}
+	}
+	bus.mu.Unlock()
+
+	if _, has := ollamaPlugin.followUpSessions[key]; has {
+		t.Fatalf("expected follow-up session for %s to be cleared", key)
 	}
 }
 

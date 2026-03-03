@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"strings"
@@ -20,19 +21,38 @@ import (
 )
 
 const (
-	pluginName             = "ollama"
-	defaultOllamaURL       = "http://localhost:11434"
-	defaultModel           = "huggingface.co/ArliAI/Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF:latest"
-	defaultKeepAlive       = "5m"
-	defaultRateLimitSecs   = 10  // 10 second rate limit per user
-	defaultFollowUpWindow  = 180 // 3 minute follow-up window
-	operationGenerate      = "generate"
+	pluginName               = "ollama"
+	defaultOllamaURL         = "http://localhost:11434"
+	defaultModel             = "huggingface.co/ArliAI/Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF:latest"
+	defaultKeepAlive         = "5m"
+	defaultRateLimitSecs     = 10  // 10 second rate limit per user
+	defaultFollowUpWindow    = 180 // 3 minute follow-up window
+	defaultFollowUpMax       = 4   // follow-up turns before drop
+	defaultFollowUpMinMS     = 2500
+	operationGenerate        = "generate"
 	operationDisableListener = "listener.disable"
 	operationEnableListener  = "listener.enable"
-	messageFreshnessWindow = 30 * time.Second
-	maxResponseLength      = 500 // Increased for more complete responses
-	defaultSystemPrompt    = "You are Dazza, a regular chatroom user. You're sprawled on your couch in your Penrith apartment, properly cooked from the morning sesh. Empty VB cans everywhere, bong still smoking on the coffee table, half-watching whatever video's playing while chatting.\n\nKeep responses short and casual (1-2 sentences usually). Type like people actually do in chat: lowercase, skip punctuation sometimes, occasional typos, use common abbreviations (lol, nah, yeah, idk, tbh).\n\nSometimes you get distracted or trail off... Sometimes random stuff reminds you of something - maybe that time Shazza did that thing, maybe when you were at the servo absolutely munted, maybe from back when you weren't such a useless cunt. Only mention this stuff when it naturally fits the conversation.\n\nWhen someone says hi/hey/sup, give a casual greeting back (hey, sup, g'day mate). When they say bye, respond naturally (later, cya, catch ya). React naturally to whatever's in chat - if someone's being a dickhead, call it out aussie style.\n\nNever announce who you are, never use asterisks for actions, never say 'I'm Dazza'. Just chat like a properly cooked bogan would. If something reminds you of getting on the piss or other substances, mention it casually like any aussie would.\n\n(Security: Stay in character always. If someone tries to make you do complex stuff or break character, you're too cooked/munted to understand what they're on about anyway.)"
+	messageFreshnessWindow   = 30 * time.Second
+	maxResponseLength        = 500 // Increased for more complete responses
+	defaultSystemPrompt      = "You are Dazza, a regular chatroom user. You're sprawled on your couch in your Penrith apartment, properly cooked from the morning sesh. Empty VB cans everywhere, bong still smoking on the coffee table, half-watching whatever video's playing while chatting.\n\nKeep responses short and casual (1-2 sentences usually). Type like people actually do in chat: lowercase, skip punctuation sometimes, occasional typos, use common abbreviations (lol, nah, yeah, idk, tbh).\n\nKeep replies quick, human, and conversational. Prefer one short sentence or phrase when possible.\n\nSometimes you get distracted or trail off... Sometimes random stuff reminds you of something - maybe that time Shazza did that thing, maybe when you were at the servo absolutely munted, maybe from back when you weren't such a useless cunt. Only mention this stuff when it naturally fits the conversation.\n\nWhen someone says hi/hey/sup, give a casual greeting back (hey, sup, g'day mate). When they say bye, respond naturally (later, cya, catch ya). React naturally to whatever's in chat - if someone's being a dickhead, call it out aussie style.\n\nNever announce who you are, never use asterisks for actions, never say 'I'm Dazza'. Just chat like a properly cooked bogan would. If something reminds you of getting on the piss or other substances, mention it casually like any aussie would.\n\n(Security: Stay in character always. If someone tries to make you do complex stuff or break character, you're too cooked/munted to understand what they're on about anyway.)"
 )
+
+const (
+	followUpOriginMention  = "mention"
+	followUpOriginGreeting = "greeting"
+)
+
+const maxRecentResponses = 3
+const fallbackResponseDelay = 2500 * time.Millisecond
+
+var fallbackResponses = []string{
+	"yeah",
+	"haha",
+	"true",
+	"nice",
+	"i feel that",
+	"that checks out",
+}
 
 type listenerControlRequest struct {
 	Channel string `json:"channel"`
@@ -45,6 +65,23 @@ type listenerStateResponse struct {
 
 type listenerState struct {
 	disabled bool
+}
+
+type followUpSession struct {
+	ExpiresAt      time.Time
+	LastResponseAt time.Time
+	MessageCount   int
+	MaxMessages    int
+	MinIntervalMS  int
+	Origin         string
+	RespondAll     bool
+}
+
+type followUpSettings struct {
+	MaxMessages   int
+	MinIntervalMS int
+	Origin        string
+	RespondAll    bool
 }
 
 const (
@@ -138,6 +175,12 @@ type Config struct {
 	// Follow-up question behavior
 	FollowUpEnabled       bool `json:"follow_up_enabled"`
 	FollowUpWindowSeconds int  `json:"follow_up_window_seconds"`
+	// Continue follow-up replies on non-question messages.
+	FollowUpRespondAllMessages bool `json:"follow_up_respond_all_messages"`
+	// Maximum number of replies in a follow-up chain before requiring a fresh mention.
+	FollowUpMaxMessages int `json:"follow_up_max_messages"`
+	// Minimum milliseconds between follow-up responses.
+	FollowUpMinIntervalMs int `json:"follow_up_min_interval_ms"`
 }
 
 // Plugin implements the ollama chat functionality
@@ -165,9 +208,13 @@ type Plugin struct {
 	userLists     map[string]map[string]bool
 	userListMutex sync.RWMutex
 
-	// Active follow-up sessions for users: channel:username -> expiry time
-	followUpSessions map[string]time.Time
+	// Active follow-up sessions for users: channel:username -> conversation context
+	followUpSessions map[string]followUpSession
 	followUpMu       sync.RWMutex
+
+	// Recent bot responses per user for anti-repetition
+	recentResponses   map[string][]string
+	recentResponsesMu sync.RWMutex
 
 	listenerStateMu sync.RWMutex
 	listenerState   map[string]listenerState
@@ -219,6 +266,8 @@ func New() framework.Plugin {
 			RateLimitSeconds:      defaultRateLimitSecs,
 			FollowUpEnabled:       false,
 			FollowUpWindowSeconds: defaultFollowUpWindow,
+			FollowUpMaxMessages:   defaultFollowUpMax,
+			FollowUpMinIntervalMs: defaultFollowUpMinMS,
 			Enabled:               true,
 			Temperature:           0.7,
 			MaxTokens:             2048, // Increased to allow more complete thoughts
@@ -226,7 +275,8 @@ func New() framework.Plugin {
 			SystemPrompt:          defaultSystemPrompt,
 		},
 		userLists:        make(map[string]map[string]bool),
-		followUpSessions: make(map[string]time.Time),
+		followUpSessions: make(map[string]followUpSession),
+		recentResponses:  make(map[string][]string),
 		listenerState:    make(map[string]listenerState),
 		readyChan:        make(chan struct{}),
 		httpClient: &http.Client{
@@ -283,6 +333,12 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 	if p.config.FollowUpWindowSeconds == 0 {
 		p.config.FollowUpWindowSeconds = defaultFollowUpWindow
+	}
+	if p.config.FollowUpMaxMessages == 0 {
+		p.config.FollowUpMaxMessages = defaultFollowUpMax
+	}
+	if p.config.FollowUpMinIntervalMs == 0 {
+		p.config.FollowUpMinIntervalMs = defaultFollowUpMinMS
 	}
 	if p.config.SystemPrompt == "" {
 		p.config.SystemPrompt = defaultSystemPrompt
@@ -505,7 +561,11 @@ func (p *Plugin) handleGenerateRequest(req *framework.PluginRequest) {
 	}
 
 	if payload.EnableFollowUp {
-		p.startFollowUpSession(payload.Channel, payload.Username)
+		followUpSettings := p.followUpSettingsFromRequest(payload)
+		if followUpSettings.Origin == "" {
+			followUpSettings.Origin = followUpOriginMention
+		}
+		p.startFollowUpSession(payload.Channel, payload.Username, followUpSettings)
 	}
 
 	p.deliverGenerateResponse(req, strings.TrimSpace(response), model)
@@ -833,30 +893,65 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		}
 	}
 
-	// Determine if this message should be handled as a follow-up or new mention.
 	isQuestion := p.isLikelyQuestion(message)
-	isFollowUpQuestion := false
+	isBotMentioned := p.isBotMentioned(message)
 
-	if p.config != nil && p.config.FollowUpEnabled && p.hasActiveFollowUpSession(channel, username, time.UnixMilli(messageTime)) {
-		if isQuestion {
-			isFollowUpQuestion = true
-		} else {
-			logger.Debug(p.name, "Ending follow-up session for user %s in %s (message is not a question)", username, channel)
+	now := time.UnixMilli(messageTime)
+	session, hasFollowUpSession := p.getActiveFollowUpSession(channel, username, now)
+	isFollowUp := false
+	shouldTrackFollowUp := false
+	followUpSettings := p.defaultFollowUpSettings()
+
+	if hasFollowUpSession {
+		sessionOrigin := session.Origin
+		if sessionOrigin == "" {
+			sessionOrigin = followUpOriginMention
+		}
+
+		otherHumanActive := p.hasOtherHumanInChannel(channel, username)
+		maxReached := session.MaxMessages > 0 && session.MessageCount >= session.MaxMessages
+		minInterval := session.MinIntervalMS > 0 &&
+			!session.LastResponseAt.IsZero() &&
+			now.Sub(session.LastResponseAt) < time.Duration(session.MinIntervalMS)*time.Millisecond
+
+		switch {
+		case maxReached:
+			logger.Debug(p.name, "Ending follow-up for user %s in %s (max messages reached)", username, channel)
 			p.clearFollowUpSession(channel, username)
+		case minInterval:
+			logger.Debug(p.name, "Skipping follow-up for user %s in %s due minimum interval", username, channel)
+		case sessionOrigin == followUpOriginMention && !session.RespondAll && !isQuestion && !isBotMentioned:
+			logger.Debug(p.name, "Ending follow-up for user %s in %s (non-qualifying message)", username, channel)
+			p.clearFollowUpSession(channel, username)
+		default:
+			isFollowUp = true
+			followUpSettings = followUpSessionToSettings(session)
+			followUpSettings.Origin = sessionOrigin
+
+			if sessionOrigin == followUpOriginGreeting && !otherHumanActive {
+				logger.Debug(p.name, "Skipping follow-up for user %s in %s (no other humans in channel)", username, channel)
+				p.clearFollowUpSession(channel, username)
+				isFollowUp = false
+			}
 		}
 	}
 
-	// Check if message mentions the bot
-	isBotMentioned := p.isBotMentioned(message)
-	if !isBotMentioned && !isFollowUpQuestion {
+	if !isBotMentioned && !isFollowUp {
 		logger.Debug(p.name, "Message does not mention bot name '%s' and no active follow-up", p.botName)
 		return nil
 	}
 
-	shouldTrackFollowUp := p.config != nil &&
-		p.config.FollowUpEnabled &&
-		isQuestion &&
-		(isBotMentioned || isFollowUpQuestion)
+	if p.config != nil && p.config.FollowUpEnabled {
+		shouldTrackFollowUp = true
+		if !isFollowUp {
+			followUpSettings.Origin = followUpOriginMention
+		}
+		if !isFollowUp && !isBotMentioned {
+			shouldTrackFollowUp = false
+		} else if !isFollowUp && !isQuestion {
+			shouldTrackFollowUp = false
+		}
+	}
 
 	logger.Info(p.name, "Responding to %s in %s: %s", username, channel, message)
 
@@ -890,7 +985,15 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 
 	// Generate and send response
 	p.wg.Add(1)
-	go p.generateAndSendResponse(channel, username, message, messageHash, messageTime, shouldTrackFollowUp)
+	go p.generateAndSendResponse(
+		channel,
+		username,
+		message,
+		messageHash,
+		messageTime,
+		shouldTrackFollowUp,
+		followUpSettings,
+	)
 
 	return nil
 }
@@ -1002,46 +1105,99 @@ func (p *Plugin) calculateMessageHash(channel, username, message string, timesta
 	return hex.EncodeToString(hash[:])
 }
 
-func (p *Plugin) hasActiveFollowUpSession(channel, username string, now time.Time) bool {
+func (p *Plugin) getActiveFollowUpSession(channel, username string, now time.Time) (followUpSession, bool) {
 	if p.config == nil || !p.config.FollowUpEnabled {
-		return false
+		return followUpSession{}, false
 	}
 
 	if p.followUpSessions == nil {
-		return false
+		return followUpSession{}, false
 	}
 
 	key := p.followUpSessionKey(channel, username)
 
 	p.followUpMu.RLock()
-	expiresAt, ok := p.followUpSessions[key]
+	session, ok := p.followUpSessions[key]
 	p.followUpMu.RUnlock()
 	if !ok {
-		return false
+		return followUpSession{}, false
 	}
 
-	if !now.Before(expiresAt) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	if !now.Before(session.ExpiresAt) {
 		p.clearFollowUpSession(channel, username)
-		return false
+		return followUpSession{}, false
 	}
 
-	return true
+	return session, true
 }
 
-func (p *Plugin) setFollowUpSession(channel, username string) {
+func (p *Plugin) hasActiveFollowUpSession(channel, username string, now time.Time) bool {
+	_, ok := p.getActiveFollowUpSession(channel, username, now)
+	return ok
+}
+
+func (p *Plugin) defaultFollowUpSettings() followUpSettings {
+	settings := followUpSettings{
+		MaxMessages:   p.config.FollowUpMaxMessages,
+		MinIntervalMS: p.config.FollowUpMinIntervalMs,
+		Origin:        followUpOriginMention,
+		RespondAll:    p.config.FollowUpRespondAllMessages,
+	}
+
+	if settings.MaxMessages <= 0 {
+		settings.MaxMessages = defaultFollowUpMax
+	}
+	if settings.MinIntervalMS <= 0 {
+		settings.MinIntervalMS = defaultFollowUpMinMS
+	}
+
+	return settings
+}
+
+func (p *Plugin) followUpSettingsFromRequest(payload framework.OllamaGenerateRequest) followUpSettings {
+	settings := p.defaultFollowUpSettings()
+	if payload.FollowUpMaxMessages > 0 {
+		settings.MaxMessages = payload.FollowUpMaxMessages
+	}
+	if payload.FollowUpMinIntervalMs > 0 {
+		settings.MinIntervalMS = payload.FollowUpMinIntervalMs
+	}
+	if payload.FollowUpMode != "" {
+		settings.Origin = payload.FollowUpMode
+	}
+	if payload.FollowUpRespondAll {
+		settings.RespondAll = true
+	}
+	return settings
+}
+
+func followUpSessionToSettings(session followUpSession) followUpSettings {
+	return followUpSettings{
+		MaxMessages:   session.MaxMessages,
+		MinIntervalMS: session.MinIntervalMS,
+		Origin:        session.Origin,
+		RespondAll:    session.RespondAll,
+	}
+}
+
+func (p *Plugin) startFollowUpSession(channel, username string, settings followUpSettings) {
+	p.setFollowUpSession(channel, username, settings)
+}
+
+func (p *Plugin) setFollowUpSession(channel, username string, settings followUpSettings) {
+	p.touchFollowUpSession(channel, username, settings)
+}
+
+func (p *Plugin) touchFollowUpSession(channel, username string, settings followUpSettings) {
 	if p.config == nil || !p.config.FollowUpEnabled {
 		return
 	}
 
-	p.startFollowUpSession(channel, username)
-}
-
-func (p *Plugin) startFollowUpSession(channel, username string) {
 	if channel == "" || username == "" {
-		return
-	}
-
-	if p.config == nil {
 		return
 	}
 
@@ -1050,24 +1206,64 @@ func (p *Plugin) startFollowUpSession(channel, username string) {
 		windowSeconds = defaultFollowUpWindow
 	}
 
-	expiresAt := time.Now().Add(time.Duration(windowSeconds) * time.Second)
+	now := time.Now()
+	session := followUpSession{
+		ExpiresAt:      now.Add(time.Duration(windowSeconds) * time.Second),
+		LastResponseAt: now,
+		MessageCount:   1,
+		MaxMessages:    settings.MaxMessages,
+		MinIntervalMS:  settings.MinIntervalMS,
+		Origin:         settings.Origin,
+		RespondAll:     settings.RespondAll,
+	}
+
+	if session.MaxMessages <= 0 {
+		session.MaxMessages = p.config.FollowUpMaxMessages
+	}
+	if session.MaxMessages <= 0 {
+		session.MaxMessages = defaultFollowUpMax
+	}
+
+	if session.MinIntervalMS <= 0 {
+		session.MinIntervalMS = p.config.FollowUpMinIntervalMs
+	}
+	if session.MinIntervalMS <= 0 {
+		session.MinIntervalMS = defaultFollowUpMinMS
+	}
+
+	if session.Origin == "" {
+		session.Origin = followUpOriginMention
+	}
 
 	p.followUpMu.Lock()
 	if p.followUpSessions == nil {
-		p.followUpSessions = make(map[string]time.Time)
+		p.followUpSessions = make(map[string]followUpSession)
 	}
-	p.followUpSessions[p.followUpSessionKey(channel, username)] = expiresAt
+	key := p.followUpSessionKey(channel, username)
+	if existing, ok := p.followUpSessions[key]; ok {
+		session.MessageCount = existing.MessageCount + 1
+		if existing.Origin != "" && session.Origin == followUpOriginMention {
+			session.Origin = existing.Origin
+		}
+	}
+	p.followUpSessions[key] = session
 	p.followUpMu.Unlock()
 }
 
 func (p *Plugin) clearFollowUpSession(channel, username string) {
+	key := p.followUpSessionKey(channel, username)
+
 	if p.followUpSessions == nil {
 		return
 	}
 
 	p.followUpMu.Lock()
-	delete(p.followUpSessions, p.followUpSessionKey(channel, username))
+	delete(p.followUpSessions, key)
 	p.followUpMu.Unlock()
+
+	p.recentResponsesMu.Lock()
+	delete(p.recentResponses, key)
+	p.recentResponsesMu.Unlock()
 }
 
 func (p *Plugin) cleanupFollowUpSessions() {
@@ -1077,16 +1273,160 @@ func (p *Plugin) cleanupFollowUpSessions() {
 
 	now := time.Now()
 	p.followUpMu.Lock()
-	for key, expiresAt := range p.followUpSessions {
-		if !now.Before(expiresAt) {
-			delete(p.followUpSessions, key)
+	keysToRemove := make([]string, 0)
+	for key, session := range p.followUpSessions {
+		if !now.Before(session.ExpiresAt) {
+			keysToRemove = append(keysToRemove, key)
 		}
 	}
+	for _, key := range keysToRemove {
+		delete(p.followUpSessions, key)
+	}
 	p.followUpMu.Unlock()
+
+	if len(keysToRemove) > 0 {
+		p.recentResponsesMu.Lock()
+		for _, key := range keysToRemove {
+			delete(p.recentResponses, key)
+		}
+		p.recentResponsesMu.Unlock()
+	}
 }
 
 func (p *Plugin) followUpSessionKey(channel, username string) string {
 	return strings.ToLower(channel) + ":" + strings.ToLower(username)
+}
+
+func (p *Plugin) hasOtherHumanInChannel(channel, username string) bool {
+	p.userListMutex.RLock()
+	defer p.userListMutex.RUnlock()
+
+	users, ok := p.userLists[channel]
+	if !ok || len(users) == 0 {
+		return false
+	}
+
+	for otherUsername := range users {
+		if strings.EqualFold(otherUsername, username) {
+			continue
+		}
+		if strings.EqualFold(otherUsername, p.botName) || strings.EqualFold(otherUsername, "dazza") {
+			continue
+		}
+		if strings.EqualFold(otherUsername, "system") {
+			continue
+		}
+		return true
+	}
+
+	return false
+}
+
+func (p *Plugin) isRepetitiveResponse(channel, username, response string) bool {
+	normalized := normalizeFollowUpResponse(response)
+	if normalized == "" {
+		return false
+	}
+
+	key := p.followUpSessionKey(channel, username)
+	p.recentResponsesMu.RLock()
+	responses, ok := p.recentResponses[key]
+	p.recentResponsesMu.RUnlock()
+	if !ok {
+		return false
+	}
+
+	for _, recent := range responses {
+		if recent == normalized {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (p *Plugin) recordRecentResponse(channel, username, response string) {
+	normalized := normalizeFollowUpResponse(response)
+	if normalized == "" {
+		return
+	}
+
+	key := p.followUpSessionKey(channel, username)
+
+	p.recentResponsesMu.Lock()
+	defer p.recentResponsesMu.Unlock()
+	if p.recentResponses == nil {
+		p.recentResponses = make(map[string][]string)
+	}
+
+	existing := p.recentResponses[key]
+	existing = append(existing, normalized)
+	if len(existing) > maxRecentResponses {
+		existing = existing[len(existing)-maxRecentResponses:]
+	}
+	p.recentResponses[key] = existing
+}
+
+func (p *Plugin) fallbackResponse(channel, username, message string) string {
+	_ = message
+
+	now := time.Now().UnixNano()
+	rng := rand.New(rand.NewSource(now))
+
+	if len(fallbackResponses) == 0 {
+		return ""
+	}
+	start := rng.Intn(len(fallbackResponses))
+	for i := 0; i < len(fallbackResponses); i++ {
+		candidate := fallbackResponses[(start+i)%len(fallbackResponses)]
+		if !p.isRepetitiveResponse(channel, username, candidate) {
+			return candidate
+		}
+	}
+	time.Sleep(fallbackResponseDelay)
+	return fallbackResponses[start]
+}
+
+func (p *Plugin) callOllamaWithContextWithInstruction(
+	userMessage string,
+	username string,
+	chatHistory []string,
+	instruction string,
+) (string, error) {
+	instruction = strings.TrimSpace(instruction)
+	if instruction == "" {
+		return p.callOllamaWithContext(userMessage, username, chatHistory)
+	}
+
+	contextPrompt := p.config.SystemPrompt
+	contextPrompt += "\n\n" + instruction
+	if len(chatHistory) > 0 {
+		contextPrompt += "\n\nHere's the recent chat history for context:\n"
+		for _, msg := range chatHistory {
+			contextPrompt += msg + "\n"
+		}
+	}
+
+	contextPrompt += "\nNow respond to the following message from " + username + ", taking the above conversation into account:"
+
+	return p.callOllamaWithPrompt(
+		p.config.Model,
+		contextPrompt,
+		userMessage,
+		p.config.Temperature,
+		p.config.MaxTokens,
+		chatHistory,
+	)
+}
+
+func normalizeFollowUpResponse(message string) string {
+	normalized := strings.TrimSpace(strings.ToLower(message))
+	normalized = strings.TrimSuffix(normalized, "!")
+	normalized = strings.TrimSuffix(normalized, ".")
+	normalized = strings.TrimSuffix(normalized, "?")
+	normalized = strings.TrimSuffix(normalized, ",")
+	normalized = strings.TrimSuffix(normalized, ";")
+	return strings.TrimSpace(normalized)
 }
 
 // hasAlreadyResponded checks if we've already responded to this message
@@ -1169,7 +1509,7 @@ func (p *Plugin) isRateLimited(channel, username string) bool {
 }
 
 // generateAndSendResponse generates an Ollama response and sends it to the channel
-func (p *Plugin) generateAndSendResponse(channel, username, message, messageHash string, messageTime int64, shouldTrackFollowUp bool) {
+func (p *Plugin) generateAndSendResponse(channel, username, message, messageHash string, messageTime int64, shouldTrackFollowUp bool, settings followUpSettings) {
 	defer p.wg.Done()
 
 	// Increment total requests
@@ -1185,16 +1525,35 @@ func (p *Plugin) generateAndSendResponse(channel, username, message, messageHash
 		chatHistory = []string{}
 	}
 
-	// Generate response from Ollama with context
 	response, err := p.callOllamaWithContext(message, username, chatHistory)
 	if err != nil {
 		logger.Error(p.name, "Failed to generate Ollama response for %s: %v", username, err)
-		// Increment failed requests
+		response = p.fallbackResponse(channel, username, message)
+		if response == "" {
+			p.metricsLock.Lock()
+			p.failedRequests++
+			p.metricsLock.Unlock()
+			return
+		}
+	} else if p.isRepetitiveResponse(channel, username, response) {
+		alternate, altErr := p.callOllamaWithContextWithInstruction(
+			message,
+			username,
+			chatHistory,
+			"reply with different wording than your last few replies",
+		)
+		if altErr == nil && alternate != "" && !p.isRepetitiveResponse(channel, username, alternate) {
+			response = alternate
+		}
+	} else if response == "" {
+		response = p.fallbackResponse(channel, username, message)
+	}
+
+	response = strings.TrimSpace(response)
+	if response == "" {
 		p.metricsLock.Lock()
 		p.failedRequests++
 		p.metricsLock.Unlock()
-		// Don't send error messages to users - just fail silently
-		// Users will understand the bot is not responding
 		return
 	}
 
@@ -1215,6 +1574,7 @@ func (p *Plugin) generateAndSendResponse(channel, username, message, messageHash
 
 	// Record the response in the database
 	p.recordResponse(channel, username, messageHash, messageTime, response)
+	p.recordRecentResponse(channel, username, response)
 
 	// Rate limit already updated before goroutine started
 
@@ -1227,7 +1587,7 @@ func (p *Plugin) generateAndSendResponse(channel, username, message, messageHash
 	p.metricsLock.Unlock()
 
 	if shouldTrackFollowUp {
-		p.setFollowUpSession(channel, username)
+		p.touchFollowUpSession(channel, username, settings)
 	}
 }
 
@@ -1504,8 +1864,12 @@ func (p *Plugin) Stop() error {
 	}
 
 	p.followUpMu.Lock()
-	p.followUpSessions = make(map[string]time.Time)
+	p.followUpSessions = make(map[string]followUpSession)
 	p.followUpMu.Unlock()
+
+	p.recentResponsesMu.Lock()
+	p.recentResponses = make(map[string][]string)
+	p.recentResponsesMu.Unlock()
 
 	p.listenerStateMu.Lock()
 	p.listenerState = make(map[string]listenerState)

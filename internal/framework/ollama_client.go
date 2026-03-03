@@ -19,7 +19,14 @@ type OllamaGenerateRequest struct {
 	IncludeHistory bool              `json:"include_history"`
 	HistoryLimit   int               `json:"history_limit,omitempty"`
 	ExtraContext   map[string]string `json:"extra_context,omitempty"`
+	FollowUpMode   string            `json:"follow_up_mode,omitempty"`
 	EnableFollowUp bool              `json:"enable_follow_up"`
+	// follow_up_respond_all is an explicit opt-in for non-question follow-up responses.
+	FollowUpRespondAll bool `json:"follow_up_respond_all"`
+	// follow_up_max_messages caps the number of follow-up turns for this request.
+	FollowUpMaxMessages int `json:"follow_up_max_messages"`
+	// follow_up_min_interval_ms throttles follow-up turns in a short interval.
+	FollowUpMinIntervalMs int `json:"follow_up_min_interval_ms"`
 }
 
 // OllamaGenerateResponse is the shared response type for generated text.
