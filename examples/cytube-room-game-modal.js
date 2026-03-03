@@ -41,7 +41,6 @@
   const MINIMIZED_HEIGHT = 38;
   const MINIMIZED_WIDTH = 220;
   const DEFAULT_MARGIN = 12;
-  const MINIMIZED_OFFSET = 0;
   const MINIMIZED_ICON = '▢';
   const OPEN_ICON = '—';
 
@@ -434,21 +433,19 @@
       #daz-game-modal-root.daz-state-minimized {
         width: 220px;
         height: 38px;
-        bottom: 12px;
-        left: 12px;
+        bottom: 12px !important;
+        left: 12px !important;
+        top: auto !important;
+        right: auto !important;
       }
 
       #daz-game-modal-root.daz-state-minimized #daz-game-modal-header {
+        justify-content: space-between;
         gap: 0;
-        justify-content: flex-start;
       }
 
       #daz-game-modal-root.daz-state-minimized #daz-game-modal-title {
-        font-size: 12px;
-        max-width: 120px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        display: none;
       }
 
       #daz-game-modal-root.daz-state-minimized #daz-game-modal-hint {
@@ -456,9 +453,9 @@
       }
 
       #daz-game-modal-root.daz-state-minimized #daz-game-modal-actions {
-        margin-right: auto;
+        margin-left: auto;
         flex-shrink: 0;
-        margin-left: 0;
+        margin-right: 0;
       }
 
       #daz-game-modal-root.daz-state-minimized #daz-game-modal-body {
@@ -765,7 +762,7 @@
       root.style.setProperty('left', `${minimizedLeft}px`, 'important');
       root.style.setProperty('top', 'auto', 'important');
       root.style.setProperty('right', 'auto', 'important');
-      root.style.setProperty('bottom', `${MINIMIZED_OFFSET}px`, 'important');
+      root.style.setProperty('bottom', `${DEFAULT_MARGIN}px`, 'important');
       root.style.setProperty('width', `${MINIMIZED_WIDTH}px`, 'important');
       root.style.setProperty('height', `${MINIMIZED_HEIGHT}px`, 'important');
       root.style.setProperty('display', 'block', 'important');
