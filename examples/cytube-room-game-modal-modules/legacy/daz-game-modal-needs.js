@@ -3,7 +3,7 @@
 
   const MIN_NEED = 0;
   const MAX_NEED = 100;
-  const NEED_SEGMENTS = 5;
+  const NEED_SEGMENTS = 7;
 
   function clampNeed(value) {
     const parsed = Number.parseInt(value, 10);
@@ -21,7 +21,14 @@
       if (meter) {
         const segments = Math.round((value / MAX_NEED) * NEED_SEGMENTS);
         const filled = Math.max(0, Math.min(NEED_SEGMENTS, segments));
-        meter.textContent = `${'🟢'.repeat(filled)}${'⬜'.repeat(Math.max(0, NEED_SEGMENTS - filled))}`;
+        meter.innerHTML = '';
+        for (let i = 0; i < NEED_SEGMENTS; i += 1) {
+          const segment = document.createElement('span');
+          segment.className = i < filled
+            ? 'daz-game-need-meter-segment daz-game-need-meter-segment-fill'
+            : 'daz-game-need-meter-segment';
+          meter.appendChild(segment);
+        }
       }
     });
   }

@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const LOADER_BUILD_ID = '33cefc446';
+  const LOADER_BUILD_ID = '33cefc446-v2';
   const LOADER_SOURCE = (() => {
     const current = document.currentScript;
     return current && current.src ? current.src : 'inline-or-unknown';
@@ -407,9 +407,16 @@
         return;
       }
       const value = clamp(rawValue, MIN_NEED, MAX_NEED);
-      const segmentCount = 5;
+      const segmentCount = 7;
       const filled = Math.round((value / MAX_NEED) * segmentCount);
-      meter.textContent = `${'🟢'.repeat(Math.max(0, filled))}${'⬜'.repeat(Math.max(0, segmentCount - filled))}`;
+      meter.innerHTML = '';
+      for (let i = 0; i < segmentCount; i += 1) {
+        const segment = document.createElement('span');
+        segment.className = i < filled
+          ? 'daz-game-need-meter-segment daz-game-need-meter-segment-fill'
+          : 'daz-game-need-meter-segment';
+        meter.appendChild(segment);
+      }
     });
   }
 
