@@ -32,7 +32,7 @@
     },
     "ollama": {
       "enabled": true,
-      "follow_up_enabled": false,
+      "follow_up_enabled": true,
       "follow_up_window_seconds": 180
     },
     "greeter": {

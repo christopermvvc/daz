@@ -241,6 +241,31 @@ func TestIsBotMentioned(t *testing.T) {
 	}
 }
 
+func TestIsLikelyQuestion(t *testing.T) {
+	plugin := &Plugin{}
+
+	tests := []struct {
+		message  string
+		expected bool
+		name     string
+	}{
+		{"Can you help me", true, "Auxiliary opener"},
+		{"really?", true, "Explicit question mark"},
+		{"what do you mean", true, "Question starter"},
+		{"thanks for that", false, "Statement"},
+		{"", false, "Empty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := plugin.isLikelyQuestion(tt.message)
+			if result != tt.expected {
+				t.Errorf("isLikelyQuestion(%q) = %v, expected %v", tt.message, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestCalculateMessageHash(t *testing.T) {
 	plugin := &Plugin{}
 
@@ -434,7 +459,7 @@ func TestHandleChatMessageFollowUpQuestionWithoutMention(t *testing.T) {
 		"testchannel": {"alice": true},
 	}
 
-	initialExpiry := time.Now().Add(3 * time.Minute)
+	initialExpiry := time.Now().Add(30 * time.Second)
 	ollamaPlugin.followUpSessions[ollamaPlugin.followUpSessionKey("testchannel", "alice")] = initialExpiry
 	key := ollamaPlugin.followUpSessionKey("testchannel", "alice")
 
@@ -442,7 +467,7 @@ func TestHandleChatMessageFollowUpQuestionWithoutMention(t *testing.T) {
 		Data: &framework.EventData{
 			ChatMessage: &framework.ChatMessageData{
 				Username:    "alice",
-				Message:     "really?",
+				Message:     "can you help me",
 				Channel:     "testchannel",
 				MessageTime: time.Now().UnixMilli(),
 			},

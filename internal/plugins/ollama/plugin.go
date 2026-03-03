@@ -37,6 +37,67 @@ const (
 	errorCodeGenerationFail = "GENERATION_FAILED"
 )
 
+var questionStarters = map[string]struct{}{
+	"what":   {},
+	"why":    {},
+	"how":    {},
+	"who":    {},
+	"whom":   {},
+	"whose":  {},
+	"where":  {},
+	"when":   {},
+	"can":    {},
+	"could":  {},
+	"would":  {},
+	"should": {},
+	"do":     {},
+	"does":   {},
+	"did":    {},
+	"is":     {},
+	"are":    {},
+	"am":     {},
+	"was":    {},
+	"were":   {},
+	"have":   {},
+	"has":    {},
+	"had":    {},
+	"will":   {},
+	"shall":  {},
+	"may":    {},
+	"might":  {},
+	"must":   {},
+}
+
+var questionPhrases = map[string]struct{}{
+	"can you":    {},
+	"could you":  {},
+	"would you":  {},
+	"should you": {},
+	"will you":   {},
+	"is there":   {},
+	"is it":      {},
+	"was there":  {},
+	"do you":     {},
+	"did you":    {},
+	"does he":    {},
+	"do i":       {},
+	"can i":      {},
+	"could i":    {},
+	"have i":     {},
+	"has i":      {},
+	"is he":      {},
+	"is she":     {},
+	"is this":    {},
+	"was i":      {},
+	"where is":   {},
+	"where are":  {},
+	"who's":      {},
+	"what's":     {},
+	"how's":      {},
+	"why's":      {},
+	"where's":    {},
+}
+
 // Config holds ollama plugin configuration
 type Config struct {
 	// Ollama connection settings
@@ -664,7 +725,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	}
 
 	// Determine if this message should be handled as a follow-up or new mention.
-	isQuestion := strings.HasSuffix(strings.TrimSpace(message), "?")
+	isQuestion := p.isLikelyQuestion(message)
 	isFollowUpQuestion := false
 
 	if p.config != nil && p.config.FollowUpEnabled && p.hasActiveFollowUpSession(channel, username, time.UnixMilli(messageTime)) {
@@ -737,6 +798,54 @@ func (p *Plugin) isBotMentioned(message string) bool {
 
 	// Check for @mention
 	if strings.Contains(lowerMessage, "@"+lowerBotName) {
+		return true
+	}
+
+	return false
+}
+
+func (p *Plugin) isLikelyQuestion(message string) bool {
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" {
+		return false
+	}
+
+	// Preserve the current behavior when users include explicit question marks.
+	if strings.HasSuffix(trimmed, "?") {
+		return true
+	}
+
+	// Fall back to a grammar heuristic so irregular punctuation doesn't disable follow-ups.
+	normalized := strings.ToLower(trimmed)
+	normalized = strings.TrimRight(normalized, " \t\r\n.!;:")
+	fields := strings.Fields(normalized)
+	if len(fields) == 0 {
+		return false
+	}
+
+	// Ignore leading mention tokens (for example @dazza).
+	startIdx := 0
+	for startIdx < len(fields) && strings.HasPrefix(fields[startIdx], "@") {
+		startIdx++
+	}
+	if startIdx >= len(fields) {
+		return false
+	}
+
+	first := strings.TrimLeft(fields[startIdx], "@")
+	if _, ok := questionStarters[first]; ok {
+		return true
+	}
+
+	if len(fields) > startIdx+1 {
+		phrase := first + " " + fields[startIdx+1]
+		if _, ok := questionPhrases[phrase]; ok {
+			return true
+		}
+	}
+
+	// Catch common contractions that are typically questions.
+	if strings.HasSuffix(first, "n't") || strings.HasSuffix(first, "'ll") {
 		return true
 	}
 
