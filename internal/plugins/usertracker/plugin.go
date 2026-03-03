@@ -43,6 +43,7 @@ type Plugin struct {
 	// Userlist processing state
 	processingUserlist map[string]bool
 	userlistMutex      sync.RWMutex
+	userlistJoinQueue  chan userlistJoinRequest
 
 	// Database state
 	storedFunctionAvailable bool
@@ -58,7 +59,23 @@ type Config struct {
 	InactivityTimeoutMinutes int `json:"inactivity_timeout_minutes"`
 	// How long to wait before marking a user as inactive
 	InactivityTimeout time.Duration
+
+	// Userlist ingestion throttling
+	UserlistJoinDelayMS  int `json:"userlist_join_delay_ms"`
+	UserlistJoinQueueMax int `json:"userlist_join_queue_max"`
 }
+
+type userlistJoinRequest struct {
+	channel  string
+	username string
+	rank     int
+	at       time.Time
+}
+
+const (
+	defaultUserlistJoinDelayMS  = 15
+	defaultUserlistJoinQueueMax = 2000
+)
 
 // UserState tracks current state of a user
 type UserState struct {
@@ -74,7 +91,9 @@ func New() framework.Plugin {
 	return &Plugin{
 		name: "usertracker",
 		config: &Config{
-			InactivityTimeout: 30 * time.Minute,
+			InactivityTimeout:    30 * time.Minute,
+			UserlistJoinDelayMS:  defaultUserlistJoinDelayMS,
+			UserlistJoinQueueMax: defaultUserlistJoinQueueMax,
 		},
 		users:              make(map[string]*UserState),
 		readyChan:          make(chan struct{}),
@@ -106,7 +125,9 @@ func (p *Plugin) Ready() bool {
 func NewPlugin(config *Config) *Plugin {
 	if config == nil {
 		config = &Config{
-			InactivityTimeout: 30 * time.Minute,
+			InactivityTimeout:    30 * time.Minute,
+			UserlistJoinDelayMS:  defaultUserlistJoinDelayMS,
+			UserlistJoinQueueMax: defaultUserlistJoinQueueMax,
 		}
 	}
 
@@ -154,10 +175,17 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	if p.config.InactivityTimeout <= 0 {
 		p.config.InactivityTimeout = 30 * time.Minute
 	}
+	if p.config.UserlistJoinDelayMS < 0 {
+		p.config.UserlistJoinDelayMS = defaultUserlistJoinDelayMS
+	}
+	if p.config.UserlistJoinQueueMax <= 0 {
+		p.config.UserlistJoinQueueMax = defaultUserlistJoinQueueMax
+	}
 
 	p.eventBus = bus
 	p.sqlClient = framework.NewSQLClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
+	p.userlistJoinQueue = make(chan userlistJoinRequest, p.config.UserlistJoinQueueMax)
 
 	logger.Debug("UserTracker", "Initialized with inactivity timeout: %v", p.config.InactivityTimeout)
 	return nil
@@ -256,6 +284,10 @@ func (p *Plugin) Start() error {
 	// Start periodic cleanup of inactive sessions
 	p.wg.Add(1)
 	go p.cleanupInactiveSessions()
+
+	// Process bulk userlist joins on a paced worker to avoid startup SQL spikes.
+	p.wg.Add(1)
+	go p.runUserlistJoinWorker()
 
 	p.running = true
 	p.statusMutex.Lock()
@@ -411,10 +443,8 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 		p.handleUserlistJoin(channel, username, userRank, now)
 	} else {
 		p.handleRegularJoin(channel, username, userRank, now)
+		p.recordJoinHistory(channel, username, userRank, now, false)
 	}
-
-	// Record in history
-	p.recordJoinHistory(channel, username, userRank, now, processingUserlist)
 
 	logger.Info("UserTracker", "User joined: %s (rank %d)", username, userRank)
 
@@ -466,6 +496,32 @@ func (p *Plugin) updateInMemoryUser(username string, userRank int, now time.Time
 func (p *Plugin) handleUserlistJoin(channel, username string, userRank int, now time.Time) {
 	// Update in-memory state
 	p.updateInMemoryUser(username, userRank, now)
+
+	req := userlistJoinRequest{
+		channel:  channel,
+		username: username,
+		rank:     userRank,
+		at:       now,
+	}
+	if p.userlistJoinQueue == nil {
+		p.persistUserlistJoin(req)
+		return
+	}
+
+	select {
+	case p.userlistJoinQueue <- req:
+	default:
+		// Queue saturation fallback keeps user state correctness while load shedding.
+		logger.Warn("UserTracker", "Userlist join queue full, applying synchronous fallback for %s", username)
+		p.persistUserlistJoin(req)
+	}
+}
+
+func (p *Plugin) persistUserlistJoin(req userlistJoinRequest) {
+	channel := req.channel
+	username := req.username
+	userRank := req.rank
+	now := req.at
 
 	// Check if stored function is available
 	p.storedFunctionMutex.RLock()
@@ -686,6 +742,42 @@ func (p *Plugin) handleUserListEnd(event framework.Event) error {
 
 	p.eventsHandled.Add(1)
 	return nil
+}
+
+func (p *Plugin) runUserlistJoinWorker() {
+	defer p.wg.Done()
+
+	if p.userlistJoinQueue == nil {
+		return
+	}
+
+	delay := time.Duration(p.config.UserlistJoinDelayMS) * time.Millisecond
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			for {
+				select {
+				case req := <-p.userlistJoinQueue:
+					p.persistUserlistJoin(req)
+				default:
+					return
+				}
+			}
+		case req := <-p.userlistJoinQueue:
+			p.persistUserlistJoin(req)
+
+			if delay > 0 {
+				timer := time.NewTimer(delay)
+				select {
+				case <-p.ctx.Done():
+					timer.Stop()
+					continue
+				case <-timer.C:
+				}
+			}
+		}
+	}
 }
 
 // handleUserLeave processes user leave events

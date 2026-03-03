@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
@@ -25,20 +27,32 @@ type Plugin struct {
 	eventBus  framework.EventBus
 	config    Config
 	pool      *pgxpool.Pool
+	logPool   *pgxpool.Pool
 	db        *sql.DB
 	ctx       context.Context
 	cancel    context.CancelFunc
 	startTime time.Time
 	readyChan chan struct{}
+	workerWg  sync.WaitGroup
 
 	loggerRules   []LoggerRule
 	eventsHandled int64
 	idCounter     int64
+
+	coreEventLogQueue   chan *coreEventLogEntry
+	coreEventBatchSize  int
+	coreEventFlushEvery time.Duration
+	coreEventDrops      atomic.Int64
+	coreEventExecFn     func(context.Context, string, ...interface{}) error
 }
 
 type Config struct {
-	Database    DatabaseConfig `json:"database"`
-	LoggerRules []LoggerRule   `json:"logger_rules"`
+	Database                 DatabaseConfig `json:"database"`
+	LoggerRules              []LoggerRule   `json:"logger_rules"`
+	BackgroundMaxConnections int            `json:"background_max_connections"`
+	CoreEventQueueSize       int            `json:"core_event_queue_size"`
+	CoreEventBatchSize       int            `json:"core_event_batch_size"`
+	CoreEventFlushMS         int            `json:"core_event_flush_ms"`
 }
 
 type DatabaseConfig struct {
@@ -77,6 +91,28 @@ type LogFields struct {
 	ToUser      string    `json:"to_user,omitempty"`
 	MessageTime int64     `json:"message_time,omitempty"`
 }
+
+type coreEventLogEntry struct {
+	EventType   string
+	Timestamp   time.Time
+	Channel     string
+	Username    string
+	Message     string
+	MessageTime int64
+	ToUser      string
+	VideoID     string
+	VideoType   string
+	Title       string
+	Duration    int
+	RawData     []byte
+}
+
+const (
+	defaultCoreEventQueueSize  = 4000
+	defaultCoreEventBatchSize  = 64
+	defaultCoreEventFlushMS    = 200
+	coreEventCriticalEnqueueMS = 75
+)
 
 func NewPlugin() *Plugin {
 	return &Plugin{
@@ -127,6 +163,20 @@ func (p *Plugin) Init(configData json.RawMessage, bus framework.EventBus) error 
 	}
 
 	p.loggerRules = p.config.LoggerRules
+	if p.config.CoreEventQueueSize <= 0 {
+		p.config.CoreEventQueueSize = defaultCoreEventQueueSize
+	}
+	if p.config.CoreEventBatchSize <= 0 {
+		p.config.CoreEventBatchSize = defaultCoreEventBatchSize
+	}
+	if p.config.CoreEventFlushMS <= 0 {
+		p.config.CoreEventFlushMS = defaultCoreEventFlushMS
+	}
+
+	p.coreEventBatchSize = p.config.CoreEventBatchSize
+	p.coreEventFlushEvery = time.Duration(p.config.CoreEventFlushMS) * time.Millisecond
+	p.coreEventLogQueue = make(chan *coreEventLogEntry, p.config.CoreEventQueueSize)
+	p.coreEventExecFn = p.execLog
 
 	logger.Debug("SQL", "Initialized with %d logger rules", len(p.loggerRules))
 	return nil
@@ -187,6 +237,20 @@ func (p *Plugin) Start() error {
 		// - SQLExecRequest -> handleSQLExec
 		// - SQLBatchRequest -> handleBatchQueryRequest or handleBatchExecRequest
 
+		// Dedicated SQL request lanes keep command-critical SQL away from generic plugin.request pressure.
+		if err := p.eventBus.Subscribe("sql.query.request", p.handleSQLQuery); err != nil {
+			logger.Error("SQL", "Failed to subscribe to sql.query.request: %v", err)
+			return
+		}
+		if err := p.eventBus.Subscribe("sql.exec.request", p.handleSQLExec); err != nil {
+			logger.Error("SQL", "Failed to subscribe to sql.exec.request: %v", err)
+			return
+		}
+		if err := p.eventBus.Subscribe("sql.batch.request", p.handleBatchExecRequest); err != nil {
+			logger.Error("SQL", "Failed to subscribe to sql.batch.request: %v", err)
+			return
+		}
+
 		// Subscribe to logger rules after database is connected
 		for _, rule := range p.loggerRules {
 			if rule.Enabled && rule.regex != nil {
@@ -199,6 +263,8 @@ func (p *Plugin) Start() error {
 			}
 		}
 
+		p.startCoreEventWriter()
+
 		// Signal that the plugin is ready after database is connected
 		close(p.readyChan)
 		logger.Debug("SQL", "Started successfully and ready to accept requests after %v total startup time", time.Since(startTime))
@@ -210,14 +276,18 @@ func (p *Plugin) Start() error {
 
 func (p *Plugin) Stop() error {
 	p.cancel()
+	p.workerWg.Wait()
 
-	if p.pool != nil {
-		p.pool.Close()
-	}
 	if p.db != nil {
 		if err := p.db.Close(); err != nil {
 			logger.Error("SQL", "Failed to close database connection: %v", err)
 		}
+	}
+	if p.logPool != nil && p.logPool != p.pool {
+		p.logPool.Close()
+	}
+	if p.pool != nil {
+		p.pool.Close()
 	}
 
 	logger.Info("SQL", "Stopped")
@@ -275,12 +345,18 @@ func (p *Plugin) connectDatabase() error {
 	logger.Debug("SQL", "Connecting to database at %s:%d/%s",
 		p.config.Database.Host, p.config.Database.Port, p.config.Database.Database)
 
+	totalConns := p.config.Database.MaxConnections
+	if totalConns <= 0 {
+		totalConns = 10
+	}
+	criticalConns, backgroundConns := splitConnectionBudget(totalConns, p.config.BackgroundMaxConnections)
+
 	poolConfig, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
 		return fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	poolConfig.MaxConns = int32(p.config.Database.MaxConnections)
+	poolConfig.MaxConns = int32(criticalConns)
 	poolConfig.MaxConnLifetime = time.Duration(p.config.Database.MaxConnLifetime) * time.Second
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
@@ -294,27 +370,62 @@ func (p *Plugin) connectDatabase() error {
 	}
 
 	p.pool = pool
+	p.logPool = pool
+
+	if backgroundConns > 0 {
+		logPoolConfig, err := pgxpool.ParseConfig(connStr)
+		if err != nil {
+			return fmt.Errorf("failed to parse background pool config: %w", err)
+		}
+		logPoolConfig.MaxConns = int32(backgroundConns)
+		logPoolConfig.MaxConnLifetime = time.Duration(p.config.Database.MaxConnLifetime) * time.Second
+
+		logPool, err := pgxpool.NewWithConfig(ctx, logPoolConfig)
+		if err != nil {
+			p.pool.Close()
+			return fmt.Errorf("failed to create background pool: %w", err)
+		}
+		if err := logPool.Ping(ctx); err != nil {
+			logPool.Close()
+			p.pool.Close()
+			return fmt.Errorf("failed to ping background pool: %w", err)
+		}
+		p.logPool = logPool
+	}
 
 	connConfig, err := pgx.ParseConfig(connStr)
 	if err != nil {
-		pool.Close()
+		if p.logPool != nil && p.logPool != p.pool {
+			p.logPool.Close()
+		}
+		p.pool.Close()
 		return fmt.Errorf("failed to parse config for stdlib: %w", err)
 	}
 
-	stdlib.RegisterConnConfig(connConfig)
-	db, err := sql.Open("pgx", stdlib.RegisterConnConfig(connConfig))
+	dbConnStr := stdlib.RegisterConnConfig(connConfig)
+	db, err := sql.Open("pgx", dbConnStr)
 	if err != nil {
-		pool.Close()
+		if p.logPool != nil && p.logPool != p.pool {
+			p.logPool.Close()
+		}
+		p.pool.Close()
 		return fmt.Errorf("failed to open stdlib connection: %w", err)
 	}
 
 	// Set connection pool settings for stdlib
-	db.SetMaxOpenConns(p.config.Database.MaxConnections)
-	db.SetMaxIdleConns(p.config.Database.MaxConnections / 2)
+	db.SetMaxOpenConns(criticalConns)
+	idleConns := criticalConns / 2
+	if idleConns < 1 {
+		idleConns = 1
+	}
+	db.SetMaxIdleConns(idleConns)
 	db.SetConnMaxLifetime(time.Duration(p.config.Database.MaxConnLifetime) * time.Second)
 
 	if err := db.PingContext(ctx); err != nil {
-		pool.Close()
+		if p.logPool != nil && p.logPool != p.pool {
+			p.logPool.Close()
+		}
+		p.pool.Close()
 		if closeErr := db.Close(); closeErr != nil {
 			logger.Error("SQL", "Failed to close database after ping error: %v", closeErr)
 		}
@@ -326,7 +437,10 @@ func (p *Plugin) connectDatabase() error {
 	logger.Debug("SQL", "Initializing database schema...")
 	schemaStart := time.Now()
 	if err := p.initializeSchema(ctx); err != nil {
-		pool.Close()
+		if p.logPool != nil && p.logPool != p.pool {
+			p.logPool.Close()
+		}
+		p.pool.Close()
 		if closeErr := db.Close(); closeErr != nil {
 			logger.Error("SQL", "Failed to close database after schema init error: %v", closeErr)
 		}
@@ -334,8 +448,245 @@ func (p *Plugin) connectDatabase() error {
 	}
 	logger.Debug("SQL", "Schema initialization completed in %v", time.Since(schemaStart))
 
-	logger.Debug("SQL", "Connected to database successfully")
+	logger.Debug("SQL", "Connected to database successfully (critical_conns=%d background_conns=%d)", criticalConns, backgroundConns)
 	return nil
+}
+
+func splitConnectionBudget(total int, configuredBackground int) (critical int, background int) {
+	if total <= 1 {
+		return 1, 0
+	}
+
+	background = configuredBackground
+	if background <= 0 {
+		background = total / 4
+		if background < 1 {
+			background = 1
+		}
+	}
+
+	if background >= total {
+		background = total - 1
+	}
+	if background < 0 {
+		background = 0
+	}
+
+	critical = total - background
+	if critical < 1 {
+		critical = 1
+		background = total - 1
+	}
+
+	return critical, background
+}
+
+func (p *Plugin) getLogPool() *pgxpool.Pool {
+	if p.logPool != nil {
+		return p.logPool
+	}
+	return p.pool
+}
+
+func (p *Plugin) execLog(ctx context.Context, query string, args ...interface{}) error {
+	pool := p.getLogPool()
+	if pool == nil {
+		return fmt.Errorf("database not connected")
+	}
+	_, err := pool.Exec(ctx, query, args...)
+	return err
+}
+
+func (p *Plugin) startCoreEventWriter() {
+	if p.coreEventLogQueue == nil {
+		return
+	}
+
+	p.workerWg.Add(1)
+	go p.runCoreEventWriter()
+}
+
+func (p *Plugin) runCoreEventWriter() {
+	defer p.workerWg.Done()
+
+	ticker := time.NewTicker(p.coreEventFlushEvery)
+	defer ticker.Stop()
+
+	batch := make([]*coreEventLogEntry, 0, p.coreEventBatchSize)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		if err := p.flushCoreEventBatch(batch); err != nil {
+			metrics.DatabaseErrors.Inc()
+			logger.Error("SQL", "Failed to flush core event batch (%d items): %v", len(batch), err)
+		}
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			for {
+				select {
+				case entry := <-p.coreEventLogQueue:
+					if entry != nil {
+						batch = append(batch, entry)
+						if len(batch) >= p.coreEventBatchSize {
+							flush()
+						}
+					}
+				default:
+					flush()
+					return
+				}
+			}
+		case entry := <-p.coreEventLogQueue:
+			if entry == nil {
+				continue
+			}
+			batch = append(batch, entry)
+			if len(batch) >= p.coreEventBatchSize {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		}
+	}
+}
+
+func (p *Plugin) flushCoreEventBatch(entries []*coreEventLogEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
+	defer cancel()
+
+	execFn := p.coreEventExecFn
+	if execFn == nil {
+		execFn = p.execLog
+	}
+
+	query, args := buildCoreEventBatchInsert(entries)
+	if err := execFn(ctx, query, args...); err != nil {
+		return err
+	}
+
+	metrics.DatabaseQueries.WithLabelValues("insert").Add(float64(len(entries)))
+
+	return nil
+}
+
+func buildCoreEventBatchInsert(entries []*coreEventLogEntry) (string, []interface{}) {
+	const columnCount = 12
+	base := `
+		INSERT INTO daz_core_events (
+			event_type, channel_name, timestamp, username, message, message_time,
+			to_user, video_id, video_type, title, duration, raw_data
+		)
+		VALUES %s
+		ON CONFLICT (channel_name, message_time, username)
+		WHERE event_type = 'cytube.event.chatMsg'
+		DO NOTHING
+	`
+
+	valueBlocks := make([]string, 0, len(entries))
+	args := make([]interface{}, 0, len(entries)*columnCount)
+
+	for i, entry := range entries {
+		start := i*columnCount + 1
+		valueBlocks = append(valueBlocks, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			start, start+1, start+2, start+3, start+4, start+5,
+			start+6, start+7, start+8, start+9, start+10, start+11,
+		))
+
+		args = append(args,
+			entry.EventType,
+			entry.Channel,
+			entry.Timestamp,
+			entry.Username,
+			entry.Message,
+			entry.MessageTime,
+			entry.ToUser,
+			entry.VideoID,
+			entry.VideoType,
+			entry.Title,
+			entry.Duration,
+			entry.RawData,
+		)
+	}
+
+	return fmt.Sprintf(base, strings.Join(valueBlocks, ", ")), args
+}
+
+func (p *Plugin) enqueueCoreEventLog(entry *coreEventLogEntry) {
+	if entry == nil {
+		return
+	}
+
+	queue := p.coreEventLogQueue
+	if queue == nil {
+		if err := p.flushCoreEventBatch([]*coreEventLogEntry{entry}); err != nil {
+			metrics.DatabaseErrors.Inc()
+			logger.Error("SQL", "Failed to sync flush core event log: %v", err)
+		}
+		return
+	}
+
+	if !isCriticalCoreEvent(entry.EventType) {
+		capacity := cap(queue)
+		if capacity > 0 && len(queue) >= (capacity*80)/100 {
+			drops := p.coreEventDrops.Add(1)
+			if drops%100 == 1 {
+				logger.Warn("SQL", "Dropping non-critical core event logs under pressure (dropped=%d)", drops)
+			}
+			return
+		}
+	}
+
+	select {
+	case queue <- entry:
+		return
+	default:
+	}
+
+	if isCriticalCoreEvent(entry.EventType) {
+		timer := time.NewTimer(coreEventCriticalEnqueueMS * time.Millisecond)
+		defer timer.Stop()
+
+		select {
+		case queue <- entry:
+			return
+		case <-timer.C:
+		case <-p.ctx.Done():
+			return
+		}
+	}
+
+	drops := p.coreEventDrops.Add(1)
+	if drops%100 == 1 {
+		logger.Warn("SQL", "Dropped core event logs due to full queue (dropped=%d)", drops)
+	}
+}
+
+func isCriticalCoreEvent(eventType string) bool {
+	switch eventType {
+	case "cytube.event.chatMsg",
+		"cytube.event.pm",
+		"cytube.event.pm.sent",
+		"cytube.event.userJoin",
+		"cytube.event.userLeave",
+		"cytube.event.addUser",
+		"cytube.event.userlist.start",
+		"cytube.event.userlist.end",
+		"cytube.event.login",
+		"cytube.event.disconnect":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *Plugin) initializeSchema(ctx context.Context) error {
@@ -561,15 +912,38 @@ func (p *Plugin) logEventData(rule LoggerRule, event *framework.DataEvent) error
 		return fmt.Errorf("invalid table name: %s", rule.Table)
 	}
 
-	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
-	defer cancel()
-
 	timer := prometheus.NewTimer(metrics.DatabaseQueryDuration)
 	defer timer.ObserveDuration()
 
 	fields := p.extractFieldsForRule(rule, event.Data)
 	fields.EventType = event.EventType
 	fields.Timestamp = event.EventTime
+
+	if rule.Table == "daz_core_events" {
+		rawData, err := p.marshalRawData(event.Data)
+		if err != nil {
+			return err
+		}
+
+		p.enqueueCoreEventLog(&coreEventLogEntry{
+			EventType:   fields.EventType,
+			Timestamp:   fields.Timestamp,
+			Channel:     fields.Channel,
+			Username:    fields.Username,
+			Message:     fields.Message,
+			MessageTime: fields.MessageTime,
+			ToUser:      fields.ToUser,
+			VideoID:     fields.VideoID,
+			VideoType:   fields.VideoType,
+			Title:       fields.Title,
+			Duration:    fields.Duration,
+			RawData:     rawData,
+		})
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
 
 	// Convert struct to columns and values for SQL
 	columns := []string{}
@@ -581,18 +955,6 @@ func (p *Plugin) logEventData(rule LoggerRule, event *framework.DataEvent) error
 	values = append(values, fields.EventType, fields.Timestamp)
 	placeholders = append(placeholders, "$1", "$2")
 	i := 3
-
-	if rule.Table == "daz_core_events" {
-		rawData, err := p.marshalRawData(event.Data)
-		if err != nil {
-			return err
-		}
-
-		columns = append(columns, "raw_data")
-		values = append(values, rawData)
-		placeholders = append(placeholders, fmt.Sprintf("$%d", i))
-		i++
-	}
 
 	// Add non-empty fields
 	if fields.Username != "" {
@@ -689,8 +1051,7 @@ func (p *Plugin) logEventData(rule LoggerRule, event *framework.DataEvent) error
 		)
 	}
 
-	_, err := p.pool.Exec(ctx, query, values...)
-	if err != nil {
+	if err := p.execLog(ctx, query, values...); err != nil {
 		metrics.DatabaseErrors.Inc()
 		logger.Error("SQL", "Failed to log event to %s: %v", rule.Table, err)
 		return err

@@ -898,3 +898,45 @@ func TestHandleEvent(t *testing.T) {
 		t.Errorf("Expected HandleEvent to return nil, got %v", err)
 	}
 }
+
+func TestPlaylistIngestProfileStartupWindow(t *testing.T) {
+	p := NewPlugin(&Config{
+		PlaylistIngestBatchSize:    20,
+		PlaylistIngestPauseMS:      100,
+		PlaylistPhase2DelayMS:      500,
+		StartupIngestWindowSeconds: 120,
+		StartupIngestBatchSize:     8,
+		StartupIngestPauseMS:       300,
+		StartupPhase2DelayMS:       1500,
+	})
+
+	p.startupGraceUntil = time.Now().Add(30 * time.Second)
+	batch, pause, phase2, startup := p.playlistIngestProfile()
+	if !startup {
+		t.Fatal("expected startup profile to be active")
+	}
+	if batch != 8 {
+		t.Fatalf("expected startup batch size 8, got %d", batch)
+	}
+	if pause != 300*time.Millisecond {
+		t.Fatalf("expected startup pause 300ms, got %v", pause)
+	}
+	if phase2 != 1500*time.Millisecond {
+		t.Fatalf("expected startup phase2 delay 1500ms, got %v", phase2)
+	}
+
+	p.startupGraceUntil = time.Now().Add(-1 * time.Second)
+	batch, pause, phase2, startup = p.playlistIngestProfile()
+	if startup {
+		t.Fatal("expected startup profile to be inactive")
+	}
+	if batch != 20 {
+		t.Fatalf("expected normal batch size 20, got %d", batch)
+	}
+	if pause != 100*time.Millisecond {
+		t.Fatalf("expected normal pause 100ms, got %v", pause)
+	}
+	if phase2 != 500*time.Millisecond {
+		t.Fatalf("expected normal phase2 delay 500ms, got %v", phase2)
+	}
+}

@@ -45,6 +45,7 @@ type Plugin struct {
 	// Playlist ingestion queue for staged, throttled startup/reconnect processing
 	pendingPlaylistIngest map[string]playlistIngestRequest
 	playlistIngestNotify  chan struct{}
+	startupGraceUntil     time.Time
 }
 
 type playlistInfo struct {
@@ -62,6 +63,12 @@ type Config struct {
 	PlaylistIngestBatchSize int `json:"playlist_ingest_batch_size"`
 	PlaylistIngestPauseMS   int `json:"playlist_ingest_pause_ms"`
 	PlaylistPhase2DelayMS   int `json:"playlist_phase2_delay_ms"`
+
+	// Startup load-shedding profile for initial channel sync
+	StartupIngestWindowSeconds int `json:"startup_ingest_window_seconds"`
+	StartupIngestBatchSize     int `json:"startup_ingest_batch_size"`
+	StartupIngestPauseMS       int `json:"startup_ingest_pause_ms"`
+	StartupPhase2DelayMS       int `json:"startup_phase2_delay_ms"`
 }
 
 type playlistIngestRequest struct {
@@ -91,9 +98,13 @@ func New() framework.Plugin {
 		config: &Config{
 			StatsUpdateInterval: 5 * time.Minute,
 			// Conservative defaults to avoid SQL spikes on full playlist syncs.
-			PlaylistIngestBatchSize: 20,
-			PlaylistIngestPauseMS:   150,
-			PlaylistPhase2DelayMS:   750,
+			PlaylistIngestBatchSize:    20,
+			PlaylistIngestPauseMS:      150,
+			PlaylistPhase2DelayMS:      750,
+			StartupIngestWindowSeconds: 120,
+			StartupIngestBatchSize:     10,
+			StartupIngestPauseMS:       300,
+			StartupPhase2DelayMS:       2000,
 		},
 		readyChan: make(chan struct{}),
 		status: framework.PluginStatus{
@@ -127,10 +138,14 @@ func (p *Plugin) Ready() bool {
 func NewPlugin(config *Config) *Plugin {
 	if config == nil {
 		config = &Config{
-			StatsUpdateInterval:     5 * time.Minute,
-			PlaylistIngestBatchSize: 20,
-			PlaylistIngestPauseMS:   150,
-			PlaylistPhase2DelayMS:   750,
+			StatsUpdateInterval:        5 * time.Minute,
+			PlaylistIngestBatchSize:    20,
+			PlaylistIngestPauseMS:      150,
+			PlaylistPhase2DelayMS:      750,
+			StartupIngestWindowSeconds: 120,
+			StartupIngestBatchSize:     10,
+			StartupIngestPauseMS:       300,
+			StartupPhase2DelayMS:       2000,
 		}
 	}
 
@@ -172,7 +187,14 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	// Ensure default config if not set
 	if p.config == nil {
 		p.config = &Config{
-			StatsUpdateInterval: 5 * time.Minute,
+			StatsUpdateInterval:        5 * time.Minute,
+			PlaylistIngestBatchSize:    20,
+			PlaylistIngestPauseMS:      150,
+			PlaylistPhase2DelayMS:      750,
+			StartupIngestWindowSeconds: 120,
+			StartupIngestBatchSize:     10,
+			StartupIngestPauseMS:       300,
+			StartupPhase2DelayMS:       2000,
 		}
 	}
 
@@ -188,6 +210,18 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 	if p.config.PlaylistPhase2DelayMS < 0 {
 		p.config.PlaylistPhase2DelayMS = 750
+	}
+	if p.config.StartupIngestWindowSeconds < 0 {
+		p.config.StartupIngestWindowSeconds = 120
+	}
+	if p.config.StartupIngestBatchSize <= 0 {
+		p.config.StartupIngestBatchSize = p.config.PlaylistIngestBatchSize
+	}
+	if p.config.StartupIngestPauseMS < 0 {
+		p.config.StartupIngestPauseMS = p.config.PlaylistIngestPauseMS
+	}
+	if p.config.StartupPhase2DelayMS < 0 {
+		p.config.StartupPhase2DelayMS = p.config.PlaylistPhase2DelayMS
 	}
 
 	p.eventBus = bus
@@ -288,6 +322,7 @@ func (p *Plugin) Start() error {
 	p.status.State = "running"
 	p.status.Uptime = 0
 	p.startTime = time.Now()
+	p.startupGraceUntil = p.startTime.Add(time.Duration(p.config.StartupIngestWindowSeconds) * time.Second)
 
 	// Register commands with the eventfilter plugin
 	p.registerCommands()
@@ -1523,17 +1558,19 @@ func (p *Plugin) processPlaylistIngest(req playlistIngestRequest) {
 
 	start := time.Now()
 	totalItems := len(req.items)
-	batchSize := p.config.PlaylistIngestBatchSize
-	pause := time.Duration(p.config.PlaylistIngestPauseMS) * time.Millisecond
-	phaseDelay := time.Duration(p.config.PlaylistPhase2DelayMS) * time.Millisecond
+	batchSize, pause, phaseDelay, startupProfile := p.playlistIngestProfile()
 
 	logger.Info(
 		"MediaTracker",
-		"Starting staged playlist ingestion for channel %s (%d items, source: %s, queued %v ago)",
+		"Starting staged playlist ingestion for channel %s (%d items, source: %s, queued %v ago, startup_profile=%t, batch=%d, pause=%v, phase2_delay=%v)",
 		req.channel,
 		totalItems,
 		req.eventName,
 		time.Since(req.enqueued).Round(time.Millisecond),
+		startupProfile,
+		batchSize,
+		pause,
+		phaseDelay,
 	)
 
 	// Phase 1: refresh queue table in throttled chunks so setCurrent resolution is available early.
@@ -1607,6 +1644,27 @@ func (p *Plugin) processPlaylistIngest(req playlistIngestRequest) {
 		totalItems,
 		time.Since(start),
 	)
+}
+
+func (p *Plugin) playlistIngestProfile() (int, time.Duration, time.Duration, bool) {
+	batchSize := p.config.PlaylistIngestBatchSize
+	pause := time.Duration(p.config.PlaylistIngestPauseMS) * time.Millisecond
+	phaseDelay := time.Duration(p.config.PlaylistPhase2DelayMS) * time.Millisecond
+
+	if p.config.StartupIngestWindowSeconds > 0 && !p.startupGraceUntil.IsZero() && time.Now().Before(p.startupGraceUntil) {
+		if p.config.StartupIngestBatchSize > 0 && p.config.StartupIngestBatchSize < batchSize {
+			batchSize = p.config.StartupIngestBatchSize
+		}
+		if p.config.StartupIngestPauseMS > p.config.PlaylistIngestPauseMS {
+			pause = time.Duration(p.config.StartupIngestPauseMS) * time.Millisecond
+		}
+		if p.config.StartupPhase2DelayMS > p.config.PlaylistPhase2DelayMS {
+			phaseDelay = time.Duration(p.config.StartupPhase2DelayMS) * time.Millisecond
+		}
+		return batchSize, pause, phaseDelay, true
+	}
+
+	return batchSize, pause, phaseDelay, false
 }
 
 func (p *Plugin) waitForIngestionPause(pause time.Duration, batchEnd, total int) bool {

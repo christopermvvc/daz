@@ -137,7 +137,7 @@ func (p *Plugin) handleLogRequest(event framework.Event) error {
 		return fmt.Errorf("invalid log request: %w", err)
 	}
 
-	if p.pool == nil {
+	if p.getLogPool() == nil {
 		return fmt.Errorf("database not connected")
 	}
 
@@ -155,15 +155,13 @@ func (p *Plugin) handleLogRequest(event framework.Event) error {
 		logReq.Table,
 	)
 
-	_, err := p.pool.Exec(ctx, query,
+	if err := p.execLog(ctx, query,
 		req.From,
 		logReq.EventType,
 		logReq.Data,
 		time.Now(),
 		time.Now(),
-	)
-
-	if err != nil {
+	); err != nil {
 		logger.Error("SQL", "Failed to process log request: %v", err)
 		return err
 	}
@@ -210,7 +208,12 @@ func (p *Plugin) handleBatchLogRequest(event framework.Event) error {
 	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
 	defer cancel()
 
-	tx, err := p.pool.Begin(ctx)
+	pool := p.getLogPool()
+	if pool == nil {
+		return fmt.Errorf("database not connected")
+	}
+
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}

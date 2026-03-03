@@ -36,6 +36,7 @@ type EventBus struct {
 	// Limit concurrent handler execution with reserved capacity for high-priority events.
 	dispatchSemNormal chan struct{}
 	dispatchSemHigh   chan struct{}
+	dispatchPending   chan struct{}
 
 	// Track active routers to prevent duplicates
 	activeRouters map[string]bool
@@ -134,6 +135,7 @@ func NewEventBus(config *Config) *EventBus {
 		droppedEvents:      make(map[string]int64),
 		dispatchSemNormal:  make(chan struct{}, normalWorkers),
 		dispatchSemHigh:    make(chan struct{}, highPriorityWorkers),
+		dispatchPending:    make(chan struct{}, workerCount*8),
 		ctx:                ctx,
 		cancel:             cancel,
 	}
@@ -186,19 +188,14 @@ func (eb *EventBus) Broadcast(eventType string, data *framework.EventData) error
 
 	// Get or create queue
 	queue := eb.getOrCreateQueue(eventType)
+	if eb.shouldDropForQueuePressure(eventType, metadata, queue) {
+		eb.recordDroppedEvent(eventType)
+		return nil
+	}
 
 	// Push with default priority (0)
 	if !queue.push(msg, metadata.Priority) {
-		// Track dropped event
-		eb.metricsMu.Lock()
-		eb.droppedEvents[eventType]++
-		count := eb.droppedEvents[eventType]
-		eb.metricsMu.Unlock()
-
-		// Update Prometheus metrics
-		metrics.EventsDropped.WithLabelValues(eventType).Inc()
-
-		logger.Warn("EventBus", "Dropped event %s - queue closed (total dropped: %d)", eventType, count)
+		eb.recordDroppedEvent(eventType)
 		return nil // Don't return error for dropped events
 	}
 
@@ -223,16 +220,14 @@ func (eb *EventBus) Send(target string, eventType string, data *framework.EventD
 
 	// Use plugin.request queue for direct sends
 	queue := eb.getOrCreateQueue("plugin.request")
+	if eb.shouldDropForQueuePressure("plugin.request", metadata, queue) {
+		eb.recordDroppedEvent("plugin.request")
+		return nil
+	}
 
 	// Push with default priority
 	if !queue.push(msg, metadata.Priority) {
-		// Track dropped event
-		eb.metricsMu.Lock()
-		eb.droppedEvents["plugin.request"]++
-		count := eb.droppedEvents["plugin.request"]
-		eb.metricsMu.Unlock()
-
-		logger.Warn("EventBus", "Dropped direct event to %s - queue closed (total dropped: %d)", target, count)
+		eb.recordDroppedEvent("plugin.request")
 		return nil
 	}
 
@@ -414,16 +409,24 @@ func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
 
 		// Dispatch to each matching subscriber
 		for _, sub := range matching {
-			releaseDispatch := eb.acquireDispatchSlot(msg.Metadata)
+			releasePending, admitted := eb.acquirePendingDispatchSlot(msg)
+			if !admitted {
+				eb.recordDroppedEvent(msg.Type)
+				continue
+			}
+
 			eb.handlerWg.Add(1)
-			go func(s subscriberInfo, m *eventMessage, releaseFn func()) {
+			go func(s subscriberInfo, m *eventMessage, releasePendingFn func()) {
 				defer func() {
 					if r := recover(); r != nil {
 						logger.Error("EventBus", "Handler panic for %s: %v\n%s", eventType, r, debug.Stack())
 					}
-					releaseFn()
+					releasePendingFn()
 					eb.handlerWg.Done()
 				}()
+
+				releaseDispatch := eb.acquireDispatchSlot(m.Metadata)
+				defer releaseDispatch()
 				timer := prometheus.NewTimer(metrics.EventProcessingDuration.WithLabelValues(eventType))
 				defer timer.ObserveDuration()
 
@@ -433,7 +436,7 @@ func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
 
 				// Track successful processing
 				metrics.EventsProcessed.WithLabelValues(eventType).Inc()
-			}(sub, msg, releaseDispatch)
+			}(sub, msg, releasePending)
 		}
 	}
 }
@@ -460,13 +463,55 @@ func (eb *EventBus) acquireDispatchSlot(metadata *framework.EventMetadata) func(
 		}
 
 		// If all workers are occupied, wait on reserved high-priority capacity.
-		eb.dispatchSemHigh <- struct{}{}
-		return func() { <-eb.dispatchSemHigh }
+		select {
+		case eb.dispatchSemHigh <- struct{}{}:
+			return func() { <-eb.dispatchSemHigh }
+		case <-eb.ctx.Done():
+			return func() {}
+		}
 	}
 
 	// Normal-priority events cannot consume reserved high-priority capacity.
-	eb.dispatchSemNormal <- struct{}{}
-	return func() { <-eb.dispatchSemNormal }
+	select {
+	case eb.dispatchSemNormal <- struct{}{}:
+		return func() { <-eb.dispatchSemNormal }
+	case <-eb.ctx.Done():
+		return func() {}
+	}
+}
+
+func (eb *EventBus) acquirePendingDispatchSlot(msg *eventMessage) (func(), bool) {
+	release := func() { <-eb.dispatchPending }
+
+	priority := framework.PriorityNormal
+	if msg != nil && msg.Metadata != nil {
+		priority = msg.Metadata.Priority
+	}
+
+	if priority > framework.PriorityNormal {
+		select {
+		case eb.dispatchPending <- struct{}{}:
+			return release, true
+		case <-eb.ctx.Done():
+			return nil, false
+		}
+	}
+
+	select {
+	case eb.dispatchPending <- struct{}{}:
+		return release, true
+	default:
+		if eb.shouldDropForPressure(msg.Type, msg.Metadata) {
+			return nil, false
+		}
+	}
+
+	select {
+	case eb.dispatchPending <- struct{}{}:
+		return release, true
+	case <-eb.ctx.Done():
+		return nil, false
+	}
 }
 
 // getMatchingSubscribers returns all subscribers that match the event type and tags
@@ -532,6 +577,57 @@ func generateID() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+func (eb *EventBus) recordDroppedEvent(eventType string) {
+	eb.metricsMu.Lock()
+	eb.droppedEvents[eventType]++
+	count := eb.droppedEvents[eventType]
+	eb.metricsMu.Unlock()
+
+	metrics.EventsDropped.WithLabelValues(eventType).Inc()
+	if count == 1 || count%100 == 0 {
+		logger.Warn("EventBus", "Dropped event %s under pressure (total dropped: %d)", eventType, count)
+	}
+}
+
+func (eb *EventBus) shouldDropForPressure(eventType string, metadata *framework.EventMetadata) bool {
+	priority := framework.PriorityNormal
+	if metadata != nil {
+		priority = metadata.Priority
+	}
+	if priority > framework.PriorityNormal {
+		return false
+	}
+
+	switch eventType {
+	case "cytube.event.mediaUpdate",
+		"cytube.event.setUserMeta",
+		"cytube.event.setAFK",
+		"cytube.event.clearVoteskipVote",
+		"cytube.event.channelCSSJS",
+		"cytube.event.meta":
+		return true
+	}
+
+	if strings.HasPrefix(eventType, "plugin.analytics.") {
+		return true
+	}
+
+	return false
+}
+
+func (eb *EventBus) shouldDropForQueuePressure(eventType string, metadata *framework.EventMetadata, queue *messageQueue) bool {
+	if !eb.shouldDropForPressure(eventType, metadata) || queue == nil {
+		return false
+	}
+
+	size, capacity := queue.size()
+	if capacity <= 0 {
+		return false
+	}
+
+	return size >= (capacity*85)/100
+}
+
 // GetDroppedEventCounts returns a copy of the dropped event counts
 func (eb *EventBus) GetDroppedEventCounts() map[string]int64 {
 	eb.metricsMu.RLock()
@@ -554,6 +650,10 @@ func (eb *EventBus) GetDroppedEventCount(eventType string) int64 {
 
 // BroadcastWithMetadata broadcasts an event with metadata
 func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
+	if metadata == nil {
+		metadata = framework.NewEventMetadata("eventbus", eventType)
+	}
+
 	var event framework.Event
 
 	// Check if this is a raw event passthrough
@@ -599,6 +699,10 @@ func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.Even
 
 	// Start router if needed
 	eb.startRouter(eventType, queue)
+	if eb.shouldDropForQueuePressure(eventType, metadata, queue) {
+		eb.recordDroppedEvent(eventType)
+		return nil
+	}
 
 	// Push with priority from metadata
 	priority := 0
@@ -607,12 +711,7 @@ func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.Even
 	}
 
 	if !queue.push(msg, priority) {
-		eb.metricsMu.Lock()
-		eb.droppedEvents[eventType]++
-		count := eb.droppedEvents[eventType]
-		eb.metricsMu.Unlock()
-
-		logger.Warn("EventBus", "Dropped event %s - queue full or closed (total dropped: %d)", eventType, count)
+		eb.recordDroppedEvent(eventType)
 		return nil
 	}
 
@@ -628,8 +727,16 @@ func (eb *EventBus) SendWithMetadata(target string, eventType string, data *fram
 	// Update metadata with target
 	metadata.Target = target
 
-	// Use BroadcastWithMetadata but route to plugin.request channel
-	return eb.BroadcastWithMetadata("plugin.request", data, metadata)
+	routeType := "plugin.request"
+	if target == "sql" {
+		switch eventType {
+		case "sql.query.request", "sql.exec.request", "sql.batch.request":
+			routeType = eventType
+		}
+	}
+
+	// Use BroadcastWithMetadata with the selected request lane.
+	return eb.BroadcastWithMetadata(routeType, data, metadata)
 }
 
 // Request performs a synchronous request to a plugin

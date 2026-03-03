@@ -121,3 +121,11 @@ func (mq *messageQueue) close() {
 	mq.closed = true
 	mq.cond.Broadcast() // Wake up all waiting goroutines
 }
+
+// size returns the current queue depth and configured capacity.
+// If capacity is 0, the queue is effectively unbounded.
+func (mq *messageQueue) size() (int, int) {
+	mq.mu.Lock()
+	defer mq.mu.Unlock()
+	return len(mq.pq), mq.maxSize
+}

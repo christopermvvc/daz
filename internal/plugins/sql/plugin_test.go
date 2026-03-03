@@ -3,8 +3,12 @@ package sql
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
 )
@@ -130,6 +134,255 @@ func TestExtractFieldsForRule(t *testing.T) {
 	// When specific fields are requested, other fields should be empty/zero
 	if fields.UserRank != 0 {
 		t.Error("Expected user_rank to be filtered out (zero value)")
+	}
+}
+
+func TestSplitConnectionBudget(t *testing.T) {
+	tests := []struct {
+		name                 string
+		total                int
+		backgroundConfigured int
+		wantCritical         int
+		wantBackground       int
+	}{
+		{
+			name:                 "single connection keeps critical lane only",
+			total:                1,
+			backgroundConfigured: 0,
+			wantCritical:         1,
+			wantBackground:       0,
+		},
+		{
+			name:                 "auto background split",
+			total:                20,
+			backgroundConfigured: 0,
+			wantCritical:         15,
+			wantBackground:       5,
+		},
+		{
+			name:                 "configured background capped",
+			total:                4,
+			backgroundConfigured: 10,
+			wantCritical:         1,
+			wantBackground:       3,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotCritical, gotBackground := splitConnectionBudget(tc.total, tc.backgroundConfigured)
+			if gotCritical != tc.wantCritical || gotBackground != tc.wantBackground {
+				t.Fatalf("splitConnectionBudget(%d, %d) = (%d, %d), want (%d, %d)",
+					tc.total,
+					tc.backgroundConfigured,
+					gotCritical,
+					gotBackground,
+					tc.wantCritical,
+					tc.wantBackground,
+				)
+			}
+		})
+	}
+}
+
+func TestEnqueueCoreEventLogDropsNonCriticalWhenQueuePressured(t *testing.T) {
+	p := &Plugin{
+		coreEventLogQueue: make(chan *coreEventLogEntry, 1),
+	}
+	p.coreEventLogQueue <- &coreEventLogEntry{EventType: "cytube.event.chatMsg"}
+
+	p.enqueueCoreEventLog(&coreEventLogEntry{
+		EventType: "cytube.event.mediaUpdate",
+	})
+
+	if got := p.coreEventDrops.Load(); got != 1 {
+		t.Fatalf("expected one dropped core event, got %d", got)
+	}
+	if len(p.coreEventLogQueue) != 1 {
+		t.Fatalf("expected queue to remain full, got len=%d", len(p.coreEventLogQueue))
+	}
+}
+
+func TestBuildCoreEventBatchInsert(t *testing.T) {
+	now := time.Now().UTC()
+	entries := []*coreEventLogEntry{
+		{
+			EventType:   "cytube.event.chatMsg",
+			Timestamp:   now,
+			Channel:     "chan",
+			Username:    "alice",
+			Message:     "hi",
+			MessageTime: 1,
+			RawData:     []byte(`{"a":1}`),
+		},
+		{
+			EventType:   "cytube.event.pm",
+			Timestamp:   now,
+			Channel:     "chan",
+			Username:    "bob",
+			Message:     "yo",
+			MessageTime: 2,
+			RawData:     []byte(`{"b":2}`),
+		},
+	}
+
+	query, args := buildCoreEventBatchInsert(entries)
+	if !strings.Contains(query, "INSERT INTO daz_core_events") {
+		t.Fatalf("expected core events insert query, got %q", query)
+	}
+	if !strings.Contains(query, "$13") {
+		t.Fatalf("expected second row placeholders in query, got %q", query)
+	}
+	if strings.Count(query, "($") != 2 {
+		t.Fatalf("expected two VALUES tuples, got query %q", query)
+	}
+	if len(args) != 24 {
+		t.Fatalf("expected 24 args for two rows, got %d", len(args))
+	}
+}
+
+func TestExecLogReturnsErrorWithoutPool(t *testing.T) {
+	p := &Plugin{}
+	if err := p.execLog(context.Background(), "SELECT 1"); err == nil {
+		t.Fatal("expected error when log pool is unavailable")
+	}
+}
+
+func TestFlushCoreEventBatchUsesExecFn(t *testing.T) {
+	now := time.Now().UTC()
+	var called atomic.Bool
+	var argCount atomic.Int64
+
+	p := &Plugin{
+		ctx: context.Background(),
+		coreEventExecFn: func(ctx context.Context, query string, args ...interface{}) error {
+			called.Store(true)
+			if !strings.Contains(query, "INSERT INTO daz_core_events") {
+				return fmt.Errorf("unexpected query: %s", query)
+			}
+			argCount.Store(int64(len(args)))
+			return nil
+		},
+	}
+
+	err := p.flushCoreEventBatch([]*coreEventLogEntry{
+		{
+			EventType:   "cytube.event.chatMsg",
+			Timestamp:   now,
+			Channel:     "chan",
+			Username:    "alice",
+			Message:     "hi",
+			MessageTime: 10,
+			RawData:     []byte(`{}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("flushCoreEventBatch failed: %v", err)
+	}
+	if !called.Load() {
+		t.Fatal("expected exec callback to be called")
+	}
+	if argCount.Load() != 12 {
+		t.Fatalf("expected 12 args for one row, got %d", argCount.Load())
+	}
+}
+
+func TestFlushCoreEventBatchReturnsExecError(t *testing.T) {
+	p := &Plugin{
+		ctx: context.Background(),
+		coreEventExecFn: func(ctx context.Context, query string, args ...interface{}) error {
+			return errors.New("boom")
+		},
+	}
+
+	err := p.flushCoreEventBatch([]*coreEventLogEntry{
+		{
+			EventType: "cytube.event.chatMsg",
+			RawData:   []byte(`{}`),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected propagated exec error, got %v", err)
+	}
+}
+
+func TestStartCoreEventWriterNoQueueNoWorker(t *testing.T) {
+	p := &Plugin{}
+	p.startCoreEventWriter()
+
+	done := make(chan struct{})
+	go func() {
+		p.workerWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("waitgroup did not complete immediately with no queue")
+	}
+}
+
+func TestRunCoreEventWriterFlushesAndDrainsOnShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var flushCalls atomic.Int64
+	var flushedRows atomic.Int64
+	p := &Plugin{
+		ctx:                ctx,
+		coreEventLogQueue:  make(chan *coreEventLogEntry, 8),
+		coreEventBatchSize: 2,
+		// Keep periodic flush out of the way to make batching deterministic in test.
+		coreEventFlushEvery: 30 * time.Second,
+		coreEventExecFn: func(ctx context.Context, query string, args ...interface{}) error {
+			flushCalls.Add(1)
+			flushedRows.Add(int64(len(args) / 12))
+			return nil
+		},
+	}
+
+	p.startCoreEventWriter()
+
+	for i := 0; i < 3; i++ {
+		p.enqueueCoreEventLog(&coreEventLogEntry{
+			EventType:   "cytube.event.chatMsg",
+			Timestamp:   time.Now().UTC(),
+			Channel:     "chan",
+			Username:    "user",
+			Message:     "msg",
+			MessageTime: int64(i + 1),
+			RawData:     []byte(`{}`),
+		})
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for flushCalls.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if flushCalls.Load() < 1 {
+		t.Fatal("expected at least one flush while worker running")
+	}
+
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		p.workerWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for writer worker shutdown")
+	}
+
+	if flushedRows.Load() != 3 {
+		t.Fatalf("expected all 3 rows flushed before shutdown, got %d", flushedRows.Load())
+	}
+	if flushCalls.Load() < 2 {
+		t.Fatalf("expected at least two flush calls (batch + drain), got %d", flushCalls.Load())
 	}
 }
 

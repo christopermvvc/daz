@@ -922,3 +922,34 @@ func TestDatabaseMaintenance(t *testing.T) {
 		}
 	})
 }
+
+func TestHandleUserlistJoinQueuesRequests(t *testing.T) {
+	bus := &MockEventBus{
+		subs: make(map[string][]framework.EventHandler),
+	}
+
+	plugin := &Plugin{
+		name:              "usertracker",
+		eventBus:          bus,
+		sqlClient:         framework.NewSQLClient(bus, "usertracker"),
+		users:             make(map[string]*UserState),
+		userlistJoinQueue: make(chan userlistJoinRequest, 2),
+	}
+
+	now := time.Now().UTC()
+	plugin.handleUserlistJoin("queue-channel", "queue-user", 2, now)
+
+	if len(plugin.userlistJoinQueue) != 1 {
+		t.Fatalf("expected one queued userlist join, got %d", len(plugin.userlistJoinQueue))
+	}
+
+	plugin.mu.RLock()
+	defer plugin.mu.RUnlock()
+	user, exists := plugin.users["queue-user"]
+	if !exists {
+		t.Fatal("expected user to be updated in memory")
+	}
+	if user.Rank != 2 {
+		t.Fatalf("expected rank 2, got %d", user.Rank)
+	}
+}

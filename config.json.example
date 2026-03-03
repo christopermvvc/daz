@@ -38,6 +38,10 @@
         "max_conn_lifetime": 3600,
         "connect_timeout": 30
       },
+      "background_max_connections": 5,
+      "core_event_queue_size": 4000,
+      "core_event_batch_size": 64,
+      "core_event_flush_ms": 200,
       "logger_rules": [
         {
           "event_pattern": "cytube.event.*",
@@ -53,7 +57,16 @@
       "stats_update_interval_minutes": 5,
       "playlist_ingest_batch_size": 20,
       "playlist_ingest_pause_ms": 150,
-      "playlist_phase2_delay_ms": 750
+      "playlist_phase2_delay_ms": 750,
+      "startup_ingest_window_seconds": 120,
+      "startup_ingest_batch_size": 10,
+      "startup_ingest_pause_ms": 300,
+      "startup_phase2_delay_ms": 2000
+    },
+    "usertracker": {
+      "inactivity_timeout_minutes": 30,
+      "userlist_join_delay_ms": 15,
+      "userlist_join_queue_max": 2000
     },
     "ollama": {
       "enabled": true,
