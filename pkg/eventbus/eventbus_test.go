@@ -270,6 +270,33 @@ func TestEventBus_GetBufferSize(t *testing.T) {
 	}
 }
 
+func TestEventBus_GetBufferSizeSQLRequestAlias(t *testing.T) {
+	eb := NewEventBus(&Config{
+		BufferSizes: map[string]int{
+			"sql.request": 321,
+		},
+	})
+	defer func() {
+		if err := eb.Stop(); err != nil {
+			t.Errorf("Stop failed: %v", err)
+		}
+	}()
+
+	tests := []string{
+		"sql.query.request",
+		"sql.exec.request",
+		"sql.batch.request",
+	}
+
+	for _, eventType := range tests {
+		t.Run(eventType, func(t *testing.T) {
+			if got := eb.getBufferSize(eventType); got != 321 {
+				t.Fatalf("getBufferSize(%q) = %d, want 321", eventType, got)
+			}
+		})
+	}
+}
+
 func TestEventBus_MultipleSubscribers(t *testing.T) {
 	eb := NewEventBus(nil)
 	defer func() {

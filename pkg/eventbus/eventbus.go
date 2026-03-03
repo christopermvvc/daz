@@ -381,6 +381,17 @@ func (eb *EventBus) getBufferSize(eventType string) int {
 		return size
 	}
 
+	// Compatibility alias: "sql.request" should apply to sql.*.request lanes.
+	if strings.HasSuffix(eventType, ".request") {
+		parts := strings.Split(eventType, ".")
+		if len(parts) >= 3 {
+			alias := parts[0] + ".request"
+			if size, ok := eb.bufferSizes[alias]; ok {
+				return size
+			}
+		}
+	}
+
 	// Check prefix patterns by looking for the longest matching prefix
 	var longestPrefix string
 	var prefixSize int
@@ -777,36 +788,7 @@ func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.Even
 	if metadata == nil {
 		metadata = framework.NewEventMetadata("eventbus", eventType)
 	}
-
-	var event framework.Event
-
-	// Check if this is a raw event passthrough
-	if data != nil && data.RawEvent != nil {
-		// Use the raw event directly
-		event = data.RawEvent
-		// Debug logging removed for cleaner output
-	} else {
-		// Create enhanced event data
-		enhanced := &framework.EnhancedEventData{
-			EventData: data,
-			Metadata:  metadata,
-		}
-
-		// Wrap in DataEvent for compatibility
-		event = &framework.DataEvent{
-			EventType: eventType,
-			EventTime: metadata.Timestamp,
-			Data:      enhanced.EventData,
-		}
-	}
-
-	// Create event message with metadata
-	msg := &eventMessage{
-		Event:    event,
-		Type:     eventType,
-		Data:     data,
-		Metadata: metadata,
-	}
+	msg := buildEventMessage(eventType, data, metadata)
 
 	// Check if there are potential subscribers (exact or pattern)
 	eb.subMu.RLock()
@@ -851,13 +833,7 @@ func (eb *EventBus) SendWithMetadata(target string, eventType string, data *fram
 	// Update metadata with target
 	metadata.Target = target
 
-	routeType := "plugin.request"
-	if target == "sql" {
-		switch eventType {
-		case "sql.query.request", "sql.exec.request", "sql.batch.request":
-			routeType = eventType
-		}
-	}
+	routeType := eb.requestRouteType(target, eventType)
 
 	// Use BroadcastWithMetadata with the selected request lane.
 	return eb.BroadcastWithMetadata(routeType, data, metadata)
@@ -865,6 +841,9 @@ func (eb *EventBus) SendWithMetadata(target string, eventType string, data *fram
 
 // Request performs a synchronous request to a plugin
 func (eb *EventBus) Request(ctx context.Context, target string, eventType string, data *framework.EventData, metadata *framework.EventMetadata) (*framework.EventData, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if metadata == nil {
 		metadata = &framework.EventMetadata{}
 	}
@@ -909,9 +888,9 @@ func (eb *EventBus) Request(ctx context.Context, target string, eventType string
 	}
 	defer cleanup()
 
-	// Send request with metadata
-	// log.Printf("[EventBus.Request] Sending request to %s: correlationID=%s", target, correlationID)
-	if err := eb.SendWithMetadata(target, eventType, data, metadata); err != nil {
+	// Send request with metadata. Unlike fire-and-forget broadcasts, synchronous requests
+	// must not be silently dropped when request lanes are momentarily full.
+	if err := eb.sendRequestWithContext(ctx, target, eventType, data, metadata); err != nil {
 		logger.Error("EventBus", "Failed to send request: correlationID=%s, error=%v", correlationID, err)
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
@@ -941,6 +920,97 @@ func (eb *EventBus) Request(ctx context.Context, target string, eventType string
 		default:
 			logger.Error("EventBus", "Request failed: correlationID=%s, target=%s, err=%v", correlationID, target, ctx.Err())
 			return nil, fmt.Errorf("request to %s failed: %w", target, ctx.Err())
+		}
+	}
+}
+
+func buildEventMessage(eventType string, data *framework.EventData, metadata *framework.EventMetadata) *eventMessage {
+	var event framework.Event
+
+	// Check if this is a raw event passthrough
+	if data != nil && data.RawEvent != nil {
+		// Use the raw event directly
+		event = data.RawEvent
+		// Debug logging removed for cleaner output
+	} else {
+		// Create enhanced event data
+		enhanced := &framework.EnhancedEventData{
+			EventData: data,
+			Metadata:  metadata,
+		}
+
+		// Wrap in DataEvent for compatibility
+		event = &framework.DataEvent{
+			EventType: eventType,
+			EventTime: metadata.Timestamp,
+			Data:      enhanced.EventData,
+		}
+	}
+
+	return &eventMessage{
+		Event:    event,
+		Type:     eventType,
+		Data:     data,
+		Metadata: metadata,
+	}
+}
+
+func (eb *EventBus) requestRouteType(target, eventType string) string {
+	if target == "sql" {
+		switch eventType {
+		case "sql.query.request", "sql.exec.request", "sql.batch.request":
+			return eventType
+		}
+	}
+	return "plugin.request"
+}
+
+func (eb *EventBus) sendRequestWithContext(
+	ctx context.Context,
+	target string,
+	eventType string,
+	data *framework.EventData,
+	metadata *framework.EventMetadata,
+) error {
+	routeType := eb.requestRouteType(target, eventType)
+	msg := buildEventMessage(routeType, data, metadata)
+
+	// Check if there are potential subscribers (exact or pattern)
+	eb.subMu.RLock()
+	hasExactSubscribers := len(eb.subscribers[routeType]) > 0
+	hasPatternSubscribers := len(eb.patternSubscribers) > 0
+	eb.subMu.RUnlock()
+
+	// Preserve historical behavior: if there are no subscribers yet, return nil and let
+	// caller timeout/retry according to request policy.
+	if !hasExactSubscribers && !hasPatternSubscribers {
+		return nil
+	}
+
+	queue := eb.getOrCreateQueue(routeType)
+	eb.startRouter(routeType, queue)
+
+	priority := 0
+	if metadata != nil {
+		priority = metadata.Priority
+	}
+
+	backoff := time.Millisecond
+	for {
+		if queue.push(msg, priority) {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("request enqueue timed out for %s: %w", routeType, ctx.Err())
+		case <-eb.ctx.Done():
+			return fmt.Errorf("event bus stopping while enqueuing %s", routeType)
+		case <-time.After(backoff):
+		}
+
+		if backoff < 20*time.Millisecond {
+			backoff *= 2
 		}
 	}
 }

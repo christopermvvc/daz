@@ -1,6 +1,7 @@
 package eventbus
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -215,5 +216,94 @@ func TestComputeDispatchLaneSizes(t *testing.T) {
 				t.Fatalf("lane sum mismatch: command=%d high=%d normal=%d workers=%d", command, high, normal, workers)
 			}
 		})
+	}
+}
+
+func TestRequestWaitsForQueueCapacityInsteadOfDropping(t *testing.T) {
+	eb := NewEventBus(&Config{
+		BufferSizes: map[string]int{
+			"plugin.request": 1,
+		},
+	})
+	if err := eb.Start(); err != nil {
+		t.Fatalf("failed to start event bus: %v", err)
+	}
+	defer func() {
+		if err := eb.Stop(); err != nil {
+			t.Errorf("failed to stop event bus: %v", err)
+		}
+	}()
+
+	releaseHandlers := make(chan struct{})
+	var handledRequest int64
+
+	if err := eb.Subscribe("plugin.request", func(event framework.Event) error {
+		dataEvent, ok := event.(*framework.DataEvent)
+		if ok && dataEvent.Data != nil && dataEvent.Data.KeyValue != nil && dataEvent.Data.KeyValue["kind"] == "request" {
+			atomic.AddInt64(&handledRequest, 1)
+			<-releaseHandlers
+			eb.DeliverResponse("req-corr", &framework.EventData{
+				KeyValue: map[string]string{"ok": "1"},
+			}, nil)
+			return nil
+		}
+
+		<-releaseHandlers
+		return nil
+	}); err != nil {
+		t.Fatalf("failed to subscribe plugin lane: %v", err)
+	}
+
+	stopFlood := make(chan struct{})
+	doneFlood := make(chan struct{})
+	go func() {
+		defer close(doneFlood)
+		for {
+			select {
+			case <-stopFlood:
+				return
+			default:
+				_ = eb.Send("flood", "flood.event", &framework.EventData{
+					KeyValue: map[string]string{"kind": "flood"},
+				})
+			}
+		}
+	}()
+
+	time.Sleep(60 * time.Millisecond)
+
+	resultCh := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+		defer cancel()
+
+		_, err := eb.Request(
+			ctx,
+			"eventfilter",
+			"execute",
+			&framework.EventData{
+				KeyValue: map[string]string{"kind": "request"},
+			},
+			&framework.EventMetadata{CorrelationID: "req-corr"},
+		)
+		resultCh <- err
+	}()
+
+	time.Sleep(120 * time.Millisecond)
+	close(releaseHandlers)
+	close(stopFlood)
+	<-doneFlood
+
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			t.Fatalf("expected queued request to succeed once capacity was available, got error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for request result")
+	}
+
+	if got := atomic.LoadInt64(&handledRequest); got != 1 {
+		t.Fatalf("expected request handler to run once, got %d", got)
 	}
 }

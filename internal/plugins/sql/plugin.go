@@ -129,6 +129,7 @@ var backgroundSQLSources = map[string]struct{}{
 	"analytics":    {},
 	"gallery":      {},
 	"mediatracker": {},
+	"retry":        {},
 	"usertracker":  {},
 }
 

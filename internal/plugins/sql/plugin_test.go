@@ -251,6 +251,12 @@ func TestClassifySQLRequestLane(t *testing.T) {
 			expected: sqlLaneBackground,
 		},
 		{
+			name:     "retry source routed to background lane",
+			source:   "retry",
+			query:    "SELECT * FROM acquire_retry_batch($1)",
+			expected: sqlLaneBackground,
+		},
+		{
 			name:     "core events query routed to background lane",
 			source:   "unknown",
 			query:    "SELECT * FROM daz_core_events LIMIT 10",
