@@ -494,6 +494,11 @@
     return { x: event.clientX, y: event.clientY };
   }
 
+  function getEventTarget(event) {
+    const target = event.target;
+    return target && target.nodeType === 1 ? target : target && target.parentElement;
+  }
+
   function setMode(nextMode) {
     if (nextMode !== 'open' && nextMode !== 'minimized') {
       return;
@@ -605,21 +610,29 @@
     if (!root) {
       return;
     }
-    const actionTarget = event.target.closest('[data-action]');
+    const target = getEventTarget(event);
+    if (!target) {
+      return;
+    }
+    const actionTarget = target.closest('[data-action]');
     if (actionTarget) {
       return;
     }
-    if (event.target.closest('#daz-game-modal-resize-handle')) {
+    if (target.closest('#daz-game-modal-resize-handle')) {
       beginInteraction(event, 'resize');
       return;
     }
-    if (event.target.closest('#daz-game-modal-header')) {
+    if (target.closest('#daz-game-modal-header')) {
       beginInteraction(event, 'drag');
     }
   }
 
   function onClick(event) {
-    const actionTarget = event.target.closest('[data-action]');
+    const target = getEventTarget(event);
+    if (!target) {
+      return;
+    }
+    const actionTarget = target.closest('[data-action]');
     if (actionTarget) {
       const action = actionTarget.getAttribute('data-action');
       if (action === 'toggle-min') {
