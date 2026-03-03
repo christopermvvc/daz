@@ -21,12 +21,31 @@
   },
   "event_bus": {
     "buffer_sizes": {
-      "cytube.event": 1000,
-      "sql.request": 100,
-      "plugin.request": 50
+      "cytube.event": 2000,
+      "sql.request": 500,
+      "plugin.request": 2000
     }
   },
   "plugins": {
+    "sql": {
+      "database": {
+        "host": "localhost",
+        "port": 5432,
+        "database": "daz",
+        "user": "your_db_user",
+        "password": "your_db_password",
+        "max_connections": 20,
+        "max_conn_lifetime": 3600,
+        "connect_timeout": 30
+      },
+      "logger_rules": [
+        {
+          "event_pattern": "cytube.event.*",
+          "enabled": true,
+          "table": "daz_core_events"
+        }
+      ]
+    },
     "eventfilter": {
       "command_prefix": "!"
     },

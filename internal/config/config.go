@@ -70,9 +70,9 @@ func DefaultConfig() *Config {
 		},
 		EventBus: EventBusConfig{
 			BufferSizes: map[string]int{
-				"cytube.event":   1000,
-				"sql.request":    100,
-				"plugin.request": 50,
+				"cytube.event":   2000,
+				"sql.request":    500,
+				"plugin.request": 2000,
 			},
 		},
 		Plugins: make(map[string]PluginConfig),

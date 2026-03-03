@@ -28,8 +28,14 @@ func TestDefaultConfig(t *testing.T) {
 	if config.Core.Database.Port != 5432 {
 		t.Errorf("expected default port 5432, got %d", config.Core.Database.Port)
 	}
-	if config.EventBus.BufferSizes["cytube.event"] != 1000 {
-		t.Errorf("expected cytube.event buffer size 1000, got %d", config.EventBus.BufferSizes["cytube.event"])
+	if config.EventBus.BufferSizes["cytube.event"] != 2000 {
+		t.Errorf("expected cytube.event buffer size 2000, got %d", config.EventBus.BufferSizes["cytube.event"])
+	}
+	if config.EventBus.BufferSizes["sql.request"] != 500 {
+		t.Errorf("expected sql.request buffer size 500, got %d", config.EventBus.BufferSizes["sql.request"])
+	}
+	if config.EventBus.BufferSizes["plugin.request"] != 2000 {
+		t.Errorf("expected plugin.request buffer size 2000, got %d", config.EventBus.BufferSizes["plugin.request"])
 	}
 }
 
