@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Modal Skeleton</title>
+    <style>
+        :root {
+            --gms-bg: rgba(14, 20, 34, 0.92);
+            --gms-bg-soft: rgba(20, 28, 44, 0.94);
+            --gms-border: rgba(98, 128, 255, 0.42);
+            --gms-text: #e8ecff;
+            --gms-muted: #9eb0d9;
+            --gms-accent: #7ba4ff;
+            --gms-accent-2: #5ad7a5;
+        }
+
+        body {
+            margin: 0;
+            font-family: "Trebuchet MS", "Segoe UI", Arial, sans-serif;
+            background:
+                radial-gradient(circle at 20% 20%, #2b2f56 0%, transparent 40%),
+                radial-gradient(circle at 80% 0%, #252a4f 0%, transparent 35%),
+                #0f1220;
+            min-height: 100vh;
+            color: #dce3ff;
+        }
+
+        #game-modal-root {
+            position: fixed;
+            left: 14px;
+            bottom: 14px;
+            z-index: 2147483647;
+            width: min(350px, calc(100vw - 28px));
+            max-width: 350px;
+            user-select: none;
+            color: var(--gms-text);
+        }
+
+        #game-modal.hidden #game-modal-panel {
+            display: none;
+        }
+
+        #game-modal {
+            border-radius: 12px;
+            border: 1px solid var(--gms-border);
+            background: var(--gms-bg);
+            backdrop-filter: blur(2px);
+            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
+            transition: transform 0.16s ease, opacity 0.16s ease;
+        }
+
+        #game-modal.minimized #game-modal-body {
+            display: none;
+        }
+
+        #game-modal-header {
+            height: 36px;
+            background: linear-gradient(180deg, #202748, #131933);
+            border-bottom: 1px solid var(--gms-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+            padding: 0 8px;
+            cursor: pointer;
+        }
+
+        #game-modal-title {
+            font-weight: 700;
+            letter-spacing: 0.2px;
+            font-size: 14px;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 4px;
+        }
+
+        button.gms-btn {
+            border: 0;
+            border-radius: 8px;
+            min-width: 26px;
+            height: 24px;
+            color: #e8ebff;
+            background: #303a5a;
+            padding: 0 8px;
+            line-height: 1;
+            cursor: pointer;
+        }
+
+        button.gms-btn:hover {
+            background: #3f4d79;
+        }
+
+        #game-modal-body {
+            padding: 8px;
+            max-height: 380px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        #game-modal-body section {
+            border: 1px solid rgba(120, 142, 202, 0.35);
+            border-radius: 10px;
+            background: var(--gms-bg-soft);
+            padding: 8px;
+        }
+
+        .summary-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            gap: 8px;
+            color: var(--gms-muted);
+            padding-bottom: 6px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            margin-bottom: 6px;
+        }
+
+        .summary {
+            font-weight: 700;
+            color: var(--gms-text);
+        }
+
+        .action-grid {
+            display: grid;
+            gap: 6px;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .action-grid button {
+            border: 0;
+            border-radius: 8px;
+            color: #fff;
+            padding: 7px 8px;
+            min-height: 30px;
+            cursor: pointer;
+            background: linear-gradient(180deg, #3558cf, #213f95);
+        }
+
+        .action-grid button.secondary {
+            background: linear-gradient(180deg, #4d9c7e, #2a7156);
+        }
+
+        details {
+            margin-top: 6px;
+            border-top: 1px dashed rgba(255, 255, 255, 0.14);
+            padding-top: 6px;
+        }
+
+        details summary {
+            cursor: pointer;
+            font-size: 12px;
+            color: var(--gms-accent);
+        }
+
+        .log {
+            background: rgba(9, 12, 22, 0.92);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            height: 120px;
+            overflow: auto;
+            border-radius: 8px;
+            padding: 6px;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+
+        .log-entry {
+            margin-bottom: 4px;
+            color: var(--gms-muted);
+        }
+
+        .log-entry strong {
+            color: var(--gms-accent-2);
+        }
+
+        #game-modal.hidden .dgm-pill {
+            display: flex;
+            position: fixed;
+            left: 14px;
+            bottom: 14px;
+            z-index: 2147483647;
+            width: 44px;
+            height: 44px;
+            border-radius: 22px;
+            background: linear-gradient(180deg, #3f67ff, #2f4dbe);
+            color: #fff;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            cursor: pointer;
+            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.55);
+        }
+
+        #game-modal.hidden .dgm-pill:hover {
+            filter: brightness(1.1);
+        }
+
+        #game-modal:not(.hidden) .dgm-pill {
+            display: none;
+        }
+
+        @media (max-width: 480px) {
+            #game-modal-root {
+                width: calc(100vw - 16px);
+                left: 8px;
+                bottom: 8px;
+            }
+
+            #game-modal-body {
+                max-height: 46vh;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="game-modal-root">
+        <div id="game-modal">
+            <div id="game-modal-panel">
+                <div id="game-modal-header">
+                    <div id="game-modal-title">Game Console (Skeleton)</div>
+                    <div class="header-actions">
+                        <button class="gms-btn" data-action="toggle-min">_</button>
+                        <button class="gms-btn" data-action="hide">Hide</button>
+                    </div>
+                </div>
+                <div id="game-modal-body">
+                    <section>
+                        <div class="summary-row">
+                            <span>State</span>
+                            <span id="state-pill">open</span>
+                        </div>
+                        <div class="summary-row">
+                            <span>Balance</span>
+                            <span id="balance-pill" class="summary">000</span>
+                        </div>
+                        <div class="action-grid">
+                            <button data-action="fish">Fish</button>
+                            <button data-action="8ball">8-Ball</button>
+                            <button class="secondary" data-action="piss">Piss</button>
+                            <button class="secondary" data-action="menu">Nested Menu</button>
+                            <button data-action="shop">Shop</button>
+                            <button data-action="quest">Quest</button>
+                        </div>
+                    </section>
+                    <section>
+                        <div class="summary">Sub-menu playground</div>
+                        <details>
+                            <summary>Fishing options</summary>
+                            <div class="action-grid" style="margin-top: 6px;">
+                                <button data-action="bait-small">Small bait</button>
+                                <button data-action="bait-large">Large bait</button>
+                                <button data-action="bait-gold">Golden bait</button>
+                                <button data-action="fish-reset">Clear fishes</button>
+                            </div>
+                        </details>
+                        <details>
+                            <summary>8-Ball options</summary>
+                            <div class="action-grid" style="margin-top: 6px;">
+                                <button data-action="8ball-ask">Ask</button>
+                                <button data-action="8ball-roll">Roll</button>
+                            </div>
+                        </details>
+                        <details>
+                            <summary>Piss contest options</summary>
+                            <div class="action-grid" style="margin-top: 6px;">
+                                <button data-action="piss-start">Start</button>
+                                <button data-action="piss-quit">Quit</button>
+                            </div>
+                        </details>
+                    </section>
+                    <section>
+                        <div class="summary">Sub-chat (placeholder)</div>
+                        <div id="game-log" class="log" aria-live="polite"></div>
+                    </section>
+                </div>
+            </div>
+            <div class="dgm-pill" id="game-modal-pill">Open</div>
+        </div>
+    </div>
+
+    <script>
+        (function () {
+            const root = document.getElementById('game-modal');
+            const stateLabel = document.getElementById('state-pill');
+            const log = document.getElementById('game-log');
+            const balanceLabel = document.getElementById('balance-pill');
+            const pill = document.getElementById('game-modal-pill');
+            const actions = {
+                fish: 'Placeholder: launch fish command',
+                '8ball': 'Placeholder: ask the 8-ball',
+                piss: 'Placeholder: start piss action',
+                menu: 'Placeholder: open nested gameplay menu',
+                shop: 'Placeholder: open shop overlay',
+                quest: 'Placeholder: start quest',
+                'bait-small': 'Placeholder: use small bait',
+                'bait-large': 'Placeholder: use large bait',
+                'bait-gold': 'Placeholder: use golden bait',
+                'fish-reset': 'Placeholder: reset fish cooldown',
+                '8ball-ask': 'Placeholder: ask a custom question',
+                '8ball-roll': 'Placeholder: random 8-ball answer',
+                'piss-start': 'Placeholder: start a piss contest',
+                'piss-quit': 'Placeholder: quit contest'
+            };
+
+            const stateStorageKey = 'daz-game-modal-state-v1';
+            const balanceStorageKey = 'daz-game-modal-balance-v1';
+
+            let appState = {
+                mode: 'open',
+                balance: 1250
+            };
+
+            function loadState() {
+                try {
+                    const raw = localStorage.getItem(stateStorageKey);
+                    if (raw) {
+                        const parsed = JSON.parse(raw);
+                        if (parsed && typeof parsed === 'object' && parsed.mode) {
+                            appState.mode = parsed.mode === 'minimized' || parsed.mode === 'hidden'
+                                ? parsed.mode
+                                : 'open';
+                        }
+                    }
+
+                    const balance = Number(localStorage.getItem(balanceStorageKey));
+                    if (!Number.isNaN(balance)) {
+                        appState.balance = balance;
+                    }
+                } catch (error) {
+                    // ignore storage errors, keep defaults
+                }
+            }
+
+            function persistState() {
+                try {
+                    localStorage.setItem(stateStorageKey, JSON.stringify({ mode: appState.mode }));
+                    localStorage.setItem(balanceStorageKey, String(appState.balance));
+                } catch (error) {
+                    // ignore persistence failures
+                }
+            }
+
+            function setMode(mode) {
+                appState.mode = mode;
+                root.classList.toggle('hidden', mode === 'hidden');
+                root.classList.toggle('minimized', mode === 'minimized');
+                stateLabel.textContent = mode;
+                persistState();
+            }
+
+            function appendLog(message) {
+                const entry = document.createElement('div');
+                entry.className = 'log-entry';
+                entry.innerHTML = `<strong>[${new Date().toLocaleTimeString([], { hour12: false })}]</strong> ${message}`;
+                log.appendChild(entry);
+                log.scrollTop = log.scrollHeight;
+                while (log.children.length > 24) {
+                    log.removeChild(log.firstElementChild);
+                }
+            }
+
+            function handleAction(action) {
+                if (actions[action]) {
+                    appendLog(actions[action]);
+                    appState.balance += 10;
+                    balanceLabel.textContent = String(appState.balance);
+                    persistState();
+                }
+            }
+
+            function seedLog() {
+                appendLog('Modal skeleton loaded. No real game logic attached yet.');
+                appendLog('Use buttons to verify no chat spam behavior from repeated UI updates.');
+                appendLog('Current mode: ' + appState.mode);
+            }
+
+            function bindEvents() {
+                root.addEventListener('click', (event) => {
+                    const button = event.target.closest('button[data-action]');
+                    if (!button) {
+                        return;
+                    }
+                    const action = button.getAttribute('data-action');
+
+                    if (action === 'hide') {
+                        setMode('hidden');
+                        return;
+                    }
+
+                    if (action === 'toggle-min') {
+                        setMode(appState.mode === 'minimized' ? 'open' : 'minimized');
+                        return;
+                    }
+
+                    handleAction(action);
+                });
+
+                pill.addEventListener('click', () => {
+                    setMode('open');
+                });
+            }
+
+            loadState();
+            setMode(appState.mode);
+            balanceLabel.textContent = String(appState.balance);
+            seedLog();
+            bindEvents();
+        })();
+    </script>
+</body>
+</html>
