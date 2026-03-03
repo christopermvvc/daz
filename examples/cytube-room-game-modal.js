@@ -41,6 +41,7 @@
   const MINIMIZED_HEIGHT = 38;
   const MINIMIZED_WIDTH = 220;
   const DEFAULT_MARGIN = 12;
+  const MINIMIZED_OFFSET = 0;
   const MINIMIZED_ICON = '▢';
   const OPEN_ICON = '—';
 
@@ -754,34 +755,46 @@
     const normalized = normalizeGeometry();
     const viewport = getViewportBounds();
     const isMinimized = state.mode === 'minimized';
-    const heightForRender = isMinimized ? MINIMIZED_HEIGHT : normalized.height;
-    const widthForRender = isMinimized ? MINIMIZED_WIDTH : normalized.width;
+    if (isMinimized) {
+      const minimizedLeft = clamp(
+        DEFAULT_MARGIN,
+        DEFAULT_MARGIN,
+        Math.max(DEFAULT_MARGIN, viewport.width - MINIMIZED_WIDTH - DEFAULT_MARGIN),
+      );
+      root.style.setProperty('position', 'fixed', 'important');
+      root.style.setProperty('left', `${minimizedLeft}px`, 'important');
+      root.style.setProperty('top', 'auto', 'important');
+      root.style.setProperty('right', 'auto', 'important');
+      root.style.setProperty('bottom', `${MINIMIZED_OFFSET}px`, 'important');
+      root.style.setProperty('width', `${MINIMIZED_WIDTH}px`, 'important');
+      root.style.setProperty('height', `${MINIMIZED_HEIGHT}px`, 'important');
+      root.style.setProperty('display', 'block', 'important');
+      root.style.setProperty('visibility', 'visible', 'important');
+      root.style.setProperty('z-index', '2147483647', 'important');
+      root.style.setProperty('user-select', 'none', 'important');
+      root.style.setProperty('pointer-events', 'auto', 'important');
+      root.style.setProperty('transform', 'none', 'important');
+      root.style.setProperty('margin', '0', 'important');
+      state.left = minimizedLeft;
+      return;
+    }
+
+    const heightForRender = normalized.height;
+    const widthForRender = normalized.width;
     const maxTop = Math.max(DEFAULT_MARGIN, viewport.height - heightForRender - DEFAULT_MARGIN);
-    const clampedLeft = clamp(
-      normalized.left,
-      DEFAULT_MARGIN,
-      Math.max(DEFAULT_MARGIN, viewport.width - widthForRender - DEFAULT_MARGIN),
-    );
+    const clampedLeft = clamp(normalized.left, DEFAULT_MARGIN, Math.max(DEFAULT_MARGIN, viewport.width - widthForRender - DEFAULT_MARGIN));
     const clampedTop = clamp(normalized.top, DEFAULT_MARGIN, maxTop);
 
     state.left = clampedLeft;
     state.top = clampedTop;
-    if (!isMinimized) {
-      state.height = normalized.height;
-      state.width = normalized.width;
-    }
+    state.height = normalized.height;
+    state.width = normalized.width;
 
     root.style.setProperty('position', 'fixed', 'important');
     root.style.setProperty('left', `${state.left}px`, 'important');
     root.style.setProperty('right', 'auto', 'important');
-    if (isMinimized) {
-      root.style.setProperty('left', `${DEFAULT_MARGIN}px`, 'important');
-      root.style.setProperty('top', 'auto', 'important');
-      root.style.setProperty('bottom', `${DEFAULT_MARGIN}px`, 'important');
-    } else {
-      root.style.setProperty('top', `${state.top}px`, 'important');
-      root.style.setProperty('bottom', 'auto', 'important');
-    }
+    root.style.setProperty('top', `${state.top}px`, 'important');
+    root.style.setProperty('bottom', 'auto', 'important');
     root.style.setProperty('width', `${widthForRender}px`, 'important');
     root.style.setProperty('height', `${heightForRender}px`, 'important');
     root.style.setProperty('display', 'block', 'important');
