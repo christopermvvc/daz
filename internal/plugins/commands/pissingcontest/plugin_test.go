@@ -436,6 +436,114 @@ func TestRegisterCommands(t *testing.T) {
 	}
 }
 
+func TestDependenciesIncludesOllama(t *testing.T) {
+	p := New().(*Plugin)
+	deps := p.Dependencies()
+
+	foundOllama := false
+	for _, dep := range deps {
+		if dep == "ollama" {
+			foundOllama = true
+			break
+		}
+	}
+	if !foundOllama {
+		t.Fatalf("dependencies should include ollama, got %v", deps)
+	}
+}
+
+func TestRequestOllamaListenerStateSendsPluginRequest(t *testing.T) {
+	p, bus := newTestPlugin(t, `{}`)
+
+	p.requestOllamaListenerState("TestRoom", false)
+	p.requestOllamaListenerState("TestRoom", true)
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+
+	var disableReq, enableReq *framework.PluginRequest
+	for _, broadcast := range bus.broadcasts {
+		if broadcast.data == nil || broadcast.data.PluginRequest == nil {
+			continue
+		}
+		switch broadcast.data.PluginRequest.Type {
+		case operationDisableListener:
+			disableReq = broadcast.data.PluginRequest
+		case operationEnableListener:
+			enableReq = broadcast.data.PluginRequest
+		}
+	}
+	if disableReq == nil {
+		t.Fatal("expected listener.disable request")
+	}
+	if enableReq == nil {
+		t.Fatal("expected listener.enable request")
+	}
+	if disableReq.To != "ollama" || enableReq.To != "ollama" {
+		t.Fatalf("unexpected target: disable=%q enable=%q", disableReq.To, enableReq.To)
+	}
+	if got := string(disableReq.Data.RawJSON); got == "" {
+		t.Fatal("expected disable request payload")
+	}
+	if got := string(enableReq.Data.RawJSON); got == "" {
+		t.Fatal("expected enable request payload")
+	}
+	var disablePayload, enablePayload ollamaListenerControlRequest
+	if err := json.Unmarshal(disableReq.Data.RawJSON, &disablePayload); err != nil {
+		t.Fatalf("decode disable payload: %v", err)
+	}
+	if err := json.Unmarshal(enableReq.Data.RawJSON, &enablePayload); err != nil {
+		t.Fatalf("decode enable payload: %v", err)
+	}
+	if disablePayload.Channel != "testroom" {
+		t.Fatalf("disable payload channel = %q, want %q", disablePayload.Channel, "testroom")
+	}
+	if enablePayload.Channel != "testroom" {
+		t.Fatalf("enable payload channel = %q, want %q", enablePayload.Channel, "testroom")
+	}
+}
+
+func TestHandleAcceptChallengeDisablesListener(t *testing.T) {
+	p, bus := newTestPlugin(t, `{}`)
+	challenge := &activeChallenge{
+		Room:       "room",
+		Challenger: "alice",
+		Challenged: "bob",
+		Status:     activeChallengeStatus,
+	}
+	p.challenges["room"] = map[string]*activeChallenge{
+		"alice": challenge,
+	}
+
+	p.handleAcceptChallenge("alice", "room", "bob")
+
+	time.Sleep(50 * time.Millisecond)
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+
+	var disableReq *framework.PluginRequest
+	for _, b := range bus.broadcasts {
+		if b.eventType != "plugin.request" || b.data == nil || b.data.PluginRequest == nil {
+			continue
+		}
+		if b.data.PluginRequest.To == "ollama" && b.data.PluginRequest.Type == operationDisableListener {
+			disableReq = b.data.PluginRequest
+			break
+		}
+	}
+	if disableReq == nil {
+		t.Fatal("expected pissing contest to disable ollama listener on accept")
+	}
+	var payload ollamaListenerControlRequest
+	if err := json.Unmarshal(disableReq.Data.RawJSON, &payload); err != nil {
+		t.Fatalf("decode disable payload: %v", err)
+	}
+	if payload.Channel != "room" {
+		t.Fatalf("disable payload channel = %q, want room", payload.Channel)
+	}
+}
+
 func TestHandleCommandValidation(t *testing.T) {
 	t.Parallel()
 

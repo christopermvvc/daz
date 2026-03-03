@@ -7,13 +7,15 @@ import (
 )
 
 const (
-	pluginName             = "pissingcontest"
-	activeChallengeStatus  = "pending"
-	completedChallengeStat = "completed"
-	challengeTimeout       = 30 * time.Second
-	defaultCooldown        = 5 * time.Minute
-	contestEventBaseDelay  = 4 * time.Second
-	contestEventStepDelay  = 1 * time.Second
+	pluginName               = "pissingcontest"
+	activeChallengeStatus    = "pending"
+	completedChallengeStat   = "completed"
+	challengeTimeout         = 30 * time.Second
+	defaultCooldown          = 5 * time.Minute
+	contestEventBaseDelay    = 4 * time.Second
+	contestEventStepDelay    = 1 * time.Second
+	operationDisableListener = "listener.disable"
+	operationEnableListener  = "listener.enable"
 )
 
 type Config struct {

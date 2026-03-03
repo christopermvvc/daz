@@ -58,7 +58,7 @@ func New() framework.Plugin {
 }
 
 func (p *Plugin) Dependencies() []string {
-	return []string{"sql", "economy"}
+	return []string{"sql", "economy", "ollama"}
 }
 
 func (p *Plugin) Name() string { return p.name }
@@ -448,7 +448,46 @@ func (p *Plugin) handleAcceptChallenge(challenger, room, challenged string) {
 	}
 
 	challenge.Status = "accepted"
+	p.requestOllamaListenerState(challenge.Room, false)
 	p.startContest(challenge)
+}
+
+type ollamaListenerControlRequest struct {
+	Channel string `json:"channel"`
+}
+
+func (p *Plugin) requestOllamaListenerState(room string, enabled bool) {
+	channel := normalizeChannel(room)
+	if channel == "" {
+		return
+	}
+
+	operation := operationDisableListener
+	if enabled {
+		operation = operationEnableListener
+	}
+
+	payload, err := json.Marshal(ollamaListenerControlRequest{Channel: channel})
+	if err != nil {
+		logger.Error(p.name, "failed to marshal ollama listener control payload: %v", err)
+		return
+	}
+
+	request := &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			ID:   fmt.Sprintf("pissingcontest-listener-%d", time.Now().UnixNano()),
+			From: p.name,
+			To:   "ollama",
+			Type: operation,
+			Data: &framework.RequestData{
+				RawJSON: payload,
+			},
+		},
+	}
+
+	if err := p.eventBus.Broadcast("plugin.request", request); err != nil {
+		logger.Error(p.name, "failed to request ollama listener state change for room %s: %v", room, err)
+	}
 }
 
 func (p *Plugin) handleDeclineChallenge(challenger, room, challenged string) {
@@ -719,6 +758,11 @@ func (p *Plugin) startContest(ch *activeChallenge) {
 }
 
 func (p *Plugin) runContest(ch *activeChallenge) {
+	if ch == nil {
+		return
+	}
+	defer p.requestOllamaListenerState(ch.Room, true)
+
 	time.Sleep(1500 * time.Millisecond)
 
 	ch.ChallengerChar = randomCharacteristic()

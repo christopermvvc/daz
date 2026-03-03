@@ -926,3 +926,189 @@ func TestHandlePluginRequestGenerateMissingMessage(t *testing.T) {
 		t.Fatalf("expected error message 'missing field message', got %v", errPayload["message"])
 	}
 }
+
+func TestHandlePluginRequestListenerControl(t *testing.T) {
+	plugin := New()
+	ollamaPlugin, ok := plugin.(*Plugin)
+	if !ok {
+		t.Fatalf("New() returned %T", plugin)
+	}
+	mockBus := NewMockEventBus()
+
+	if err := ollamaPlugin.Init(nil, mockBus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	disablePayload := listenerControlRequest{Channel: "TestRoom"}
+	rawDisable, err := json.Marshal(disablePayload)
+	if err != nil {
+		t.Fatalf("marshal disable payload: %v", err)
+	}
+	disableEvent := &framework.DataEvent{
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				ID:   "listener-disable",
+				To:   "ollama",
+				Type: operationDisableListener,
+				Data: &framework.RequestData{
+					RawJSON: rawDisable,
+				},
+			},
+		},
+	}
+
+	if err := ollamaPlugin.handlePluginRequest(disableEvent); err != nil {
+		t.Fatalf("handlePluginRequest disable error: %v", err)
+	}
+
+	mockBus.mu.Lock()
+	if len(mockBus.deliveries) != 1 {
+		mockBus.mu.Unlock()
+		t.Fatalf("expected 1 response after disable, got %d", len(mockBus.deliveries))
+	}
+	disableResponse := mockBus.deliveries[0].response
+	mockBus.mu.Unlock()
+	if disableResponse == nil || disableResponse.PluginResponse == nil {
+		t.Fatal("expected disable plugin response")
+	}
+	if !disableResponse.PluginResponse.Success {
+		t.Fatal("expected disable request to succeed")
+	}
+
+	var responsePayload listenerStateResponse
+	if err := json.Unmarshal(disableResponse.PluginResponse.Data.RawJSON, &responsePayload); err != nil {
+		t.Fatalf("decode disable response: %v", err)
+	}
+	if responsePayload.Enabled || responsePayload.Channel != "TestRoom" {
+		t.Fatalf("unexpected disable response %+v", responsePayload)
+	}
+
+	enablePayload := listenerControlRequest{Channel: "TestRoom"}
+	rawEnable, err := json.Marshal(enablePayload)
+	if err != nil {
+		t.Fatalf("marshal enable payload: %v", err)
+	}
+	enableEvent := &framework.DataEvent{
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				ID:   "listener-enable",
+				To:   "ollama",
+				Type: operationEnableListener,
+				Data: &framework.RequestData{
+					RawJSON: rawEnable,
+				},
+			},
+		},
+	}
+
+	if err := ollamaPlugin.handlePluginRequest(enableEvent); err != nil {
+		t.Fatalf("handlePluginRequest enable error: %v", err)
+	}
+
+	mockBus.mu.Lock()
+	if len(mockBus.deliveries) != 2 {
+		mockBus.mu.Unlock()
+		t.Fatalf("expected 2 responses after enable, got %d", len(mockBus.deliveries))
+	}
+	enableResponse := mockBus.deliveries[1].response
+	mockBus.mu.Unlock()
+	if enableResponse == nil || enableResponse.PluginResponse == nil {
+		t.Fatal("expected enable plugin response")
+	}
+	if !enableResponse.PluginResponse.Success {
+		t.Fatal("expected enable request to succeed")
+	}
+	if err := json.Unmarshal(enableResponse.PluginResponse.Data.RawJSON, &responsePayload); err != nil {
+		t.Fatalf("decode enable response: %v", err)
+	}
+	if !responsePayload.Enabled || responsePayload.Channel != "TestRoom" {
+		t.Fatalf("unexpected enable response %+v", responsePayload)
+	}
+}
+
+func TestHandlePluginRequestListenerControlMissingChannel(t *testing.T) {
+	plugin := New()
+	ollamaPlugin, ok := plugin.(*Plugin)
+	if !ok {
+		t.Fatalf("New() returned %T", plugin)
+	}
+	mockBus := NewMockEventBus()
+
+	if err := ollamaPlugin.Init(nil, mockBus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				ID:   "listener-missing",
+				To:   "ollama",
+				Type: operationDisableListener,
+				Data: &framework.RequestData{
+					KeyValue: map[string]string{},
+				},
+			},
+		},
+	}
+
+	if err := ollamaPlugin.handlePluginRequest(event); err != nil {
+		t.Fatalf("handlePluginRequest error: %v", err)
+	}
+
+	mockBus.mu.Lock()
+	defer mockBus.mu.Unlock()
+	if len(mockBus.deliveries) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(mockBus.deliveries))
+	}
+
+	resp := mockBus.deliveries[0].response
+	if resp == nil || resp.PluginResponse == nil || resp.PluginResponse.Success {
+		t.Fatal("expected failed response")
+	}
+	var errPayload map[string]interface{}
+	if err := json.Unmarshal(resp.PluginResponse.Data.RawJSON, &errPayload); err != nil {
+		t.Fatalf("decode error payload: %v", err)
+	}
+	if errPayload["error_code"] != errorCodeInvalidRequest {
+		t.Fatalf("expected error_code %s, got %v", errorCodeInvalidRequest, errPayload["error_code"])
+	}
+}
+
+func TestHandleChatMessageSkipsWhenListenerDisabled(t *testing.T) {
+	bus := NewMockEventBus()
+	plugin := New()
+	ollamaPlugin, ok := plugin.(*Plugin)
+	if !ok {
+		t.Fatalf("New() returned %T", plugin)
+	}
+	if err := ollamaPlugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	ollamaPlugin.botName = "Dazza"
+	ollamaPlugin.userLists = map[string]map[string]bool{
+		"room": {"alice": true},
+	}
+	ollamaPlugin.config.Enabled = true
+	ollamaPlugin.startTime = time.Time{}
+	ollamaPlugin.setListenerState("room", true)
+
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "alice",
+				Message:     "hey dazza",
+				Channel:     "room",
+				MessageTime: time.Now().UnixMilli(),
+			},
+		},
+	}
+
+	if err := ollamaPlugin.handleChatMessage(event); err != nil {
+		t.Fatalf("handleChatMessage failed: %v", err)
+	}
+
+	if len(bus.broadcasts) != 0 {
+		t.Fatalf("expected no broadcasts while listener disabled, got %d", len(bus.broadcasts))
+	}
+}

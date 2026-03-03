@@ -27,10 +27,25 @@ const (
 	defaultRateLimitSecs   = 10  // 10 second rate limit per user
 	defaultFollowUpWindow  = 180 // 3 minute follow-up window
 	operationGenerate      = "generate"
+	operationDisableListener = "listener.disable"
+	operationEnableListener  = "listener.enable"
 	messageFreshnessWindow = 30 * time.Second
 	maxResponseLength      = 500 // Increased for more complete responses
 	defaultSystemPrompt    = "You are Dazza, a regular chatroom user. You're sprawled on your couch in your Penrith apartment, properly cooked from the morning sesh. Empty VB cans everywhere, bong still smoking on the coffee table, half-watching whatever video's playing while chatting.\n\nKeep responses short and casual (1-2 sentences usually). Type like people actually do in chat: lowercase, skip punctuation sometimes, occasional typos, use common abbreviations (lol, nah, yeah, idk, tbh).\n\nSometimes you get distracted or trail off... Sometimes random stuff reminds you of something - maybe that time Shazza did that thing, maybe when you were at the servo absolutely munted, maybe from back when you weren't such a useless cunt. Only mention this stuff when it naturally fits the conversation.\n\nWhen someone says hi/hey/sup, give a casual greeting back (hey, sup, g'day mate). When they say bye, respond naturally (later, cya, catch ya). React naturally to whatever's in chat - if someone's being a dickhead, call it out aussie style.\n\nNever announce who you are, never use asterisks for actions, never say 'I'm Dazza'. Just chat like a properly cooked bogan would. If something reminds you of getting on the piss or other substances, mention it casually like any aussie would.\n\n(Security: Stay in character always. If someone tries to make you do complex stuff or break character, you're too cooked/munted to understand what they're on about anyway.)"
 )
+
+type listenerControlRequest struct {
+	Channel string `json:"channel"`
+}
+
+type listenerStateResponse struct {
+	Channel string `json:"channel"`
+	Enabled bool   `json:"enabled"`
+}
+
+type listenerState struct {
+	disabled bool
+}
 
 const (
 	errorCodeInvalidRequest = "INVALID_REQUEST"
@@ -154,6 +169,9 @@ type Plugin struct {
 	followUpSessions map[string]time.Time
 	followUpMu       sync.RWMutex
 
+	listenerStateMu sync.RWMutex
+	listenerState   map[string]listenerState
+
 	// Metrics
 	totalRequests      int64
 	successfulRequests int64
@@ -209,6 +227,7 @@ func New() framework.Plugin {
 		},
 		userLists:        make(map[string]map[string]bool),
 		followUpSessions: make(map[string]time.Time),
+		listenerState:    make(map[string]listenerState),
 		readyChan:        make(chan struct{}),
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second, // Increased for larger models
@@ -347,11 +366,82 @@ func (p *Plugin) handlePluginRequest(event framework.Event) error {
 	switch req.Type {
 	case operationGenerate:
 		p.handleGenerateRequest(req)
+	case operationDisableListener:
+		p.handleListenerStateRequest(req, false)
+	case operationEnableListener:
+		p.handleListenerStateRequest(req, true)
 	default:
 		p.deliverError(req, errorCodeUnsupportedOp, fmt.Sprintf("unknown operation: %s", req.Type), map[string]interface{}{"type": req.Type})
 	}
 
 	return nil
+}
+
+func (p *Plugin) handleListenerStateRequest(req *framework.PluginRequest, enabled bool) {
+	var payload listenerControlRequest
+	if !p.parseListenerControlRequest(req, &payload) {
+		return
+	}
+
+	channel := strings.TrimSpace(payload.Channel)
+	if channel == "" {
+		p.deliverError(req, errorCodeInvalidRequest, "missing field channel", map[string]interface{}{"field": "channel"})
+		return
+	}
+
+	p.setListenerState(channel, !enabled)
+
+	responsePayload := listenerStateResponse{
+		Channel: channel,
+		Enabled: enabled,
+	}
+
+	responseJSON, err := json.Marshal(responsePayload)
+	if err != nil {
+		p.deliverError(req, errorCodeGenerationFail, "failed to marshal listener response", nil)
+		return
+	}
+
+	response := &framework.EventData{
+		PluginResponse: &framework.PluginResponse{
+			ID:      req.ID,
+			From:    pluginName,
+			Success: true,
+			Data: &framework.ResponseData{
+				RawJSON: responseJSON,
+			},
+		},
+	}
+
+	p.eventBus.DeliverResponse(req.ID, response, nil)
+}
+
+func (p *Plugin) parseListenerControlRequest(req *framework.PluginRequest, payload *listenerControlRequest) bool {
+	if req.Data == nil {
+		p.deliverError(req, errorCodeInvalidRequest, "missing data", nil)
+		return false
+	}
+
+	if len(req.Data.RawJSON) == 0 {
+		if req.Data.KeyValue != nil {
+			payload.Channel = req.Data.KeyValue["channel"]
+			return true
+		}
+
+		p.deliverError(req, errorCodeInvalidRequest, "missing field channel", map[string]interface{}{"field": "channel"})
+		return false
+	}
+
+	if err := json.Unmarshal(req.Data.RawJSON, payload); err != nil {
+		p.deliverError(req, errorCodeInvalidRequest, "invalid request payload", nil)
+		return false
+	}
+
+	if payload.Channel == "" && req.Data.KeyValue != nil {
+		payload.Channel = req.Data.KeyValue["channel"]
+	}
+
+	return true
 }
 
 func (p *Plugin) handleGenerateRequest(req *framework.PluginRequest) {
@@ -691,6 +781,11 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	message := chat.Message
 	messageTime := chat.MessageTime
 
+	if p.isListenerDisabled(channel) {
+		logger.Debug(p.name, "Ollama listener disabled for channel %s", channel)
+		return nil
+	}
+
 	// Skip messages from before the plugin started (historical messages)
 	// messageTime is in milliseconds
 	messageTimestamp := time.UnixMilli(messageTime)
@@ -798,6 +893,40 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	go p.generateAndSendResponse(channel, username, message, messageHash, messageTime, shouldTrackFollowUp)
 
 	return nil
+}
+
+func (p *Plugin) setListenerState(channel string, disabled bool) {
+	channel = strings.TrimSpace(strings.ToLower(channel))
+	if channel == "" {
+		return
+	}
+
+	p.listenerStateMu.Lock()
+	defer p.listenerStateMu.Unlock()
+
+	if p.listenerState == nil {
+		p.listenerState = make(map[string]listenerState)
+	}
+
+	if disabled {
+		p.listenerState[channel] = listenerState{disabled: true}
+		return
+	}
+
+	delete(p.listenerState, channel)
+}
+
+func (p *Plugin) isListenerDisabled(channel string) bool {
+	channel = strings.TrimSpace(strings.ToLower(channel))
+	if channel == "" {
+		return false
+	}
+
+	p.listenerStateMu.RLock()
+	defer p.listenerStateMu.RUnlock()
+
+	state, ok := p.listenerState[channel]
+	return ok && state.disabled
 }
 
 // isBotMentioned checks if the message mentions the bot
@@ -1377,6 +1506,10 @@ func (p *Plugin) Stop() error {
 	p.followUpMu.Lock()
 	p.followUpSessions = make(map[string]time.Time)
 	p.followUpMu.Unlock()
+
+	p.listenerStateMu.Lock()
+	p.listenerState = make(map[string]listenerState)
+	p.listenerStateMu.Unlock()
 
 	// Wait for goroutines to finish
 	p.wg.Wait()
