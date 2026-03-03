@@ -54,15 +54,17 @@
         position: fixed;
         left: 12px;
         bottom: 12px;
+        display: block !important;
+        visibility: visible !important;
         width: clamp(320px, 34vw, 700px);
         height: clamp(250px, 36vh, 420px);
         z-index: 2147483647;
         font-family: Cinzel, Georgia, serif;
+        pointer-events: auto !important;
         color: #d4af37;
         letter-spacing: 0.5px;
         user-select: none;
         text-transform: uppercase;
-        pointer-events: auto !important;
       }
 
       #daz-game-modal-root * {
@@ -583,7 +585,7 @@
     const style = document.createElement('style');
     style.id = 'daz-game-modal-inline-styles';
     style.textContent = cssText();
-    document.head.appendChild(style);
+    (document.head || document.documentElement).appendChild(style);
   }
 
   function mount() {
@@ -598,6 +600,7 @@
     maybeInjectStyles();
     const container = document.body || document.documentElement;
     container.appendChild(root);
+    console.info('[daz-game-modal] mounted', { rootId: root.id });
     bindEvents();
 
     refreshBalance();
@@ -615,6 +618,7 @@
     } else {
       window.addEventListener('DOMContentLoaded', mount, { once: true });
     }
+    console.info('[daz-game-modal] bundle loaded; root exists now?', !!document.getElementById('daz-game-modal-root'));
   } catch (err) {
     console.error('[daz-game-modal] Failed to mount modal:', err);
   }
