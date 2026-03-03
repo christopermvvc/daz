@@ -39,10 +39,23 @@
   const STORAGE_NEED_WEED_KEY = 'daz-cytube-game-modal-need-weed-v1';
   const STORAGE_NEED_FOOD_KEY = 'daz-cytube-game-modal-need-food-v1';
   const STORAGE_NEED_LUST_KEY = 'daz-cytube-game-modal-need-lust-v1';
+  const STORAGE_EFFECTS_KEY = 'daz-cytube-game-modal-effects-v1';
   const STORAGE_RESTORE_LEFT_KEY = 'daz-cytube-game-modal-restore-left-v1';
   const STORAGE_RESTORE_TOP_KEY = 'daz-cytube-game-modal-restore-top-v1';
   const STORAGE_RESTORE_WIDTH_KEY = 'daz-cytube-game-modal-restore-width-v1';
   const STORAGE_RESTORE_HEIGHT_KEY = 'daz-cytube-game-modal-restore-height-v1';
+  const DEFAULT_EFFECTS = {
+    buffs: {
+      focus: 0,
+      vigor: 0,
+      luck: 0,
+    },
+    debuffs: {
+      hangover: -10,
+      nausea: -5,
+      dizzy: -8,
+    },
+  };
   const DEFAULT_BALANCE = 1250;
   const MIN_NEED = 0;
   const MAX_NEED = 100;
@@ -63,6 +76,10 @@
       weed: 35,
       food: 70,
       lust: 20,
+    },
+    effects: {
+      buffs: { ...DEFAULT_EFFECTS.buffs },
+      debuffs: { ...DEFAULT_EFFECTS.debuffs },
     },
     left: null,
     top: null,
@@ -156,6 +173,25 @@
         MAX_NEED,
       );
 
+      try {
+        const storedEffectsRaw = window.localStorage.getItem(STORAGE_EFFECTS_KEY);
+        if (storedEffectsRaw) {
+          const parsed = JSON.parse(storedEffectsRaw);
+          if (parsed && typeof parsed === 'object') {
+            const buffs = parsed.buffs || {};
+            const debuffs = parsed.debuffs || {};
+            Object.keys(DEFAULT_EFFECTS.buffs).forEach((key) => {
+              state.effects.buffs[key] = parseStoredNumber(buffs[key], state.effects.buffs[key]);
+            });
+            Object.keys(DEFAULT_EFFECTS.debuffs).forEach((key) => {
+              state.effects.debuffs[key] = parseStoredNumber(debuffs[key], state.effects.debuffs[key]);
+            });
+          }
+        }
+      } catch (err) {
+        // Ignore malformed effect state.
+      }
+
       state.left = parseStoredNumber(window.localStorage.getItem(STORAGE_LEFT_KEY), null);
       state.top = parseStoredNumber(window.localStorage.getItem(STORAGE_TOP_KEY), null);
       state.width = parseStoredNumber(window.localStorage.getItem(STORAGE_WIDTH_KEY), null);
@@ -178,6 +214,7 @@
       window.localStorage.setItem(STORAGE_NEED_WEED_KEY, String(state.needs.weed));
       window.localStorage.setItem(STORAGE_NEED_FOOD_KEY, String(state.needs.food));
       window.localStorage.setItem(STORAGE_NEED_LUST_KEY, String(state.needs.lust));
+      window.localStorage.setItem(STORAGE_EFFECTS_KEY, JSON.stringify(state.effects));
       if (Number.isFinite(state.left)) {
         window.localStorage.setItem(STORAGE_LEFT_KEY, String(Math.round(state.left)));
       }
@@ -220,6 +257,7 @@
   const UI_MODULE_FILES = [
     'cytube-room-game-modal-modules/legacy/daz-game-modal-view.js',
     'cytube-room-game-modal-modules/legacy/daz-game-modal-needs.js',
+    'cytube-room-game-modal-modules/legacy/daz-game-modal-buffs.js',
   ].map((path) => `${UI_BASE || ''}${path}`);
   const uiModuleLoadPromises = new Map();
   let uiViewLoaded = false;
@@ -287,7 +325,7 @@
     for (const url of UI_MODULE_FILES) {
       await loadUiModule(url);
     }
-    if (!window.__dazGameModalView || !window.__dazGameModalNeeds) {
+    if (!window.__dazGameModalView || !window.__dazGameModalNeeds || !window.__dazGameModalBuffs) {
       throw new Error('daz game modal: ui modules did not initialize');
     }
     uiViewLoaded = true;
@@ -313,27 +351,6 @@
       return null;
     }
     return window.__dazGameModalView.placeholderMessageFor(action);
-  }
-
-  function formatMessage(message) {
-    const now = new Date();
-    const stamp = now.toLocaleTimeString([], { hour12: false });
-    return `<strong>[${stamp}]</strong> ${message}`;
-  }
-
-  function appendLog(message) {
-    const log = document.getElementById('daz-game-modal-log');
-    if (!log) {
-      return;
-    }
-    const line = document.createElement('div');
-    line.className = 'daz-log-entry';
-    line.innerHTML = formatMessage(message);
-    log.appendChild(line);
-    log.scrollTop = log.scrollHeight;
-    while (log.children.length > 24) {
-      log.removeChild(log.firstElementChild);
-    }
   }
 
   function updateModeUI() {
@@ -378,42 +395,34 @@
     });
   }
 
-  function onAction(action) {
-    const msg = getPlaceholderMessage(action);
-    if (!msg) {
+  function refreshEffects() {
+    const effectsRenderer = window.__dazGameModalBuffs;
+    if (effectsRenderer && typeof effectsRenderer.refresh === 'function') {
+      effectsRenderer.refresh(state.effects);
       return;
     }
-    if (action === 'money-add') {
-      state.balance += 50;
-      refreshBalance();
-    } else if (action === 'money-spend') {
-      state.balance = Math.max(0, state.balance - 25);
-      refreshBalance();
-    } else if (action === 'need-bathroom') {
-      state.needs.bladder = clamp(state.needs.bladder + 15, MIN_NEED, MAX_NEED);
-      refreshNeeds();
-    } else if (action === 'need-eat') {
-      state.needs.food = clamp(state.needs.food + 10, MIN_NEED, MAX_NEED);
-      refreshNeeds();
-    } else if (action === 'need-drink') {
-      state.needs.alcohol = clamp(state.needs.alcohol + 12, MIN_NEED, MAX_NEED);
-      refreshNeeds();
-    } else if (action === 'need-weed') {
-      state.needs.weed = clamp(state.needs.weed + 10, MIN_NEED, MAX_NEED);
-      refreshNeeds();
-    } else if (action === 'need-lust') {
-      state.needs.lust = clamp(state.needs.lust + 8, MIN_NEED, MAX_NEED);
-      refreshNeeds();
-    } else if (action === 'needs-recover') {
-      state.needs.bladder = clamp(state.needs.bladder + 20, MIN_NEED, MAX_NEED);
-      state.needs.food = clamp(state.needs.food + 20, MIN_NEED, MAX_NEED);
-      state.needs.alcohol = clamp(state.needs.alcohol + 20, MIN_NEED, MAX_NEED);
-      state.needs.weed = clamp(state.needs.weed + 20, MIN_NEED, MAX_NEED);
-      state.needs.lust = clamp(state.needs.lust + 20, MIN_NEED, MAX_NEED);
-      refreshNeeds();
-    }
-    appendLog(msg);
-    saveState();
+
+    const formatEffectValue = (value) => {
+      const parsed = parseFloat(value);
+      if (!Number.isFinite(parsed)) {
+        return '0';
+      }
+      return parsed > 0 ? `+${Math.round(parsed)}` : `${Math.round(parsed)}`;
+    };
+
+    Object.entries(state.effects.buffs || {}).forEach(([key, value]) => {
+      const label = document.getElementById(`daz-modal-buff-${key}`);
+      if (label) {
+        label.textContent = formatEffectValue(value);
+      }
+    });
+
+    Object.entries(state.effects.debuffs || {}).forEach(([key, value]) => {
+      const label = document.getElementById(`daz-modal-debuff-${key}`);
+      if (label) {
+        label.textContent = formatEffectValue(value);
+      }
+    });
   }
 
   function captureOpenGeometrySnapshot() {
@@ -649,7 +658,6 @@
         setMode(state.mode === 'minimized' ? 'open' : 'minimized');
         return;
       }
-      onAction(action);
       return;
     }
   }
@@ -714,9 +722,8 @@
 
     refreshBalance();
     refreshNeeds();
+    refreshEffects();
     updateModeUI();
-    appendLog('Compact placeholder UI loaded. Replace actions with real command wiring when ready.');
-    appendLog('Minimize is preserved so users can reclaim viewport whenever needed.');
     saveState();
   }
 

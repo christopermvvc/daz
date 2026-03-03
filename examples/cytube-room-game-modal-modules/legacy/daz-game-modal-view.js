@@ -134,10 +134,11 @@
 
       #daz-game-modal-summary {
         display: grid;
-        grid-template-columns: minmax(190px, 1fr) minmax(190px, 1fr);
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
         gap: 6px;
         font-size: 11px;
         color: #a08050;
+        align-items: stretch;
       }
 
       .daz-game-card {
@@ -205,84 +206,40 @@
         transition: width 0.2s ease;
       }
 
-      #daz-game-modal-actions {
+      .daz-game-buff-columns {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 6px;
       }
 
-      .daz-game-action-btn {
-        border: 1px solid rgba(212, 175, 55, 0.3);
-        border-radius: 3px;
-        min-height: 28px;
-        color: #d4af37;
-        cursor: pointer;
-        text-transform: uppercase;
-        background: linear-gradient(135deg, #2d1810 0, #1d1410 100%);
+      .daz-game-buff-column {
+        min-width: 0;
+      }
+
+      .daz-game-subtitle {
+        color: #c9a961;
         font-family: Cinzel, serif;
-        font-size: 11px;
-        padding: 0 8px;
-        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(212, 175, 55, 0.1);
-        transition: 0.3s;
-      }
-
-      .daz-game-action-btn:hover {
-        background: linear-gradient(135deg, #4d3830 0, #3d2820 50%, #2d1810 100%);
-        color: gold;
-        box-shadow: 0 0 20px rgba(212, 175, 55, 0.5), inset 0 0 10px rgba(212, 175, 55, 0.2);
-      }
-
-      .daz-game-action-btn.secondary {
-        background: linear-gradient(135deg, #173820 0, #0f2717 100%);
-        border-color: rgba(22, 155, 98, 0.6);
-      }
-
-      #daz-game-modal-card-actions .daz-game-action-btn {
         font-size: 10px;
-        padding: 4px 6px;
-      }
-
-      #daz-game-modal-log-wrap {
-        padding: 2px 0 0;
-        flex: 1;
-        min-height: 0;
-      }
-
-      #daz-game-modal-log {
-        height: 100%;
-        min-height: 80px;
-        overflow: auto;
-        border: 1px solid rgba(212, 175, 55, 0.2);
-        border-radius: 6px;
-        background: radial-gradient(circle at 20% 30%, rgba(139, 105, 20, 0.1) 0, transparent 15%), radial-gradient(circle at 80% 70%, rgba(139, 105, 20, 0.08) 0, transparent 15%), radial-gradient(circle at 60% 40%, rgba(139, 105, 20, 0.06) 0, transparent 10%), radial-gradient(ellipse at 50% 0, rgba(212, 175, 55, 0.03) 0, transparent 50%), rgba(15, 12, 10, 0.95);
-        padding: 6px;
-        font-size: 12px;
-        line-height: 1.35;
-        font-family: Georgia, serif;
-        color: #c9a961;
-      }
-
-      #daz-game-modal-log-wrap .daz-game-section-title {
         margin: 0 0 4px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
       }
 
-      .daz-game-action-grid {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+      .daz-game-effect-row {
+        display: flex;
+        justify-content: space-between;
         gap: 6px;
+        color: #a08050;
       }
 
-      #daz-game-modal-card-actions {
-        margin-top: 6px;
-      }
-
-      .daz-log-entry {
-        margin-bottom: 4px;
-        color: #c9a961;
-      }
-
-      .daz-log-entry strong {
+      .daz-game-effect-row strong {
         color: #d4af37;
+      }
+
+      .daz-game-metric-note {
+        margin-top: 5px;
+        color: #a08050;
+        font-size: 10px;
       }
 
       #daz-game-modal-root.daz-state-minimized {
@@ -390,16 +347,12 @@
         <div id="daz-game-modal-body">
           <div id="daz-game-modal-summary">
             <section class="daz-game-card">
-              <h4 class="daz-game-section-title">Treasury</h4>
+              <h4 class="daz-game-section-title">Currency</h4>
               <div class="daz-game-value-row">
                 <span>Balance</span>
                 <strong id="daz-modal-balance">0</strong>
               </div>
-              <div id="daz-game-modal-card-actions" class="daz-game-action-grid">
-                <button type="button" class="daz-game-action-btn secondary" data-action="money-add">+50</button>
-                <button type="button" class="daz-game-action-btn secondary" data-action="money-spend">-25</button>
-                <button type="button" class="daz-game-action-btn secondary" data-action="needs-recover">Top up needs</button>
-              </div>
+              <div class="daz-game-metric-note">Placeholder only</div>
             </section>
             <section class="daz-game-card">
               <h4 class="daz-game-section-title">Needs</h4>
@@ -441,37 +394,46 @@
                 </div>
               </div>
             </section>
-          </div>
-          <div id="daz-game-modal-actions">
-            <button type="button" class="daz-game-action-btn" data-action="fish">Fish cmd</button>
-            <button type="button" class="daz-game-action-btn secondary" data-action="eightball">8-ball cmd</button>
-            <button type="button" class="daz-game-action-btn secondary" data-action="piss">Piss cmd</button>
-            <button type="button" class="daz-game-action-btn secondary" data-action="need-bathroom">Need: Bladder</button>
-            <button type="button" class="daz-game-action-btn secondary" data-action="need-eat">Need: Food</button>
-            <button type="button" class="daz-game-action-btn secondary" data-action="need-drink">Need: Alcohol</button>
-            <button type="button" class="daz-game-action-btn secondary" data-action="need-weed">Need: Weed</button>
-            <button type="button" class="daz-game-action-btn secondary" data-action="need-lust">Need: Lust</button>
-          </div>
-          <div id="daz-game-modal-log-wrap">
-            <div class="daz-game-section-title">Sub-chat placeholder</div>
-            <div id="daz-game-modal-log" aria-live="polite"></div>
+            <section class="daz-game-card">
+              <h4 class="daz-game-section-title">Buffs &amp; Debuffs</h4>
+              <div class="daz-game-buff-columns">
+                <div class="daz-game-buff-column">
+                  <div class="daz-game-subtitle">Buffs</div>
+                  <div class="daz-game-effect-row">
+                    <span>Focus</span>
+                    <strong id="daz-modal-buff-focus">+0</strong>
+                  </div>
+                  <div class="daz-game-effect-row">
+                    <span>Vigor</span>
+                    <strong id="daz-modal-buff-vigor">+0</strong>
+                  </div>
+                  <div class="daz-game-effect-row">
+                    <span>Luck</span>
+                    <strong id="daz-modal-buff-luck">+0</strong>
+                  </div>
+                </div>
+                <div class="daz-game-buff-column">
+                  <div class="daz-game-subtitle">Debuffs</div>
+                  <div class="daz-game-effect-row">
+                    <span>Hangover</span>
+                    <strong id="daz-modal-debuff-hangover">-10</strong>
+                  </div>
+                  <div class="daz-game-effect-row">
+                    <span>Nausea</span>
+                    <strong id="daz-modal-debuff-nausea">-5</strong>
+                  </div>
+                  <div class="daz-game-effect-row">
+                    <span>Dizzy</span>
+                    <strong id="daz-modal-debuff-dizzy">-8</strong>
+                  </div>
+                </div>
+              </div>
+            </section>
           </div>
         </div>
         <div id="daz-game-modal-resize-handle" title="Resize"></div>
       </div>
     `,
-    placeholderMessageFor: (action) => ({
-      'money-add': 'Placeholder: deposit command path for currency',
-      'money-spend': 'Placeholder: spend command path for currency',
-      fish: 'Placeholder: fish command payload',
-      eightball: 'Placeholder: 8-ball command payload',
-      piss: 'Placeholder: piss command payload',
-      'need-bathroom': 'Placeholder: bathroom / bladder placeholder',
-      'need-eat': 'Placeholder: food / metabolism placeholder',
-      'need-drink': 'Placeholder: drink / alcohol placeholder',
-      'need-weed': 'Placeholder: weed placeholder',
-      'need-lust': 'Placeholder: lust placeholder',
-      'needs-recover': 'Placeholder: needs recovery placeholder',
-    }[action] || null),
+    placeholderMessageFor: () => null,
   };
 })();
