@@ -2,6 +2,7 @@ package update
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -333,6 +334,7 @@ func TestRunUpdateCycleRestartInterruptionIsNotReportedAsFailure(t *testing.T) {
 	if err := p.Init([]byte(`{"operation_timeout_seconds":10}`), bus); err != nil {
 		t.Fatalf("Init error: %v", err)
 	}
+	p.stateFile = filepath.Join(t.TempDir(), "pending_restart.json")
 
 	logCall := 0
 	shortCall := 0
@@ -389,11 +391,33 @@ func TestRunUpdateCycleRestartInterruptionIsNotReportedAsFailure(t *testing.T) {
 	if !bus.hasMessage("cytube.send", "always_always_sunny", "alice: pulled commit new456") {
 		t.Fatalf("expected pull/restart status message")
 	}
-	if !bus.hasMessage("cytube.send", "always_always_sunny", "alice: pulled commit new456 — new subject (build ") {
-		t.Fatalf("expected pull/restart status message to include build duration")
+	if bus.hasMessageContaining("cytube.send", "always_always_sunny", "(build ") {
+		t.Fatalf("did not expect pre-restart status message to include build duration")
 	}
 	if bus.hasMessage("cytube.send", "always_always_sunny", "alice: Build succeeded for new456, but restart failed:") {
 		t.Fatalf("did not expect false restart failure message for self-restart interruption")
+	}
+
+	p.mu.RLock()
+	pending := p.pending
+	p.mu.RUnlock()
+	if pending == nil {
+		t.Fatalf("expected pending restart notice to be persisted for post-restart announcement")
+	}
+	if strings.TrimSpace(pending.BuildDuration) == "" {
+		t.Fatalf("expected pending restart notice to include build duration")
+	}
+
+	raw, err := os.ReadFile(p.stateFile)
+	if err != nil {
+		t.Fatalf("expected pending restart notice file to be written: %v", err)
+	}
+	var persisted pendingRestartNotice
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatalf("unmarshal pending restart notice: %v", err)
+	}
+	if persisted.CommitShort != "new456" {
+		t.Fatalf("expected commit short to be persisted, got %q", persisted.CommitShort)
 	}
 }
 
@@ -403,6 +427,7 @@ func TestRunUpdateCycleRestartFailureStillReported(t *testing.T) {
 	if err := p.Init([]byte(`{"operation_timeout_seconds":10}`), bus); err != nil {
 		t.Fatalf("Init error: %v", err)
 	}
+	p.stateFile = filepath.Join(t.TempDir(), "pending_restart.json")
 
 	logCall := 0
 	shortCall := 0
@@ -454,6 +479,69 @@ func TestRunUpdateCycleRestartFailureStillReported(t *testing.T) {
 	}
 	if !bus.hasMessageContaining("cytube.send", "always_always_sunny", "succeeded for new456, but restart failed: exit status 4: access denied") {
 		t.Fatalf("expected concrete restart failure to be reported")
+	}
+	p.mu.RLock()
+	pending := p.pending
+	p.mu.RUnlock()
+	if pending != nil {
+		t.Fatalf("expected pending restart notice to be cleared when restart fails")
+	}
+	if _, err := os.Stat(p.stateFile); !os.IsNotExist(err) {
+		t.Fatalf("expected pending restart file to be removed after failed restart, err=%v", err)
+	}
+}
+
+func TestHandleUserlistStartPublishesPendingRestartMessage(t *testing.T) {
+	bus := &testEventBus{}
+	p := New().(*Plugin)
+	if err := p.Init(nil, bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+	p.stateFile = filepath.Join(t.TempDir(), "pending_restart.json")
+
+	notice := &pendingRestartNotice{
+		Channel:       "always_always_sunny",
+		Username:      "alice",
+		CommitShort:   "new456",
+		CommitSubject: "new subject",
+		BuildDuration: "1.2s",
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := p.persistPendingRestartNotice(notice); err != nil {
+		t.Fatalf("persistPendingRestartNotice error: %v", err)
+	}
+
+	if err := p.handleUserlistStart(&framework.DataEvent{
+		Data: &framework.EventData{
+			RawMessage: &framework.RawMessageData{Channel: "some_other_channel"},
+		},
+	}); err != nil {
+		t.Fatalf("handleUserlistStart mismatch error: %v", err)
+	}
+	if bus.hasMessageContaining("cytube.send", "always_always_sunny", "I'm back.") {
+		t.Fatalf("did not expect post-restart message for non-matching channel")
+	}
+
+	if err := p.handleUserlistStart(&framework.DataEvent{
+		Data: &framework.EventData{
+			RawMessage: &framework.RawMessageData{Channel: "always_always_sunny"},
+		},
+	}); err != nil {
+		t.Fatalf("handleUserlistStart error: %v", err)
+	}
+
+	if !bus.hasMessageContaining("cytube.send", "always_always_sunny", "alice: I'm back. Update complete in 1.2s build time. Running commit new456 — new subject") {
+		t.Fatalf("expected post-restart status message with build duration")
+	}
+
+	p.mu.RLock()
+	pending := p.pending
+	p.mu.RUnlock()
+	if pending != nil {
+		t.Fatalf("expected pending restart notice to be cleared after publish")
+	}
+	if _, err := os.Stat(p.stateFile); !os.IsNotExist(err) {
+		t.Fatalf("expected pending restart file to be removed after publish, err=%v", err)
 	}
 }
 

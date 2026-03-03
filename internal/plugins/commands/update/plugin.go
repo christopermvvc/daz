@@ -27,6 +27,7 @@ const (
 	defaultUpdateTimeoutSeconds = 300
 	maxOutputBytes              = 800
 	defaultLogFileName          = "update.log"
+	defaultPendingFileName      = "pending_restart.json"
 	defaultLogDir               = "internal/plugins/commands/update"
 )
 
@@ -42,9 +43,11 @@ type Plugin struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	config   Config
-	logFile  string
-	updating bool
+	config    Config
+	logFile   string
+	stateFile string
+	updating  bool
+	pending   *pendingRestartNotice
 
 	runUpdateFlow     func(channel, username string)
 	runGitCommandFunc func(ctx context.Context, workingDir string, args ...string) error
@@ -66,6 +69,15 @@ type commitInfo struct {
 	full  string
 	short string
 	subj  string
+}
+
+type pendingRestartNotice struct {
+	Channel       string `json:"channel"`
+	Username      string `json:"username"`
+	CommitShort   string `json:"commit_short"`
+	CommitSubject string `json:"commit_subject"`
+	BuildDuration string `json:"build_duration"`
+	CreatedAt     string `json:"created_at"`
 }
 
 func New() framework.Plugin {
@@ -119,6 +131,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 	p.config.RepoPath = absRepoPath
 	p.logFile = p.config.LogFilePath
+	p.stateFile = defaultPendingStatePath(p.logFile)
 
 	return nil
 }
@@ -142,8 +155,17 @@ func (p *Plugin) Start() error {
 		p.logf("ERROR", "failed to subscribe to command.update.execute: %v", err)
 		return fmt.Errorf("failed to subscribe to command.update.execute: %w", err)
 	}
+	if err := p.eventBus.Subscribe("cytube.event.userlist.start", p.handleUserlistStart); err != nil {
+		p.mu.Lock()
+		p.running = false
+		p.mu.Unlock()
+		p.logf("ERROR", "failed to subscribe to cytube.event.userlist.start: %v", err)
+		return fmt.Errorf("failed to subscribe to cytube.event.userlist.start: %w", err)
+	}
 
 	p.registerCommand()
+	p.loadPendingRestartNotice()
+	p.schedulePendingRestartFallback()
 
 	logger.Debug(p.name, "Started")
 	return nil
@@ -312,7 +334,19 @@ func (p *Plugin) runUpdateCycle(channel, username string) {
 	buildDuration := time.Since(buildStarted)
 	buildDurationText := formatBuildDuration(buildDuration)
 
-	p.sendChat(channel, fmt.Sprintf("%s: pulled commit %s — %s (build %s). Restarting daz service now.", username, current.short, current.subj, buildDurationText))
+	notice := &pendingRestartNotice{
+		Channel:       channel,
+		Username:      username,
+		CommitShort:   current.short,
+		CommitSubject: current.subj,
+		BuildDuration: buildDurationText,
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := p.persistPendingRestartNotice(notice); err != nil {
+		p.logf("WARN", "failed to persist pending restart notice: %v", err)
+	}
+
+	p.sendChat(channel, fmt.Sprintf("%s: pulled commit %s — %s. Restarting daz service now.", username, current.short, current.subj))
 	p.logf("INFO", "update built new commit for %s: %s", username, current.short)
 
 	if err := p.runCommand(ctx, p.config.RepoPath, p.config.RestartCommand...); err != nil {
@@ -320,13 +354,25 @@ func (p *Plugin) runUpdateCycle(channel, username string) {
 			p.logf("INFO", "restart command interrupted for %s after commit %s (expected during self-restart): %v", username, current.short, err)
 			return
 		}
+		p.clearPendingRestartNotice()
 		p.logf("ERROR", "restart failed for %s after commit %s: %v", username, current.short, err)
 		p.sendChat(channel, fmt.Sprintf("%s: Build (%s) succeeded for %s, but restart failed: %v", username, buildDurationText, current.short, err))
 		return
 	}
+	p.logf("INFO", "restart command completed for %s at %s (waiting for post-restart notice)", username, current.short)
+}
 
-	p.logf("INFO", "update complete for %s at %s", username, current.short)
-	p.sendChat(channel, fmt.Sprintf("%s: Update complete in %s build time. Running commit %s — %s", username, buildDurationText, current.short, current.subj))
+func (p *Plugin) handleUserlistStart(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil || dataEvent.Data.RawMessage == nil {
+		return nil
+	}
+	channel := strings.TrimSpace(dataEvent.Data.RawMessage.Channel)
+	if channel == "" {
+		return nil
+	}
+	p.publishPendingRestartNotice(channel)
+	return nil
 }
 
 func (p *Plugin) runUpdateCommand(command []string, dir string, ctx context.Context) error {
@@ -484,6 +530,117 @@ func (p *Plugin) sendPM(username, message string) {
 	}
 }
 
+func (p *Plugin) persistPendingRestartNotice(notice *pendingRestartNotice) error {
+	if notice == nil {
+		return nil
+	}
+
+	p.mu.Lock()
+	p.pending = notice
+	p.mu.Unlock()
+
+	if p.stateFile == "" {
+		return fmt.Errorf("pending restart state file path is empty")
+	}
+
+	stateDir := filepath.Dir(p.stateFile)
+	if err := os.MkdirAll(stateDir, fs.FileMode(0o755)); err != nil {
+		return fmt.Errorf("create pending restart state directory: %w", err)
+	}
+
+	payload, err := json.Marshal(notice)
+	if err != nil {
+		return fmt.Errorf("marshal pending restart notice: %w", err)
+	}
+
+	if err := os.WriteFile(p.stateFile, payload, 0o640); err != nil {
+		return fmt.Errorf("write pending restart notice: %w", err)
+	}
+	return nil
+}
+
+func (p *Plugin) clearPendingRestartNotice() {
+	p.mu.Lock()
+	p.pending = nil
+	p.mu.Unlock()
+
+	if p.stateFile == "" {
+		return
+	}
+
+	if err := os.Remove(p.stateFile); err != nil && !os.IsNotExist(err) {
+		logger.Warn(p.name, "failed to remove pending restart notice file: %v", err)
+	}
+}
+
+func (p *Plugin) loadPendingRestartNotice() {
+	if p.stateFile == "" {
+		return
+	}
+	raw, err := os.ReadFile(p.stateFile)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			p.logf("WARN", "failed reading pending restart notice: %v", err)
+		}
+		return
+	}
+	var notice pendingRestartNotice
+	if err := json.Unmarshal(raw, &notice); err != nil {
+		p.logf("WARN", "failed parsing pending restart notice: %v", err)
+		return
+	}
+	if strings.TrimSpace(notice.Channel) == "" || strings.TrimSpace(notice.BuildDuration) == "" || strings.TrimSpace(notice.CommitShort) == "" {
+		p.logf("WARN", "ignoring malformed pending restart notice")
+		return
+	}
+	p.mu.Lock()
+	p.pending = &notice
+	p.mu.Unlock()
+	p.logf("INFO", "loaded pending restart notice for channel %s commit %s", notice.Channel, notice.CommitShort)
+}
+
+func (p *Plugin) schedulePendingRestartFallback() {
+	p.mu.RLock()
+	hasPending := p.pending != nil
+	p.mu.RUnlock()
+	if !hasPending {
+		return
+	}
+
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		timer := time.NewTimer(45 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-timer.C:
+			p.publishPendingRestartNotice("")
+		}
+	}()
+}
+
+func (p *Plugin) publishPendingRestartNotice(channel string) {
+	p.mu.Lock()
+	notice := p.pending
+	if notice == nil {
+		p.mu.Unlock()
+		return
+	}
+	if channel != "" && !strings.EqualFold(strings.TrimSpace(channel), strings.TrimSpace(notice.Channel)) {
+		p.mu.Unlock()
+		return
+	}
+	p.pending = nil
+	p.mu.Unlock()
+
+	message := formatPendingRestartMessage(notice)
+	p.sendChat(notice.Channel, message)
+	p.logf("INFO", "published post-restart notice for %s in %s", notice.Username, notice.Channel)
+	p.clearPendingRestartNotice()
+}
+
 func (p *Plugin) takeUpdateLock() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -570,4 +727,26 @@ func defaultLogFilePath() string {
 	}
 
 	return filepath.Join(os.TempDir(), defaultLogFileName)
+}
+
+func defaultPendingStatePath(logPath string) string {
+	path := strings.TrimSpace(logPath)
+	if path == "" {
+		return filepath.Join(os.TempDir(), defaultPendingFileName)
+	}
+	return filepath.Join(filepath.Dir(path), defaultPendingFileName)
+}
+
+func formatPendingRestartMessage(notice *pendingRestartNotice) string {
+	if notice == nil {
+		return ""
+	}
+	username := strings.TrimSpace(notice.Username)
+	buildDuration := strings.TrimSpace(notice.BuildDuration)
+	commitShort := strings.TrimSpace(notice.CommitShort)
+	commitSubject := strings.TrimSpace(notice.CommitSubject)
+	if username != "" {
+		return fmt.Sprintf("%s: I'm back. Update complete in %s build time. Running commit %s — %s", username, buildDuration, commitShort, commitSubject)
+	}
+	return fmt.Sprintf("I'm back. Update complete in %s build time. Running commit %s — %s", buildDuration, commitShort, commitSubject)
 }
