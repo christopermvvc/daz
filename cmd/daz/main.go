@@ -41,6 +41,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/commands/seen"
 	"github.com/hildolfr/daz/internal/plugins/commands/signspinning"
 	"github.com/hildolfr/daz/internal/plugins/commands/tell"
+	"github.com/hildolfr/daz/internal/plugins/commands/update"
 	"github.com/hildolfr/daz/internal/plugins/commands/uptime"
 	"github.com/hildolfr/daz/internal/plugins/commands/weather"
 	"github.com/hildolfr/daz/internal/plugins/economy"
@@ -257,6 +258,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"tell", tell.New()},
 		{"seen", seen.New()},
 		{"signspinning", signspinning.New()},
+		{"update", update.New()},
 		{"playlist", playlist.New()},
 		{"ollama", ollama.New()},
 		{"scratchie", scratchie.New()},
@@ -306,6 +308,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["gallery"] = cfg.GetPluginConfig("gallery")
 	pluginConfigs["ollama"] = cfg.GetPluginConfig("ollama")
 	pluginConfigs["scratchie"] = cfg.GetPluginConfig("scratchie")
+	pluginConfigs["update"] = cfg.GetPluginConfig("update")
 	pluginConfigs["signspinning"] = cfg.GetPluginConfig("signspinning")
 
 	// Initialize all plugins (respects dependencies)

@@ -53,6 +53,14 @@
       "buff_dictionary_path": "internal/plugins/bufftracker/dictionaries/buffs.json",
       "debuff_dictionary_path": "internal/plugins/bufftracker/dictionaries/debuffs.json"
     },
+    "update": {
+      "repo_path": "",
+      "branch": "master",
+      "remote": "origin",
+      "build_command": ["make", "build"],
+      "restart_command": ["systemctl", "restart", "daz"],
+      "operation_timeout_seconds": 300
+    },
     "fishing": {}
   }
 }

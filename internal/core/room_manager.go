@@ -109,6 +109,11 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 
+	if conn.Connected && conn.Client.IsConnected() {
+		logger.Info("RoomManager", "Room '%s': Start requested but room already connected, skipping duplicate start", roomID)
+		return nil
+	}
+
 	// Ensure we're disconnected before attempting to connect
 	if conn.Client.IsConnected() {
 		logger.Info("RoomManager", "Room '%s': Client still connected, disconnecting first", roomID)
@@ -198,26 +203,32 @@ func (rm *RoomManager) StartRoom(roomID string) error {
 		if conn.Room.Username != "" && conn.Room.Password != "" {
 			logger.Info("RoomManager", "Room '%s': Attempting login", roomID)
 			if err := conn.Client.Login(conn.Room.Username, conn.Room.Password); err != nil {
+				conn.Connected = false
 				logger.Error("RoomManager", "Room '%s': Login failed: %v", roomID, err)
-			} else {
-				logger.Info("RoomManager", "Room '%s': Login successful", roomID)
-
-				// Now join the channel after successful login
-				logger.Info("RoomManager", "Room '%s': Joining channel as authenticated user", roomID)
-				if err := conn.Client.JoinChannel(); err != nil {
-					logger.Error("RoomManager", "Room '%s': Failed to join channel: %v", roomID, err)
-					return fmt.Errorf("failed to join channel: %w", err)
-				}
-
-				// Request playlist after joining
-				if err := conn.Client.RequestPlaylist(); err != nil {
-					logger.Error("RoomManager", "Room '%s': Failed to request playlist: %v", roomID, err)
-				}
+				continue
 			}
+
+			logger.Info("RoomManager", "Room '%s': Login successful", roomID)
+
+			// Now join the channel after successful login
+			logger.Info("RoomManager", "Room '%s': Joining channel as authenticated user", roomID)
+			if err := conn.Client.JoinChannel(); err != nil {
+				conn.Connected = false
+				logger.Error("RoomManager", "Room '%s': Failed to join channel: %v", roomID, err)
+				return fmt.Errorf("failed to join channel: %w", err)
+			}
+
+			// Request playlist after joining
+			if err := conn.Client.RequestPlaylist(); err != nil {
+				logger.Error("RoomManager", "Room '%s': Failed to request playlist: %v", roomID, err)
+			}
+
+			return nil
 		} else {
 			// Join channel as anonymous if no credentials
 			logger.Info("RoomManager", "Room '%s': Joining channel as anonymous user", roomID)
 			if err := conn.Client.JoinChannel(); err != nil {
+				conn.Connected = false
 				logger.Error("RoomManager", "Room '%s': Failed to join channel: %v", roomID, err)
 				return fmt.Errorf("failed to join channel: %w", err)
 			}
@@ -538,6 +549,13 @@ func (rm *RoomManager) handleReconnection(roomID string) {
 		logger.Info("RoomManager", "Room '%s': Reconnection already in progress, skipping", roomID)
 		return
 	}
+
+	if conn.Connected && conn.Client.IsConnected() {
+		conn.mu.Unlock()
+		logger.Info("RoomManager", "Room '%s': Reconnect requested but room already connected, skipping", roomID)
+		return
+	}
+
 	conn.reconnectInProgress = true
 	conn.mu.Unlock()
 
@@ -562,7 +580,6 @@ func (rm *RoomManager) handleReconnection(roomID string) {
 
 	// Update reconnection tracking
 	conn.mu.Lock()
-	conn.Connected = false
 	conn.LastReconnect = time.Now()
 	conn.ReconnectAttempt++
 	conn.mu.Unlock()
