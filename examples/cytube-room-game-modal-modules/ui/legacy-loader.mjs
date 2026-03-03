@@ -1,5 +1,5 @@
 const LEGACY_SCRIPT_ID = 'daz-game-modal-legacy-script';
-const legacyUrl = new URL('../cytube-room-game-modal.js', import.meta.url).href;
+const legacyUrl = new URL('../../cytube-room-game-modal.js', import.meta.url).href;
 const MODAL_ROOT_ID = 'daz-game-modal-root';
 const MODAL_MOUNT_TIMEOUT_MS = 6000;
 
