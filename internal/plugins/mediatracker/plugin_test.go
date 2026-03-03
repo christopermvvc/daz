@@ -858,6 +858,105 @@ func TestPlaylistIngestWorker_ProcessesCoalescedLatestPayload(t *testing.T) {
 	}
 }
 
+func TestReconnectBurst_StagesOnlyLatestPlaylistPayload(t *testing.T) {
+	p := NewPlugin(&Config{
+		StatsUpdateInterval:     5 * time.Minute,
+		PlaylistIngestBatchSize: 2,
+		PlaylistIngestPauseMS:   0,
+		PlaylistPhase2DelayMS:   0,
+	})
+	bus := newMockEventBus()
+
+	if err := p.Initialize(bus); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	first := &framework.PlaylistArrayEvent{
+		CytubeEvent: framework.CytubeEvent{
+			ChannelName: "reconnect-channel",
+		},
+		Items: []framework.PlaylistItem{
+			{Position: 0, MediaID: "old1", MediaType: "yt", Title: "Old1", Duration: 90, QueuedBy: "u1"},
+		},
+	}
+	second := &framework.PlaylistArrayEvent{
+		CytubeEvent: framework.CytubeEvent{
+			ChannelName: "reconnect-channel",
+		},
+		Items: []framework.PlaylistItem{
+			{Position: 0, MediaID: "new1", MediaType: "yt", Title: "New1", Duration: 91, QueuedBy: "u1"},
+			{Position: 1, MediaID: "new2", MediaType: "yt", Title: "New2", Duration: 92, QueuedBy: "u2"},
+			{Position: 2, MediaID: "new3", MediaType: "yt", Title: "New3", Duration: 93, QueuedBy: "u3"},
+		},
+	}
+
+	if err := p.handlePlaylistEvent(first); err != nil {
+		t.Fatalf("handlePlaylistEvent(first) failed: %v", err)
+	}
+	if err := p.handlePlaylistEvent(second); err != nil {
+		t.Fatalf("handlePlaylistEvent(second) failed: %v", err)
+	}
+	// Duplicate reconnect payload should be deduped.
+	if err := p.handlePlaylistEvent(second); err != nil {
+		t.Fatalf("handlePlaylistEvent(duplicate second) failed: %v", err)
+	}
+
+	p.wg.Add(1)
+	go p.runPlaylistIngestWorker()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		bus.mu.Lock()
+		execCount := len(bus.execCalls)
+		bus.mu.Unlock()
+		if execCount >= 5 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for reconnect burst ingestion, only saw %d SQL exec calls", execCount)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	p.cancel()
+	p.wg.Wait()
+
+	p.mu.RLock()
+	pending := len(p.pendingPlaylistIngest)
+	p.mu.RUnlock()
+	if pending != 0 {
+		t.Fatalf("expected worker to drain pending reconnect ingest map, got %d entries", pending)
+	}
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+
+	deleteQueueCount := 0
+	queueInsertCount := 0
+	libraryInsertCount := 0
+	for _, q := range bus.execCalls {
+		if strings.Contains(q, "DELETE FROM daz_mediatracker_queue") {
+			deleteQueueCount++
+		}
+		if strings.Contains(q, "INSERT INTO daz_mediatracker_queue") {
+			queueInsertCount++
+		}
+		if strings.Contains(q, "INSERT INTO daz_mediatracker_library") {
+			libraryInsertCount++
+		}
+	}
+
+	if deleteQueueCount != 1 {
+		t.Fatalf("expected one queue clear for reconnect burst, got %d", deleteQueueCount)
+	}
+	if queueInsertCount != 2 {
+		t.Fatalf("expected two queue inserts for latest reconnect payload, got %d", queueInsertCount)
+	}
+	if libraryInsertCount != 2 {
+		t.Fatalf("expected two library inserts for latest reconnect payload, got %d", libraryInsertCount)
+	}
+}
+
 func TestHandleNowPlayingCommand(t *testing.T) {
 	p := NewPlugin(nil)
 	bus := newMockEventBus()

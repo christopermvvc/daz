@@ -142,6 +142,7 @@ func TestSplitConnectionBudget(t *testing.T) {
 		name                 string
 		total                int
 		backgroundConfigured int
+		gomaxprocs           int
 		wantCritical         int
 		wantBackground       int
 	}{
@@ -149,6 +150,7 @@ func TestSplitConnectionBudget(t *testing.T) {
 			name:                 "single connection keeps critical lane only",
 			total:                1,
 			backgroundConfigured: 0,
+			gomaxprocs:           1,
 			wantCritical:         1,
 			wantBackground:       0,
 		},
@@ -156,13 +158,23 @@ func TestSplitConnectionBudget(t *testing.T) {
 			name:                 "auto background split",
 			total:                20,
 			backgroundConfigured: 0,
+			gomaxprocs:           4,
 			wantCritical:         15,
 			wantBackground:       5,
+		},
+		{
+			name:                 "auto background split low cpu",
+			total:                20,
+			backgroundConfigured: 0,
+			gomaxprocs:           1,
+			wantCritical:         18,
+			wantBackground:       2,
 		},
 		{
 			name:                 "configured background capped",
 			total:                4,
 			backgroundConfigured: 10,
+			gomaxprocs:           4,
 			wantCritical:         1,
 			wantBackground:       3,
 		},
@@ -170,16 +182,54 @@ func TestSplitConnectionBudget(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			gotCritical, gotBackground := splitConnectionBudget(tc.total, tc.backgroundConfigured)
+			gotCritical, gotBackground := splitConnectionBudgetForCPU(tc.total, tc.backgroundConfigured, tc.gomaxprocs)
 			if gotCritical != tc.wantCritical || gotBackground != tc.wantBackground {
-				t.Fatalf("splitConnectionBudget(%d, %d) = (%d, %d), want (%d, %d)",
+				t.Fatalf("splitConnectionBudgetForCPU(%d, %d, %d) = (%d, %d), want (%d, %d)",
 					tc.total,
 					tc.backgroundConfigured,
+					tc.gomaxprocs,
 					gotCritical,
 					gotBackground,
 					tc.wantCritical,
 					tc.wantBackground,
 				)
+			}
+		})
+	}
+}
+
+func TestDefaultBackgroundQueueMax(t *testing.T) {
+	tests := []struct {
+		name            string
+		backgroundConns int
+		gomaxprocs      int
+		want            int
+	}{
+		{
+			name:            "zero background lanes",
+			backgroundConns: 0,
+			gomaxprocs:      1,
+			want:            0,
+		},
+		{
+			name:            "low cpu profile",
+			backgroundConns: 2,
+			gomaxprocs:      1,
+			want:            8,
+		},
+		{
+			name:            "default profile",
+			backgroundConns: 2,
+			gomaxprocs:      4,
+			want:            16,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := defaultBackgroundQueueMax(tc.backgroundConns, tc.gomaxprocs)
+			if got != tc.want {
+				t.Fatalf("defaultBackgroundQueueMax(%d, %d) = %d, want %d", tc.backgroundConns, tc.gomaxprocs, got, tc.want)
 			}
 		})
 	}

@@ -109,40 +109,7 @@ func NewEventBus(config *Config) *EventBus {
 		}
 	}
 
-	workerCount := runtime.GOMAXPROCS(0) * 4
-	if workerCount < 4 {
-		workerCount = 4
-	}
-
-	commandWorkers := workerCount / 8
-	if commandWorkers < 1 {
-		commandWorkers = 1
-	}
-
-	highPriorityWorkers := workerCount / 4
-	if highPriorityWorkers < 1 {
-		highPriorityWorkers = 1
-	}
-
-	// Always preserve at least one normal worker.
-	maxReserved := workerCount - 1
-	reserved := commandWorkers + highPriorityWorkers
-	if reserved > maxReserved {
-		overflow := reserved - maxReserved
-		if highPriorityWorkers > 1 {
-			reduce := minInt(overflow, highPriorityWorkers-1)
-			highPriorityWorkers -= reduce
-			overflow -= reduce
-		}
-		if overflow > 0 && commandWorkers > 1 {
-			reduce := minInt(overflow, commandWorkers-1)
-			commandWorkers -= reduce
-		}
-	}
-	normalWorkers := workerCount - commandWorkers - highPriorityWorkers
-	if normalWorkers < 1 {
-		normalWorkers = 1
-	}
+	workerCount, commandWorkers, highPriorityWorkers, normalWorkers := computeDispatchLaneSizes(runtime.GOMAXPROCS(0))
 
 	eb := &EventBus{
 		queues:             make(map[string]*messageQueue),
@@ -167,6 +134,58 @@ func NewEventBus(config *Config) *EventBus {
 	}
 
 	return eb
+}
+
+func computeDispatchLaneSizes(gomaxprocs int) (workerCount, commandWorkers, highPriorityWorkers, normalWorkers int) {
+	if gomaxprocs <= 1 {
+		// 1-vCPU hosts favor deterministic command/high-priority responsiveness over
+		// broad normal-lane parallelism.
+		return 3, 1, 1, 1
+	}
+
+	if gomaxprocs == 2 {
+		// Keep a larger high-priority reservation on small dual-core deployments so
+		// reconnect bursts do not starve command handling.
+		return 6, 1, 2, 3
+	}
+
+	workerCount = gomaxprocs * 4
+	if workerCount < 4 {
+		workerCount = 4
+	}
+
+	commandWorkers = workerCount / 8
+	if commandWorkers < 1 {
+		commandWorkers = 1
+	}
+
+	highPriorityWorkers = workerCount / 4
+	if highPriorityWorkers < 1 {
+		highPriorityWorkers = 1
+	}
+
+	// Always preserve at least one normal worker.
+	maxReserved := workerCount - 1
+	reserved := commandWorkers + highPriorityWorkers
+	if reserved > maxReserved {
+		overflow := reserved - maxReserved
+		if highPriorityWorkers > 1 {
+			reduce := minInt(overflow, highPriorityWorkers-1)
+			highPriorityWorkers -= reduce
+			overflow -= reduce
+		}
+		if overflow > 0 && commandWorkers > 1 {
+			reduce := minInt(overflow, commandWorkers-1)
+			commandWorkers -= reduce
+		}
+	}
+
+	normalWorkers = workerCount - commandWorkers - highPriorityWorkers
+	if normalWorkers < 1 {
+		normalWorkers = 1
+	}
+
+	return workerCount, commandWorkers, highPriorityWorkers, normalWorkers
 }
 
 // RegisterPlugin registers a plugin with the event bus

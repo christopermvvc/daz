@@ -26,9 +26,9 @@
 - [x] Gate gallery pushes with content-hash checks, minimum interval, and retry backoff.
 - [x] Add migration for `daz_ollama_responses` and `daz_ollama_rate_limits`.
 - [x] Add startup schema sanity checks for required Ollama tables.
-- [ ] Tune event bus worker reservations and plugin background concurrency for 1-vCPU deployment.
-- [ ] Add pressure tests proving command delivery during reconnect/startup burst traffic.
-- [ ] Add integration tests for reconnect burst dedupe and staged playlist behavior.
+- [x] Tune event bus worker reservations and plugin background concurrency for 1-vCPU deployment.
+- [x] Add pressure tests proving command delivery during reconnect/startup burst traffic.
+- [x] Add integration tests for reconnect burst dedupe and staged playlist behavior.
 - [x] Run targeted tests (`eventbus`, `eventfilter`, `sql`, `mediatracker`, `usertracker`) plus `go test ./...`.
-- [ ] Push phased commits to `origin` (lane/debounce first, then jobs/migrations/tuning).
+- [x] Push phased commits to `origin` (lane/debounce first, then jobs/migrations/tuning).
 - [ ] Validate on VPS with metrics: `!update` reach rate, SQL timeout count, dropped-event count.

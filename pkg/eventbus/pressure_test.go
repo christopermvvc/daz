@@ -164,3 +164,56 @@ func TestAcquireDispatchSlotFallsBackWhenCommandLaneBusy(t *testing.T) {
 		t.Fatal("expected fallback lane (high or normal) to be used when command lane is busy")
 	}
 }
+
+func TestComputeDispatchLaneSizes(t *testing.T) {
+	tests := []struct {
+		name        string
+		gomaxprocs  int
+		wantWorkers int
+		wantCommand int
+		wantHigh    int
+		wantNormal  int
+	}{
+		{
+			name:        "single cpu profile",
+			gomaxprocs:  1,
+			wantWorkers: 3,
+			wantCommand: 1,
+			wantHigh:    1,
+			wantNormal:  1,
+		},
+		{
+			name:        "dual cpu profile",
+			gomaxprocs:  2,
+			wantWorkers: 6,
+			wantCommand: 1,
+			wantHigh:    2,
+			wantNormal:  3,
+		},
+		{
+			name:        "multi cpu profile",
+			gomaxprocs:  4,
+			wantWorkers: 16,
+			wantCommand: 2,
+			wantHigh:    4,
+			wantNormal:  10,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			workers, command, high, normal := computeDispatchLaneSizes(tc.gomaxprocs)
+			if workers != tc.wantWorkers || command != tc.wantCommand || high != tc.wantHigh || normal != tc.wantNormal {
+				t.Fatalf(
+					"computeDispatchLaneSizes(%d) = (%d,%d,%d,%d), want (%d,%d,%d,%d)",
+					tc.gomaxprocs,
+					workers, command, high, normal,
+					tc.wantWorkers, tc.wantCommand, tc.wantHigh, tc.wantNormal,
+				)
+			}
+			if command+high+normal != workers {
+				t.Fatalf("lane sum mismatch: command=%d high=%d normal=%d workers=%d", command, high, normal, workers)
+			}
+		})
+	}
+}

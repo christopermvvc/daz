@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -121,6 +122,7 @@ const (
 	coreEventCriticalEnqueueMS      = 75
 	defaultSQLBackgroundQueueWaitMS = 1200
 	defaultSQLBackgroundQueueFactor = 8
+	lowCPUBackgroundQueueFactor     = 4
 )
 
 var backgroundSQLSources = map[string]struct{}{
@@ -470,16 +472,17 @@ func (p *Plugin) connectDatabase() error {
 }
 
 func splitConnectionBudget(total int, configuredBackground int) (critical int, background int) {
+	return splitConnectionBudgetForCPU(total, configuredBackground, runtime.GOMAXPROCS(0))
+}
+
+func splitConnectionBudgetForCPU(total int, configuredBackground int, gomaxprocs int) (critical int, background int) {
 	if total <= 1 {
 		return 1, 0
 	}
 
 	background = configuredBackground
 	if background <= 0 {
-		background = total / 4
-		if background < 1 {
-			background = 1
-		}
+		background = defaultBackgroundConnections(total, gomaxprocs)
 	}
 
 	if background >= total {
@@ -496,6 +499,49 @@ func splitConnectionBudget(total int, configuredBackground int) (critical int, b
 	}
 
 	return critical, background
+}
+
+func defaultBackgroundConnections(total int, gomaxprocs int) int {
+	if total <= 1 {
+		return 0
+	}
+
+	if gomaxprocs <= 1 {
+		background := total / 6
+		if background < 1 {
+			background = 1
+		}
+		if background > 2 {
+			background = 2
+		}
+		if background >= total {
+			background = total - 1
+		}
+		return background
+	}
+
+	background := total / 4
+	if background < 1 {
+		background = 1
+	}
+	return background
+}
+
+func defaultBackgroundQueueMax(backgroundConns int, gomaxprocs int) int {
+	if backgroundConns <= 0 {
+		return 0
+	}
+
+	factor := defaultSQLBackgroundQueueFactor
+	if gomaxprocs <= 1 {
+		factor = lowCPUBackgroundQueueFactor
+	}
+
+	queueMax := backgroundConns * factor
+	if queueMax < backgroundConns {
+		queueMax = backgroundConns
+	}
+	return queueMax
 }
 
 func (p *Plugin) configureSQLRequestLanes(criticalConns, backgroundConns int) {
@@ -518,10 +564,7 @@ func (p *Plugin) configureSQLRequestLanes(criticalConns, backgroundConns int) {
 
 	queueMax := p.config.BackgroundQueueMax
 	if queueMax <= 0 {
-		queueMax = backgroundConns * defaultSQLBackgroundQueueFactor
-		if queueMax < backgroundConns {
-			queueMax = backgroundConns
-		}
+		queueMax = defaultBackgroundQueueMax(backgroundConns, runtime.GOMAXPROCS(0))
 	}
 	p.sqlBackgroundPend = make(chan struct{}, queueMax)
 }

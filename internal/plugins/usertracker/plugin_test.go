@@ -1051,3 +1051,81 @@ func TestHandleUserListEnd_DebouncesDuplicateEnds(t *testing.T) {
 		t.Fatal("expected channel to be out of processing state after userlist.end")
 	}
 }
+
+func TestReconnectBurst_DedupesUserlistBoundariesAndStagesJoins(t *testing.T) {
+	bus := &MockEventBus{
+		subs: make(map[string][]framework.EventHandler),
+	}
+
+	plugin := &Plugin{
+		name:               "usertracker",
+		eventBus:           bus,
+		sqlClient:          framework.NewSQLClient(bus, "usertracker"),
+		config:             &Config{UserlistDebounceMS: 2000},
+		users:              make(map[string]*UserState),
+		processingUserlist: make(map[string]bool),
+		userlistStartTimes: make(map[string]time.Time),
+		userlistEndTimes:   make(map[string]time.Time),
+		userlistJoinQueue:  make(chan userlistJoinRequest, 16),
+	}
+
+	start := &framework.DataEvent{
+		Data: &framework.EventData{
+			RawMessage: &framework.RawMessageData{
+				Message: "3",
+				Channel: "reconnect-channel",
+			},
+		},
+	}
+	end := &framework.DataEvent{
+		Data: &framework.EventData{
+			RawMessage: &framework.RawMessageData{
+				Message: "3",
+				Channel: "reconnect-channel",
+			},
+		},
+	}
+
+	if err := plugin.handleUserListStart(start); err != nil {
+		t.Fatalf("first handleUserListStart failed: %v", err)
+	}
+	if err := plugin.handleUserListStart(start); err != nil {
+		t.Fatalf("duplicate handleUserListStart failed: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		join := &framework.DataEvent{
+			Data: &framework.EventData{
+				UserJoin: &framework.UserJoinData{
+					Username: fmt.Sprintf("burst-user-%d", i),
+					UserRank: 1,
+					Channel:  "reconnect-channel",
+				},
+			},
+		}
+		if err := plugin.handleUserJoin(join); err != nil {
+			t.Fatalf("handleUserJoin(%d) failed: %v", i, err)
+		}
+	}
+
+	if err := plugin.handleUserListEnd(end); err != nil {
+		t.Fatalf("first handleUserListEnd failed: %v", err)
+	}
+	if err := plugin.handleUserListEnd(end); err != nil {
+		t.Fatalf("duplicate handleUserListEnd failed: %v", err)
+	}
+
+	if len(bus.execs) != 2 {
+		t.Fatalf("expected one deactivate + one history SQL exec for burst boundaries, got %d", len(bus.execs))
+	}
+	if len(plugin.userlistJoinQueue) != 3 {
+		t.Fatalf("expected 3 staged userlist joins, got %d", len(plugin.userlistJoinQueue))
+	}
+
+	plugin.mu.RLock()
+	userCount := len(plugin.users)
+	plugin.mu.RUnlock()
+	if userCount != 3 {
+		t.Fatalf("expected 3 in-memory users from reconnect burst, got %d", userCount)
+	}
+}

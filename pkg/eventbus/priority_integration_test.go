@@ -257,3 +257,83 @@ func TestHighPriorityDispatchBypassesNormalSaturation(t *testing.T) {
 
 	close(blockLow)
 }
+
+func TestCommandDispatchDuringStartupBurstTraffic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping timing-sensitive startup burst dispatch test in short mode")
+	}
+
+	prevMaxProcs := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(prevMaxProcs)
+
+	eb := NewEventBus(&Config{})
+	if err := eb.Start(); err != nil {
+		t.Fatalf("failed to start event bus: %v", err)
+	}
+	defer func() {
+		if err := eb.Stop(); err != nil {
+			t.Errorf("failed to stop event bus: %v", err)
+		}
+	}()
+
+	blockStartup := make(chan struct{})
+	startupWorkers := cap(eb.dispatchSemNormal)
+	if startupWorkers < 1 {
+		startupWorkers = 1
+	}
+
+	started := make(chan struct{}, startupWorkers)
+	commandDone := make(chan struct{}, 1)
+
+	if err := eb.Subscribe("cytube.event.addUser", func(event framework.Event) error {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-blockStartup
+		return nil
+	}); err != nil {
+		t.Fatalf("failed to subscribe startup handler: %v", err)
+	}
+
+	if err := eb.Subscribe("command.update.execute", func(event framework.Event) error {
+		select {
+		case commandDone <- struct{}{}:
+		default:
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("failed to subscribe command handler: %v", err)
+	}
+
+	for i := 0; i < startupWorkers*4; i++ {
+		if err := eb.Broadcast("cytube.event.addUser", &framework.EventData{}); err != nil {
+			t.Fatalf("failed to broadcast startup event %d: %v", i, err)
+		}
+	}
+
+	for i := 0; i < startupWorkers; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for startup worker %d to saturate", i+1)
+		}
+	}
+
+	if err := eb.Broadcast("command.update.execute", &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			From: "eventfilter",
+			Type: "execute",
+		},
+	}); err != nil {
+		t.Fatalf("failed to broadcast command event: %v", err)
+	}
+
+	select {
+	case <-commandDone:
+	case <-time.After(1 * time.Second):
+		t.Fatal("command event did not dispatch while startup burst traffic saturated normal workers")
+	}
+
+	close(blockStartup)
+}
