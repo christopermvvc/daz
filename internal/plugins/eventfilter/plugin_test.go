@@ -429,6 +429,145 @@ func TestAdminOnlyCommandAllowedForAdmin(t *testing.T) {
 	t.Fatal("Expected command to route to command.testplugin.execute")
 }
 
+func TestHandleChatMessageIgnoresStaleCommand(t *testing.T) {
+	p := NewPlugin(nil)
+	mockBus := NewMockEventBus()
+
+	if err := p.Initialize(mockBus); err != nil {
+		t.Fatalf("Failed to initialize: %v", err)
+	}
+	if err := p.Start(); err != nil {
+		t.Fatalf("Failed to start: %v", err)
+	}
+
+	p.mu.Lock()
+	p.commandRegistry["test"] = &CommandInfo{
+		PluginName: "testplugin",
+		MinRank:    0,
+		Enabled:    true,
+	}
+	p.registryLoaded = true
+	p.mu.Unlock()
+
+	chatEvent := &framework.DataEvent{
+		EventType: eventbus.EventCytubeChatMsg,
+		EventTime: time.Now(),
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "testuser",
+				Message:     "!test stale",
+				UserRank:    1,
+				Channel:     "testchannel",
+				MessageTime: time.Now().Add(-11 * time.Second).UnixMilli(),
+			},
+		},
+	}
+
+	if err := p.handleChatMessage(chatEvent); err != nil {
+		t.Fatalf("Failed to handle chat message: %v", err)
+	}
+
+	for _, b := range mockBus.broadcasts {
+		if b.eventType == "command.testplugin.execute" {
+			t.Fatal("Expected stale command message to be ignored")
+		}
+	}
+}
+
+func TestHandleChatMessageAcceptsSecondsTimestamp(t *testing.T) {
+	p := NewPlugin(nil)
+	mockBus := NewMockEventBus()
+
+	if err := p.Initialize(mockBus); err != nil {
+		t.Fatalf("Failed to initialize: %v", err)
+	}
+	if err := p.Start(); err != nil {
+		t.Fatalf("Failed to start: %v", err)
+	}
+
+	p.mu.Lock()
+	p.commandRegistry["test"] = &CommandInfo{
+		PluginName: "testplugin",
+		MinRank:    0,
+		Enabled:    true,
+	}
+	p.registryLoaded = true
+	p.mu.Unlock()
+
+	chatEvent := &framework.DataEvent{
+		EventType: eventbus.EventCytubeChatMsg,
+		EventTime: time.Now(),
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "testuser",
+				Message:     "!test fresh",
+				UserRank:    1,
+				Channel:     "testchannel",
+				MessageTime: time.Now().Unix(),
+			},
+		},
+	}
+
+	if err := p.handleChatMessage(chatEvent); err != nil {
+		t.Fatalf("Failed to handle chat message: %v", err)
+	}
+
+	routed := false
+	for _, b := range mockBus.broadcasts {
+		if b.eventType == "command.testplugin.execute" {
+			routed = true
+			break
+		}
+	}
+	if !routed {
+		t.Fatal("Expected command to route when MessageTime is in seconds")
+	}
+}
+
+func TestHandlePMMessageIgnoresStaleCommand(t *testing.T) {
+	p := NewPlugin(nil)
+	mockBus := NewMockEventBus()
+
+	if err := p.Initialize(mockBus); err != nil {
+		t.Fatalf("Failed to initialize: %v", err)
+	}
+	if err := p.Start(); err != nil {
+		t.Fatalf("Failed to start: %v", err)
+	}
+
+	p.mu.Lock()
+	p.commandRegistry["test"] = &CommandInfo{
+		PluginName: "testplugin",
+		MinRank:    0,
+		Enabled:    true,
+	}
+	p.registryLoaded = true
+	p.mu.Unlock()
+
+	pmEvent := &framework.DataEvent{
+		EventType: eventbus.EventCytubePM,
+		EventTime: time.Now(),
+		Data: &framework.EventData{
+			PrivateMessage: &framework.PrivateMessageData{
+				FromUser:    "testuser",
+				Message:     "!test stale",
+				Channel:     "testchannel",
+				MessageTime: time.Now().Add(-11 * time.Second).UnixMilli(),
+			},
+		},
+	}
+
+	if err := p.handlePMMessage(pmEvent); err != nil {
+		t.Fatalf("Failed to handle PM message: %v", err)
+	}
+
+	for _, b := range mockBus.broadcasts {
+		if b.eventType == "command.testplugin.execute" {
+			t.Fatal("Expected stale PM command message to be ignored")
+		}
+	}
+}
+
 func TestEventRouting(t *testing.T) {
 	p := NewPlugin(&Config{
 		RoutingRules: []RoutingRule{
@@ -549,6 +688,98 @@ func TestCommandRegistration(t *testing.T) {
 	}
 	if cmd2.PrimaryCommand != "cmd1" {
 		t.Errorf("Expected primary command 'cmd1', got '%s'", cmd2.PrimaryCommand)
+	}
+}
+
+func TestCommandRegistrationAdminOnlySpecificCommand(t *testing.T) {
+	p := NewPlugin(nil)
+	mockBus := NewMockEventBus()
+
+	if err := p.Initialize(mockBus); err != nil {
+		t.Fatalf("Failed to initialize: %v", err)
+	}
+	if err := p.Start(); err != nil {
+		t.Fatalf("Failed to start: %v", err)
+	}
+
+	regEvent := &framework.DataEvent{
+		EventType: "command.register",
+		EventTime: time.Now(),
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				From: "testplugin",
+				Type: "register",
+				Data: &framework.RequestData{
+					KeyValue: map[string]string{
+						"commands":   "cmd1,cmd2,cmd3",
+						"admin_only": "cmd2",
+					},
+				},
+			},
+		},
+	}
+
+	if err := p.handleRegisterEvent(regEvent); err != nil {
+		t.Fatalf("Failed to handle registration: %v", err)
+	}
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.commandRegistry["cmd1"].AdminOnly {
+		t.Fatal("Expected cmd1 to be non-admin")
+	}
+	if !p.commandRegistry["cmd2"].AdminOnly {
+		t.Fatal("Expected cmd2 to be admin-only")
+	}
+	if p.commandRegistry["cmd3"].AdminOnly {
+		t.Fatal("Expected cmd3 to be non-admin")
+	}
+}
+
+func TestCommandRegistrationAdminOnlyPrimaryAppliesToAliases(t *testing.T) {
+	p := NewPlugin(nil)
+	mockBus := NewMockEventBus()
+
+	if err := p.Initialize(mockBus); err != nil {
+		t.Fatalf("Failed to initialize: %v", err)
+	}
+	if err := p.Start(); err != nil {
+		t.Fatalf("Failed to start: %v", err)
+	}
+
+	regEvent := &framework.DataEvent{
+		EventType: "command.register",
+		EventTime: time.Now(),
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				From: "testplugin",
+				Type: "register",
+				Data: &framework.RequestData{
+					KeyValue: map[string]string{
+						"commands":   "primary,alias1,alias2",
+						"admin_only": "primary",
+					},
+				},
+			},
+		},
+	}
+
+	if err := p.handleRegisterEvent(regEvent); err != nil {
+		t.Fatalf("Failed to handle registration: %v", err)
+	}
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if !p.commandRegistry["primary"].AdminOnly {
+		t.Fatal("Expected primary command to be admin-only")
+	}
+	if !p.commandRegistry["alias1"].AdminOnly {
+		t.Fatal("Expected alias1 to inherit admin-only from primary command")
+	}
+	if !p.commandRegistry["alias2"].AdminOnly {
+		t.Fatal("Expected alias2 to inherit admin-only from primary command")
 	}
 }
 
