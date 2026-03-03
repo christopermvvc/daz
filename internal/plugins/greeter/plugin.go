@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -43,15 +44,16 @@ type Config struct {
 
 // Plugin implements the greeter functionality
 type Plugin struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	eventBus  framework.EventBus
-	sqlClient *framework.SQLClient
-	name      string
-	running   bool
-	mu        sync.RWMutex
-	config    *Config
-	wg        sync.WaitGroup
+	ctx          context.Context
+	cancel       context.CancelFunc
+	eventBus     framework.EventBus
+	sqlClient    *framework.SQLClient
+	ollamaClient *framework.OllamaClient
+	name         string
+	running      bool
+	mu           sync.RWMutex
+	config       *Config
+	wg           sync.WaitGroup
 
 	// Greeting queue for managing greeting delivery
 	greetingQueue chan *greetingRequest
@@ -121,7 +123,7 @@ func New() framework.Plugin {
 func (p *Plugin) Dependencies() []string {
 	deps := []string{"sql"}
 	if p.config != nil && p.config.UseGreetingEngine {
-		deps = append(deps, "greetingengine")
+		deps = append(deps, "greetingengine", "ollama")
 	}
 	return deps
 }
@@ -195,6 +197,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 
 	p.eventBus = bus
 	p.sqlClient = framework.NewSQLClient(bus, p.name)
+	p.ollamaClient = framework.NewOllamaClient(bus, p.name)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
 	// Initialize managers
@@ -266,8 +269,11 @@ func (p *Plugin) Start() error {
 			Type: "register",
 			Data: &framework.RequestData{
 				KeyValue: map[string]string{
-					"commands": "greeter",
+					"commands": "greeter,greetme",
 					"min_rank": "0", // Anyone can use the command
+					// Restrict greetme to admins for safety, while leaving greeter
+					// available to everyone
+					"admin_only": "greetme",
 				},
 			},
 		},
@@ -645,9 +651,15 @@ func (p *Plugin) sendGreeting(req *greetingRequest) {
 
 	var greeting string
 	if p.config.UseGreetingEngine {
-		// Request greeting from greeting engine
-		greeting = p.getGreetingFromEngine(req.channel, req.username, req.rank)
-	} else if p.greetingManager != nil {
+		// Request greeting from ollama first (if available)
+		greeting = p.getGreetingFromOllama(req.channel, req.username, req.rank)
+		if greeting == "" {
+			// Fallback to dedicated greeting engine
+			greeting = p.getGreetingFromEngine(req.channel, req.username, req.rank)
+		}
+	}
+
+	if greeting == "" && p.greetingManager != nil {
 		// Use greeting manager with time-based and first-time logic
 		greeting = p.greetingManager.GetGreeting(req.username, isFirstTime)
 	}
@@ -738,6 +750,43 @@ func (p *Plugin) sendGreeting(req *greetingRequest) {
 	} else {
 		logger.Debug(p.name, "Fortune feature disabled")
 	}
+}
+
+func (p *Plugin) getGreetingFromOllama(channel, username string, rank int) string {
+	if p.ollamaClient == nil {
+		return ""
+	}
+
+	extraContext := map[string]string{
+		"channel":  channel,
+		"username": username,
+		"rank":     fmt.Sprintf("%d", rank),
+	}
+
+	req := framework.OllamaGenerateRequest{
+		Channel:      channel,
+		Username:     username,
+		Message:      "Create a short, casual one-line welcome greeting for this user. Keep it in character as a laid-back Australian Dazza.",
+		ExtraContext: extraContext,
+		MaxTokens:    96,
+	}
+
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+
+	resp, err := p.ollamaClient.Generate(ctx, req)
+	if err != nil {
+		logger.Warn(p.name, "Failed to generate greeting via ollama: %v", err)
+		return ""
+	}
+
+	greeting := strings.TrimSpace(resp.Text)
+	if greeting == "" {
+		logger.Debug(p.name, "Empty ollama greeting response, falling back")
+		return ""
+	}
+
+	return greeting
 }
 
 // getRandomFloat64 returns a cryptographically secure random float64 in [0, 1)
@@ -880,37 +929,65 @@ func (p *Plugin) handleGreeterCommand(event framework.Event) error {
 	channel := cmd.Params["channel"]
 	username := cmd.Params["username"]
 	isPM := cmd.Params["is_pm"] == "true"
-
-	// Parse subcommand from args
-	if len(cmd.Args) == 0 {
-		p.sendResponse(channel, username, "Usage: !greeter <on|off>", isPM)
-		return nil
+	isAdmin := cmd.Params["is_admin"] == "true"
+	commandName := strings.TrimSpace(cmd.Name)
+	invokerRank := 0
+	if rankRaw := strings.TrimSpace(cmd.Params["rank"]); rankRaw != "" {
+		if parsed, err := strconv.Atoi(rankRaw); err == nil {
+			invokerRank = parsed
+		}
 	}
 
-	subcommand := cmd.Args[0]
-
-	switch subcommand {
-	case "on":
-		return p.handleToggle(channel, username, false, isPM)
-	case "off":
-		return p.handleToggle(channel, username, true, isPM)
-	case "test":
-		// Test command to manually trigger a greeting
-		if len(cmd.Args) < 2 {
-			p.sendResponse(channel, username, "Usage: !greeter test <username>", isPM)
+	switch strings.ToLower(commandName) {
+	case "greetme":
+		if !isAdmin {
+			p.sendResponse(channel, username, "Sorry, only admins can use !greetme.", isPM)
+			logger.Info(p.name, "Non-admin user %s attempted to use !greetme", username)
 			return nil
 		}
-		testUser := cmd.Args[1]
-		logger.Info(p.name, "Manual greeting test requested for user %s by %s", testUser, username)
+
+		logger.Info(p.name, "Admin greeting test requested by %s for themselves", username)
 		p.sendGreeting(&greetingRequest{
 			channel:  channel,
-			username: testUser,
-			rank:     0,
+			username: username,
+			rank:     invokerRank,
 			joinedAt: time.Now(),
 		})
 		return nil
+	case "greeter":
+		// Parse subcommand from args
+		if len(cmd.Args) == 0 {
+			p.sendResponse(channel, username, "Usage: !greeter <on|off|test <username>>", isPM)
+			return nil
+		}
+
+		subcommand := cmd.Args[0]
+
+		switch subcommand {
+		case "on":
+			return p.handleToggle(channel, username, false, isPM)
+		case "off":
+			return p.handleToggle(channel, username, true, isPM)
+		case "test":
+			// Test command to manually trigger a greeting
+			if len(cmd.Args) < 2 {
+				p.sendResponse(channel, username, "Usage: !greeter test <username>", isPM)
+				return nil
+			}
+			testUser := cmd.Args[1]
+			logger.Info(p.name, "Manual greeting test requested for user %s by %s", testUser, username)
+			p.sendGreeting(&greetingRequest{
+				channel:  channel,
+				username: testUser,
+				rank:     0,
+				joinedAt: time.Now(),
+			})
+			return nil
+		default:
+			p.sendResponse(channel, username, "Usage: !greeter <on|off|test <username>>", isPM)
+		}
 	default:
-		p.sendResponse(channel, username, "Usage: !greeter <on|off|test <username>>", isPM)
+		p.sendResponse(channel, username, "Usage: !greeter <on|off|test <username>> or !greetme", isPM)
 	}
 
 	return nil

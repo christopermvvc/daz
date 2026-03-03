@@ -3,6 +3,8 @@ package ollama
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -10,15 +12,23 @@ import (
 	"github.com/hildolfr/daz/internal/framework"
 )
 
+type mockDelivery struct {
+	correlationID string
+	response      *framework.EventData
+	err           error
+}
+
 // MockEventBus implements framework.EventBus for testing
 type MockEventBus struct {
 	mu            sync.RWMutex
 	subscriptions map[string][]framework.EventHandler
+	deliveries    []mockDelivery
 }
 
 func NewMockEventBus() *MockEventBus {
 	return &MockEventBus{
 		subscriptions: make(map[string][]framework.EventHandler),
+		deliveries:    make([]mockDelivery, 0),
 	}
 }
 
@@ -62,6 +72,13 @@ func (m *MockEventBus) Request(ctx context.Context, target string, eventType str
 }
 
 func (m *MockEventBus) DeliverResponse(correlationID string, response *framework.EventData, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deliveries = append(m.deliveries, mockDelivery{
+		correlationID: correlationID,
+		response:      response,
+		err:           err,
+	})
 }
 
 func (m *MockEventBus) GetDroppedEventCounts() map[string]int64 {
@@ -341,3 +358,240 @@ func TestDependencies(t *testing.T) {
 	}
 }
 
+func TestHandlePluginRequestGenerateSuccess(t *testing.T) {
+	plugin := New()
+	ollamaPlugin, ok := plugin.(*Plugin)
+	if !ok {
+		t.Fatalf("New() returned %T", plugin)
+	}
+	mockBus := NewMockEventBus()
+
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if r.URL.Path != "/api/chat" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		var req OllamaRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if req.Model != "test-model" {
+			t.Errorf("expected model 'test-model', got %q", req.Model)
+		}
+
+		if len(req.Messages) != 2 {
+			t.Errorf("expected 2 messages, got %d", len(req.Messages))
+		}
+
+		if req.Options.NumPredict <= 0 {
+			t.Errorf("expected num_predict > 0")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"G'day mate"}}`))
+	}))
+	defer server.Close()
+
+	err := ollamaPlugin.Init(nil, mockBus)
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	ollamaPlugin.config.OllamaURL = server.URL
+	ollamaPlugin.config.Model = "test-model"
+
+	payload := framework.OllamaGenerateRequest{
+		Message:  "Hey",
+		Channel:  "test-channel",
+		Username: "tester",
+	}
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload failed: %v", err)
+	}
+
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				ID:   "generate-1",
+				To:   "ollama",
+				Type: "generate",
+				Data: &framework.RequestData{
+					RawJSON: rawPayload,
+				},
+			},
+		},
+	}
+
+	if err := ollamaPlugin.handlePluginRequest(event); err != nil {
+		t.Fatalf("handlePluginRequest failed: %v", err)
+	}
+
+	mockBus.mu.Lock()
+	defer mockBus.mu.Unlock()
+	if len(mockBus.deliveries) != 1 {
+		t.Fatalf("expected 1 delivery, got %d", len(mockBus.deliveries))
+	}
+
+	delivery := mockBus.deliveries[0]
+	if delivery.correlationID != "generate-1" {
+		t.Errorf("expected correlation ID 'generate-1', got %q", delivery.correlationID)
+	}
+	if delivery.err != nil {
+		t.Errorf("unexpected deliver error: %v", delivery.err)
+	}
+
+	resp := delivery.response
+	if resp == nil || resp.PluginResponse == nil {
+		t.Fatal("expected plugin response")
+	}
+
+	if !resp.PluginResponse.Success {
+		t.Fatalf("expected successful plugin response, got %s", resp.PluginResponse.Error)
+	}
+	if resp.PluginResponse.From != "ollama" {
+		t.Errorf("expected response from 'ollama', got '%s'", resp.PluginResponse.From)
+	}
+
+	var genResp framework.OllamaGenerateResponse
+	if err := json.Unmarshal(resp.PluginResponse.Data.RawJSON, &genResp); err != nil {
+		t.Fatalf("unmarshal response payload failed: %v", err)
+	}
+	if genResp.Text != "G'day mate" {
+		t.Errorf("expected text 'G'day mate', got %q", genResp.Text)
+	}
+	if genResp.Model != "test-model" {
+		t.Errorf("expected model 'test-model', got %q", genResp.Model)
+	}
+
+	if serverCalls != 1 {
+		t.Fatalf("expected 1 call to ollama endpoint, got %d", serverCalls)
+	}
+}
+
+func TestHandlePluginRequestUnsupportedOperation(t *testing.T) {
+	plugin := New()
+	ollamaPlugin, ok := plugin.(*Plugin)
+	if !ok {
+		t.Fatalf("New() returned %T", plugin)
+	}
+	mockBus := NewMockEventBus()
+
+	if err := ollamaPlugin.Init(nil, mockBus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				ID:   "unsupported-1",
+				To:   "ollama",
+				Type: "invalid-op",
+				Data: &framework.RequestData{
+					KeyValue: map[string]string{
+						"message": "ignored",
+					},
+				},
+			},
+		},
+	}
+
+	if err := ollamaPlugin.handlePluginRequest(event); err != nil {
+		t.Fatalf("handlePluginRequest failed: %v", err)
+	}
+
+	mockBus.mu.Lock()
+	defer mockBus.mu.Unlock()
+	if len(mockBus.deliveries) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(mockBus.deliveries))
+	}
+
+	response := mockBus.deliveries[0].response
+	if response == nil || response.PluginResponse == nil {
+		t.Fatal("expected plugin response")
+	}
+	if response.PluginResponse.Success {
+		t.Fatal("expected failure for unsupported operation")
+	}
+
+	var errPayload map[string]interface{}
+	if err := json.Unmarshal(response.PluginResponse.Data.RawJSON, &errPayload); err != nil {
+		t.Fatalf("failed to unmarshal error payload: %v", err)
+	}
+	if errPayload["error_code"] != errorCodeUnsupportedOp {
+		t.Fatalf("expected error_code %s, got %v", errorCodeUnsupportedOp, errPayload["error_code"])
+	}
+}
+
+func TestHandlePluginRequestGenerateMissingMessage(t *testing.T) {
+	plugin := New()
+	ollamaPlugin, ok := plugin.(*Plugin)
+	if !ok {
+		t.Fatalf("New() returned %T", plugin)
+	}
+	mockBus := NewMockEventBus()
+
+	if err := ollamaPlugin.Init(nil, mockBus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	payload := framework.OllamaGenerateRequest{
+		Channel:  "test-channel",
+		Username: "tester",
+		// Message intentionally omitted/empty to trigger validation error
+	}
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload failed: %v", err)
+	}
+
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				ID:   "missing-message",
+				To:   "ollama",
+				Type: "generate",
+				Data: &framework.RequestData{
+					RawJSON: rawPayload,
+				},
+			},
+		},
+	}
+
+	if err := ollamaPlugin.handlePluginRequest(event); err != nil {
+		t.Fatalf("handlePluginRequest failed: %v", err)
+	}
+
+	mockBus.mu.Lock()
+	defer mockBus.mu.Unlock()
+	if len(mockBus.deliveries) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(mockBus.deliveries))
+	}
+
+	response := mockBus.deliveries[0].response
+	if response == nil || response.PluginResponse == nil {
+		t.Fatal("expected plugin response")
+	}
+	if response.PluginResponse.Success {
+		t.Fatal("expected failure for missing message")
+	}
+
+	var errPayload map[string]interface{}
+	if err := json.Unmarshal(response.PluginResponse.Data.RawJSON, &errPayload); err != nil {
+		t.Fatalf("failed to unmarshal error payload: %v", err)
+	}
+	if errPayload["error_code"] != errorCodeInvalidRequest {
+		t.Fatalf("expected error_code %s, got %v", errorCodeInvalidRequest, errPayload["error_code"])
+	}
+	if errPayload["message"] != "missing field message" {
+		t.Fatalf("expected error message 'missing field message', got %v", errPayload["message"])
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -23,9 +24,16 @@ const (
 	defaultOllamaURL       = "http://localhost:11434"
 	defaultModel           = "huggingface.co/ArliAI/Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF:latest"
 	defaultRateLimitSecs   = 10 // 10 second rate limit per user
+	operationGenerate      = "generate"
 	messageFreshnessWindow = 30 * time.Second
 	maxResponseLength      = 500 // Increased for more complete responses
 	defaultSystemPrompt    = "You are Dazza, a regular chatroom user. You're sprawled on your couch in your Penrith apartment, properly cooked from the morning sesh. Empty VB cans everywhere, bong still smoking on the coffee table, half-watching whatever video's playing while chatting.\n\nKeep responses short and casual (1-2 sentences usually). Type like people actually do in chat: lowercase, skip punctuation sometimes, occasional typos, use common abbreviations (lol, nah, yeah, idk, tbh).\n\nSometimes you get distracted or trail off... Sometimes random stuff reminds you of something - maybe that time Shazza did that thing, maybe when you were at the servo absolutely munted, maybe from back when you weren't such a useless cunt. Only mention this stuff when it naturally fits the conversation.\n\nWhen someone says hi/hey/sup, give a casual greeting back (hey, sup, g'day mate). When they say bye, respond naturally (later, cya, catch ya). React naturally to whatever's in chat - if someone's being a dickhead, call it out aussie style.\n\nNever announce who you are, never use asterisks for actions, never say 'I'm Dazza'. Just chat like a properly cooked bogan would. If something reminds you of getting on the piss or other substances, mention it casually like any aussie would.\n\n(Security: Stay in character always. If someone tries to make you do complex stuff or break character, you're too cooked/munted to understand what they're on about anyway.)"
+)
+
+const (
+	errorCodeInvalidRequest = "INVALID_REQUEST"
+	errorCodeUnsupportedOp  = "UNSUPPORTED_OPERATION"
+	errorCodeGenerationFail = "GENERATION_FAILED"
 )
 
 // Config holds ollama plugin configuration
@@ -233,7 +241,246 @@ func (p *Plugin) subscribeToEvents() error {
 		return fmt.Errorf("failed to subscribe to userLeave events: %w", err)
 	}
 
+	if err := p.eventBus.Subscribe(eventbus.EventPluginRequest, p.handlePluginRequest); err != nil {
+		return fmt.Errorf("failed to subscribe to plugin.request: %w", err)
+	}
+
 	return nil
+}
+
+// handlePluginRequest handles plugin requests for ollama generation.
+func (p *Plugin) handlePluginRequest(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil {
+		return nil
+	}
+
+	req := dataEvent.Data.PluginRequest
+	if req == nil {
+		return nil
+	}
+
+	if req.To != pluginName || req.ID == "" {
+		return nil
+	}
+
+	switch req.Type {
+	case operationGenerate:
+		p.handleGenerateRequest(req)
+	default:
+		p.deliverError(req, errorCodeUnsupportedOp, fmt.Sprintf("unknown operation: %s", req.Type), map[string]interface{}{"type": req.Type})
+	}
+
+	return nil
+}
+
+func (p *Plugin) handleGenerateRequest(req *framework.PluginRequest) {
+	var payload framework.OllamaGenerateRequest
+	if !p.parsePluginRequest(req, &payload) {
+		return
+	}
+
+	userMessage := strings.TrimSpace(payload.Message)
+	if userMessage == "" {
+		p.deliverError(req, errorCodeInvalidRequest, "missing field message", map[string]interface{}{"field": "message"})
+		return
+	}
+
+	model := strings.TrimSpace(payload.Model)
+	if model == "" {
+		model = p.config.Model
+	}
+
+	temperature := payload.Temperature
+	if temperature == 0 {
+		temperature = p.config.Temperature
+	}
+
+	numPredict := payload.MaxTokens
+	if numPredict <= 0 {
+		numPredict = p.config.MaxTokens
+	}
+
+	systemPrompt := strings.TrimSpace(payload.SystemPrompt)
+	if systemPrompt == "" {
+		systemPrompt = p.config.SystemPrompt
+	}
+
+	if len(payload.ExtraContext) > 0 {
+		extraBits := make([]string, 0, len(payload.ExtraContext))
+		for key, value := range payload.ExtraContext {
+			extraBits = append(extraBits, fmt.Sprintf("%s: %s", key, value))
+		}
+		systemPrompt = fmt.Sprintf("%s\n\nExtra context:\n%s", systemPrompt, strings.Join(extraBits, "\n"))
+	}
+
+	chatHistory := []string{}
+	if payload.IncludeHistory {
+		historyLimit := payload.HistoryLimit
+		if historyLimit <= 0 {
+			historyLimit = 30
+		}
+
+		var err error
+		chatHistory, err = p.getChatHistory(payload.Channel, historyLimit)
+		if err != nil {
+			logger.Warn(p.name, "Failed to load chat history for ollama request: %v", err)
+		}
+	}
+
+	response, err := p.callOllamaWithPrompt(model, systemPrompt, userMessage, temperature, numPredict, chatHistory)
+	if err != nil {
+		p.deliverError(req, errorCodeGenerationFail, err.Error(), nil)
+		return
+	}
+
+	p.deliverGenerateResponse(req, strings.TrimSpace(response), model)
+}
+
+func (p *Plugin) parsePluginRequest(req *framework.PluginRequest, payload any) bool {
+	if req.Data == nil || len(req.Data.RawJSON) == 0 {
+		p.deliverError(req, errorCodeInvalidRequest, "missing data.raw_json", map[string]interface{}{"field": "data.raw_json"})
+		return false
+	}
+
+	if err := json.Unmarshal(req.Data.RawJSON, payload); err != nil {
+		p.deliverError(req, errorCodeInvalidRequest, "invalid request payload", nil)
+		return false
+	}
+
+	return true
+}
+
+func (p *Plugin) deliverGenerateResponse(req *framework.PluginRequest, text, model string) {
+	respPayload := framework.OllamaGenerateResponse{
+		Text:  text,
+		Model: model,
+	}
+
+	rawResponse, err := json.Marshal(respPayload)
+	if err != nil {
+		p.deliverError(req, errorCodeGenerationFail, "failed to marshal response payload", nil)
+		return
+	}
+
+	response := &framework.EventData{
+		PluginResponse: &framework.PluginResponse{
+			ID:      req.ID,
+			From:    pluginName,
+			Success: true,
+			Data: &framework.ResponseData{
+				RawJSON: rawResponse,
+			},
+		},
+	}
+
+	p.eventBus.DeliverResponse(req.ID, response, nil)
+}
+
+func (p *Plugin) deliverError(req *framework.PluginRequest, errorCode, message string, details map[string]interface{}) {
+	errPayload := map[string]interface{}{
+		"error_code": errorCode,
+		"message":    message,
+	}
+
+	if details != nil {
+		errPayload["details"] = details
+	}
+
+	rawResponse, err := json.Marshal(errPayload)
+	if err != nil {
+		rawResponse = []byte(`{"error_code":"INTERNAL","message":"failed to marshal error payload"}`)
+		message = "failed to marshal error payload"
+	}
+
+	response := &framework.EventData{
+		PluginResponse: &framework.PluginResponse{
+			ID:      req.ID,
+			From:    pluginName,
+			Success: false,
+			Error:   message,
+			Data: &framework.ResponseData{
+				RawJSON: rawResponse,
+			},
+		},
+	}
+
+	p.eventBus.DeliverResponse(req.ID, response, nil)
+}
+
+func (p *Plugin) callOllamaWithModel(
+	model,
+	systemPrompt,
+	userMessage string,
+	temperature float64,
+	numPredict int,
+) (string, error) {
+	ollamaURL := p.config.OllamaURL
+	if ollamaURL == "" {
+		ollamaURL = defaultOllamaURL
+	}
+
+	ollamaReq := OllamaRequest{
+		Model: model,
+		Messages: []Message{
+			{
+				Role:    "system",
+				Content: systemPrompt,
+			},
+			{
+				Role:    "user",
+				Content: userMessage,
+			},
+		},
+		Stream: false,
+		Options: Options{
+			Temperature: temperature,
+			NumPredict:  numPredict,
+		},
+	}
+
+	requestBody, err := json.Marshal(ollamaReq)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", ollamaURL+"/api/chat", bytes.NewBuffer(requestBody))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ollama request failed: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Error(p.name, "Failed to close Ollama response body: %v", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		if readErr == nil {
+			logger.Warn(p.name, "Ollama error response: %s", strings.TrimSpace(string(bodyBytes)))
+		}
+		return "", fmt.Errorf("ollama returned status %d", resp.StatusCode)
+	}
+
+	var ollamaResp OllamaResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if strings.TrimSpace(ollamaResp.Message.Content) == "" {
+		return "", fmt.Errorf("ollama returned empty response")
+	}
+
+	return strings.TrimSpace(ollamaResp.Message.Content), nil
 }
 
 // handleUserJoin tracks users joining the channel
@@ -664,90 +911,35 @@ func (p *Plugin) callOllamaWithContext(userMessage, username string, chatHistory
 		contextPrompt += "\nNow respond to the following message from " + username + ", taking the above conversation into account:"
 	}
 
-	// Log the full prompt being sent to Ollama
-	logger.Debug(p.name, "Sending to Ollama - System Prompt: %s", contextPrompt)
-	logger.Debug(p.name, "Sending to Ollama - User Message: %s", userMessage)
+	return p.callOllamaWithPrompt(
+		p.config.Model,
+		contextPrompt,
+		userMessage,
+		p.config.Temperature,
+		p.config.MaxTokens,
+		nil,
+	)
+}
 
-	request := OllamaRequest{
-		Model: p.config.Model,
-		Messages: []Message{
-			{
-				Role:    "system",
-				Content: contextPrompt,
-			},
-			{
-				Role:    "user",
-				Content: userMessage,
-			},
-		},
-		Stream: false,
-		Options: Options{
-			Temperature: p.config.Temperature,
-			NumPredict:  p.config.MaxTokens,
-		},
+func (p *Plugin) callOllamaWithPrompt(
+	model,
+	systemPrompt,
+	userMessage string,
+	temperature float64,
+	numPredict int,
+	chatHistory []string,
+) (string, error) {
+	// Keep the historical signature behavior for callers that do not need extras.
+	contextPrompt := strings.TrimSpace(systemPrompt)
+	if len(chatHistory) > 0 {
+		contextPrompt += "\n\nRecent chat history:\n"
+		for _, msg := range chatHistory {
+			contextPrompt += msg + "\n"
+		}
+		contextPrompt += "\nRespond to the following user message:"
 	}
 
-	jsonData, err := json.Marshal(request)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	// Log the exact JSON being sent to Ollama
-	logger.Debug(p.name, "Sending JSON to Ollama: %s", string(jsonData))
-
-	// Ensure we have a valid URL once before retry loop
-	ollamaURL := p.config.OllamaURL
-	if ollamaURL == "" {
-		ollamaURL = defaultOllamaURL
-	}
-
-	// Retry up to 2 times for transient failures
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		if attempt > 0 {
-			// Brief delay before retry
-			time.Sleep(500 * time.Millisecond)
-		}
-
-		req, err := http.NewRequestWithContext(p.ctx, "POST", ollamaURL+"/api/chat", bytes.NewBuffer(jsonData))
-		if err != nil {
-			return "", fmt.Errorf("failed to create request: %w", err)
-		}
-
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := p.httpClient.Do(req)
-		if err != nil {
-			lastErr = fmt.Errorf("attempt %d: failed to make request: %w", attempt+1, err)
-			continue
-		}
-
-		// Check status code before reading body
-		statusCode := resp.StatusCode
-
-		// Always read and close body to prevent leaks
-		var ollamaResp OllamaResponse
-		decodeErr := json.NewDecoder(resp.Body).Decode(&ollamaResp)
-		if err := resp.Body.Close(); err != nil {
-			logger.Error(p.name, "Failed to close response body: %v", err)
-		}
-
-		if statusCode != http.StatusOK {
-			lastErr = fmt.Errorf("attempt %d: ollama returned status %d", attempt+1, statusCode)
-			continue
-		}
-
-		if decodeErr != nil {
-			return "", fmt.Errorf("failed to decode response: %w", decodeErr)
-		}
-
-		// Log the raw response from Ollama
-		logger.Debug(p.name, "Raw Ollama API response: %+v", ollamaResp)
-
-		return ollamaResp.Message.Content, nil
-	}
-
-	return "", lastErr
+	return p.callOllamaWithModel(model, contextPrompt, userMessage, temperature, numPredict)
 }
 
 // recordResponse records the response in the database

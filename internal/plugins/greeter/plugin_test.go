@@ -1,4 +1,4 @@
-package greeter_test
+package greeter
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/hildolfr/daz/internal/framework"
-	"github.com/hildolfr/daz/internal/plugins/greeter"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -82,13 +81,13 @@ func (m *MockEventBus) GetDroppedEventCount(eventType string) int64 {
 }
 
 func TestNewPlugin(t *testing.T) {
-	plugin := greeter.New()
+	plugin := New()
 	assert.NotNil(t, plugin)
 	assert.Equal(t, "greeter", plugin.Name())
 }
 
 func TestPluginDependencies(t *testing.T) {
-	plugin := greeter.New()
+	plugin := New()
 	// Cast to PluginWithDependencies interface
 	if p, ok := plugin.(interface {
 		Dependencies() []string
@@ -101,7 +100,7 @@ func TestPluginDependencies(t *testing.T) {
 }
 
 func TestPluginInit(t *testing.T) {
-	plugin := greeter.New()
+	plugin := New()
 	mockBus := new(MockEventBus)
 
 	// Test with no config
@@ -120,7 +119,7 @@ func TestPluginInit(t *testing.T) {
 }
 
 func TestPluginStartStop(t *testing.T) {
-	plugin := greeter.New()
+	plugin := New()
 	mockBus := new(MockEventBus)
 
 	// Initialize first
@@ -165,7 +164,7 @@ func TestPluginStartStop(t *testing.T) {
 }
 
 func TestPluginStatus(t *testing.T) {
-	plugin := greeter.New()
+	plugin := New()
 
 	// Check initial status
 	status := plugin.Status()
@@ -174,9 +173,123 @@ func TestPluginStatus(t *testing.T) {
 }
 
 func TestHandleEvent(t *testing.T) {
-	plugin := greeter.New()
+	plugin := New()
 
 	// HandleEvent should always return nil
 	err := plugin.HandleEvent(nil)
 	assert.NoError(t, err)
+}
+
+func TestPluginStartRegistersGreetmeWithAdminOnly(t *testing.T) {
+	plugin := New()
+	mockBus := new(MockEventBus)
+
+	if err := plugin.Init(nil, mockBus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	expectedCommands := ""
+	expectedAdminOnly := ""
+	gotRegistration := false
+
+	mockBus.On("Subscribe", "cytube.event.addUser", mock.Anything).Return(nil)
+	mockBus.On("Subscribe", "cytube.event.userJoin", mock.Anything).Return(nil)
+	mockBus.On("Subscribe", "cytube.event.userLeave", mock.Anything).Return(nil)
+	mockBus.On("Subscribe", "cytube.event.userlist.start", mock.Anything).Return(nil)
+	mockBus.On("Subscribe", "command.greeter.execute", mock.Anything).Return(nil)
+	mockBus.On("Broadcast", "command.register", mock.MatchedBy(func(data *framework.EventData) bool {
+		if data == nil || data.PluginRequest == nil || data.PluginRequest.Data == nil {
+			return false
+		}
+
+		gotRegistration = true
+		expectedCommands = data.PluginRequest.Data.KeyValue["commands"]
+		expectedAdminOnly = data.PluginRequest.Data.KeyValue["admin_only"]
+		return true
+	})).Return(nil)
+	mockBus.On("Request", mock.Anything, "sql", mock.Anything, mock.Anything, mock.Anything).Return(&framework.EventData{
+		SQLExecResponse: &framework.SQLExecResponse{
+			Success:      true,
+			RowsAffected: 0,
+		},
+		SQLQueryResponse: &framework.SQLQueryResponse{
+			Success: true,
+			Rows:    [][]json.RawMessage{},
+		},
+	}, nil).Maybe()
+
+	greeterPlugin, ok := plugin.(*Plugin)
+	if !ok {
+		t.Fatal("plugin is not *Plugin")
+	}
+
+	if err := greeterPlugin.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	if !gotRegistration {
+		t.Fatal("expected command.register broadcast")
+	}
+	assert.Equal(t, "greeter,greetme", expectedCommands)
+	assert.Equal(t, "greetme", expectedAdminOnly)
+
+	if err := greeterPlugin.Stop(); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+}
+
+func TestHandleGreeterCommand_GreetmeRequiresAdmin(t *testing.T) {
+	plugin := New()
+	mockBus := new(MockEventBus)
+
+	if err := plugin.Init(nil, mockBus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	greeterPlugin, ok := plugin.(*Plugin)
+	if !ok {
+		t.Fatal("plugin is not *Plugin")
+	}
+
+	mockBus.On("Broadcast", "cytube.send.pm", mock.MatchedBy(func(data *framework.EventData) bool {
+		if data == nil || data.PrivateMessage == nil {
+			return false
+		}
+		return data.PrivateMessage.ToUser == "alice" &&
+			data.PrivateMessage.Channel == "testchannel" &&
+			data.PrivateMessage.Message == "Sorry, only admins can use !greetme."
+	})).Return(nil)
+
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				Data: &framework.RequestData{
+					Command: &framework.CommandData{
+						Name: "greetme",
+						Params: map[string]string{
+							"username": "alice",
+							"channel":  "testchannel",
+							"is_pm":    "true",
+							"is_admin": "false",
+							"rank":     "3",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if err := greeterPlugin.handleGreeterCommand(event); err != nil {
+		t.Fatalf("handleGreeterCommand failed: %v", err)
+	}
+
+	mockBus.AssertCalled(t, "Broadcast", "cytube.send.pm", mock.MatchedBy(func(data *framework.EventData) bool {
+		if data == nil || data.PrivateMessage == nil {
+			return false
+		}
+		return data.PrivateMessage.ToUser == "alice" &&
+			data.PrivateMessage.Channel == "testchannel" &&
+			data.PrivateMessage.Message == "Sorry, only admins can use !greetme."
+	}))
+	mockBus.AssertNotCalled(t, "Broadcast", "cytube.send", mock.Anything, mock.Anything)
 }
