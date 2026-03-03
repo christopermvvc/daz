@@ -116,7 +116,7 @@ func New() framework.Plugin {
 			DefaultGreeting:    "Welcome back, %s!",
 			UseGreetingEngine:  true,
 			EnableFortune:      true,
-			FortuneProbability: 0.50,
+			FortuneProbability: 0.20,
 		},
 	}
 }
@@ -768,7 +768,7 @@ func (p *Plugin) getGreetingFromOllama(channel, username string, rank int) strin
 	req := framework.OllamaGenerateRequest{
 		Channel:      channel,
 		Username:     username,
-		Message:      "Create a short, casual one-line welcome greeting for this user. Keep it in character as a laid-back Australian Dazza.",
+		Message:      fmt.Sprintf("Create a short, casual one-line welcome greeting for %s. Keep it in character as a laid-back Australian Dazza.", username),
 		ExtraContext: extraContext,
 		MaxTokens:    96,
 	}
@@ -799,6 +799,17 @@ func getRandomFloat64() float64 {
 
 // getGreetingFromEngine requests a greeting from the greeting engine
 func (p *Plugin) getGreetingFromEngine(channel, username string, rank int) string {
+	payload, err := json.Marshal(map[string]string{
+		"channel":  channel,
+		"username": username,
+		"rank":     fmt.Sprintf("%d", rank),
+		"message":  fmt.Sprintf("Create a short, casual one-line welcome greeting for %s. Keep it in character as a laid-back Australian Dazza.", username),
+	})
+	if err != nil {
+		logger.Warn(p.name, "Failed to build greetingengine request payload: %v", err)
+		return ""
+	}
+
 	// Create request to greeting engine
 	reqData := &framework.EventData{
 		PluginRequest: &framework.PluginRequest{
@@ -806,11 +817,7 @@ func (p *Plugin) getGreetingFromEngine(channel, username string, rank int) strin
 			From: p.name,
 			Type: "generate",
 			Data: &framework.RequestData{
-				KeyValue: map[string]string{
-					"channel":  channel,
-					"username": username,
-					"rank":     fmt.Sprintf("%d", rank),
-				},
+				RawJSON: payload,
 			},
 		},
 	}

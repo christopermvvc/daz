@@ -31,7 +31,8 @@
       "command_prefix": "!"
     },
     "greeter": {
-      "use_greeting_engine": true
+      "use_greeting_engine": true,
+      "fortune_probability": 0.20
     },
     "economy": {},
     "pissingcontest": {

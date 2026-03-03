@@ -47,6 +47,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/eventfilter"
 	"github.com/hildolfr/daz/internal/plugins/gallery"
 	"github.com/hildolfr/daz/internal/plugins/greeter"
+	"github.com/hildolfr/daz/internal/plugins/greetingengine"
 	"github.com/hildolfr/daz/internal/plugins/mediatracker"
 	"github.com/hildolfr/daz/internal/plugins/ollama"
 	"github.com/hildolfr/daz/internal/plugins/playerstate"
@@ -229,6 +230,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"mediatracker", mediatracker.New()},
 		{"analytics", analytics.New()},
 		{"economy", economy.New()},
+		{"greetingengine", greetingengine.New()},
 		{"greeter", greeter.New()},
 		{"gallery", gallery.New()},
 		{"about", about.New()},
@@ -276,6 +278,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["usertracker"] = cfg.GetPluginConfig("usertracker")
 	pluginConfigs["mediatracker"] = cfg.GetPluginConfig("mediatracker")
 	pluginConfigs["analytics"] = cfg.GetPluginConfig("analytics")
+	pluginConfigs["greetingengine"] = cfg.GetPluginConfig("greetingengine")
 	pluginConfigs["about"] = cfg.GetPluginConfig("about")
 	pluginConfigs["bong"] = cfg.GetPluginConfig("bong")
 	pluginConfigs["bufftracker"] = cfg.GetPluginConfig("bufftracker")
