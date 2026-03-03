@@ -138,6 +138,7 @@ func (p *Plugin) Start() error {
 	}
 
 	if p.config.GenerateHTML {
+		p.markHTMLDirty()
 		p.wg.Add(1)
 		go p.runHTMLGenerator()
 	}
