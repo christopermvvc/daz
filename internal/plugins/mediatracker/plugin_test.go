@@ -432,6 +432,120 @@ func TestHandleMediaChange_FromRawVideoChangeEvent(t *testing.T) {
 	}
 }
 
+func TestHandlePlaylistEvent_QueuesStagedIngestion(t *testing.T) {
+	p := NewPlugin(nil)
+	bus := newMockEventBus()
+
+	if err := p.Initialize(bus); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	first := &framework.PlaylistArrayEvent{
+		CytubeEvent: framework.CytubeEvent{
+			ChannelName: "test-channel",
+		},
+		Items: []framework.PlaylistItem{
+			{Position: 0, MediaID: "a1", MediaType: "yt", Title: "A1", Duration: 100, QueuedBy: "u1"},
+			{Position: 1, MediaID: "a2", MediaType: "yt", Title: "A2", Duration: 120, QueuedBy: "u2"},
+		},
+	}
+
+	if err := p.handlePlaylistEvent(first); err != nil {
+		t.Fatalf("handlePlaylistEvent failed: %v", err)
+	}
+
+	p.mu.RLock()
+	req, ok := p.pendingPlaylistIngest["test-channel"]
+	p.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected staged playlist ingestion to be queued")
+	}
+	if req.eventName != "playlist event" {
+		t.Fatalf("expected eventName 'playlist event', got %q", req.eventName)
+	}
+	if len(req.items) != 2 {
+		t.Fatalf("expected 2 queued items, got %d", len(req.items))
+	}
+
+	// New full playlist for the same channel should coalesce/replace the pending request.
+	second := &framework.PlaylistArrayEvent{
+		CytubeEvent: framework.CytubeEvent{
+			ChannelName: "test-channel",
+		},
+		Items: []framework.PlaylistItem{
+			{Position: 0, MediaID: "b1", MediaType: "yt", Title: "B1", Duration: 101, QueuedBy: "u1"},
+			{Position: 1, MediaID: "b2", MediaType: "yt", Title: "B2", Duration: 121, QueuedBy: "u2"},
+			{Position: 2, MediaID: "b3", MediaType: "yt", Title: "B3", Duration: 131, QueuedBy: "u3"},
+		},
+	}
+
+	if err := p.handlePlaylistEvent(second); err != nil {
+		t.Fatalf("second handlePlaylistEvent failed: %v", err)
+	}
+
+	p.mu.RLock()
+	req, ok = p.pendingPlaylistIngest["test-channel"]
+	pendingCount := len(p.pendingPlaylistIngest)
+	p.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected staged playlist ingestion to remain queued")
+	}
+	if pendingCount != 1 {
+		t.Fatalf("expected a single coalesced pending channel, got %d", pendingCount)
+	}
+	if len(req.items) != 3 {
+		t.Fatalf("expected pending request to be replaced with 3 items, got %d", len(req.items))
+	}
+	if req.items[0].MediaID != "b1" {
+		t.Fatalf("expected coalesced request to contain latest payload, got %s", req.items[0].MediaID)
+	}
+}
+
+func TestProcessQueueUpdate_Full_QueuesStagedIngestion(t *testing.T) {
+	p := NewPlugin(nil)
+	bus := newMockEventBus()
+
+	if err := p.Initialize(bus); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	queueData := &framework.QueueUpdateData{
+		Channel: "queue-channel",
+		Action:  "full",
+		Items: []framework.QueueItem{
+			{Position: 0, MediaID: "q1", MediaType: "yt", Title: "Q1", Duration: 90, QueuedBy: "u1"},
+			{Position: 1, MediaID: "q2", MediaType: "yt", Title: "Q2", Duration: 95, QueuedBy: "u2"},
+		},
+	}
+
+	if err := p.processQueueUpdate(queueData); err != nil {
+		t.Fatalf("processQueueUpdate(full) failed: %v", err)
+	}
+
+	p.mu.RLock()
+	req, ok := p.pendingPlaylistIngest["queue-channel"]
+	p.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected full queue update to enqueue staged ingestion")
+	}
+	if req.eventName != "queue event" {
+		t.Fatalf("expected eventName 'queue event', got %q", req.eventName)
+	}
+	if len(req.items) != 2 {
+		t.Fatalf("expected 2 queued items, got %d", len(req.items))
+	}
+	if req.items[0].MediaID != "q1" {
+		t.Fatalf("expected first queued media_id q1, got %s", req.items[0].MediaID)
+	}
+
+	bus.mu.Lock()
+	execCalls := len(bus.execCalls)
+	bus.mu.Unlock()
+	if execCalls != 0 {
+		t.Fatalf("expected no immediate SQL execs for full queue update, got %d", execCalls)
+	}
+}
+
 func TestHandleNowPlayingCommand(t *testing.T) {
 	p := NewPlugin(nil)
 	bus := newMockEventBus()

@@ -49,6 +49,12 @@
     "eventfilter": {
       "command_prefix": "!"
     },
+    "mediatracker": {
+      "stats_update_interval_minutes": 5,
+      "playlist_ingest_batch_size": 20,
+      "playlist_ingest_pause_ms": 150,
+      "playlist_phase2_delay_ms": 750
+    },
     "ollama": {
       "enabled": true,
       "follow_up_enabled": true,

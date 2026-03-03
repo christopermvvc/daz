@@ -41,6 +41,10 @@ type Plugin struct {
 
 	// Latest unresolved setCurrent index per channel (1:1 playlist index)
 	pendingSetCurrentIndexes map[string]int
+
+	// Playlist ingestion queue for staged, throttled startup/reconnect processing
+	pendingPlaylistIngest map[string]playlistIngestRequest
+	playlistIngestNotify  chan struct{}
 }
 
 type playlistInfo struct {
@@ -53,6 +57,18 @@ type Config struct {
 	// How often to update aggregated statistics
 	StatsUpdateIntervalMinutes int `json:"stats_update_interval_minutes"`
 	StatsUpdateInterval        time.Duration
+
+	// Full playlist ingestion tuning
+	PlaylistIngestBatchSize int `json:"playlist_ingest_batch_size"`
+	PlaylistIngestPauseMS   int `json:"playlist_ingest_pause_ms"`
+	PlaylistPhase2DelayMS   int `json:"playlist_phase2_delay_ms"`
+}
+
+type playlistIngestRequest struct {
+	channel   string
+	items     []framework.PlaylistItem
+	enqueued  time.Time
+	eventName string
 }
 
 // MediaState tracks current media playing
@@ -74,6 +90,10 @@ func New() framework.Plugin {
 		name: "mediatracker",
 		config: &Config{
 			StatsUpdateInterval: 5 * time.Minute,
+			// Conservative defaults to avoid SQL spikes on full playlist syncs.
+			PlaylistIngestBatchSize: 20,
+			PlaylistIngestPauseMS:   150,
+			PlaylistPhase2DelayMS:   750,
 		},
 		readyChan: make(chan struct{}),
 		status: framework.PluginStatus{
@@ -82,6 +102,8 @@ func New() framework.Plugin {
 		},
 		lastPlaylistInfo:         make(map[string]*playlistInfo),
 		pendingSetCurrentIndexes: make(map[string]int),
+		pendingPlaylistIngest:    make(map[string]playlistIngestRequest),
+		playlistIngestNotify:     make(chan struct{}, 1),
 	}
 }
 
@@ -105,7 +127,10 @@ func (p *Plugin) Ready() bool {
 func NewPlugin(config *Config) *Plugin {
 	if config == nil {
 		config = &Config{
-			StatsUpdateInterval: 5 * time.Minute,
+			StatsUpdateInterval:     5 * time.Minute,
+			PlaylistIngestBatchSize: 20,
+			PlaylistIngestPauseMS:   150,
+			PlaylistPhase2DelayMS:   750,
 		}
 	}
 
@@ -119,6 +144,8 @@ func NewPlugin(config *Config) *Plugin {
 		},
 		lastPlaylistInfo:         make(map[string]*playlistInfo),
 		pendingSetCurrentIndexes: make(map[string]int),
+		pendingPlaylistIngest:    make(map[string]playlistIngestRequest),
+		playlistIngestNotify:     make(chan struct{}, 1),
 	}
 }
 
@@ -152,6 +179,15 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	// Ensure we have a valid interval
 	if p.config.StatsUpdateInterval <= 0 {
 		p.config.StatsUpdateInterval = 5 * time.Minute
+	}
+	if p.config.PlaylistIngestBatchSize <= 0 {
+		p.config.PlaylistIngestBatchSize = 20
+	}
+	if p.config.PlaylistIngestPauseMS < 0 {
+		p.config.PlaylistIngestPauseMS = 150
+	}
+	if p.config.PlaylistPhase2DelayMS < 0 {
+		p.config.PlaylistPhase2DelayMS = 750
 	}
 
 	p.eventBus = bus
@@ -233,6 +269,10 @@ func (p *Plugin) Start() error {
 	// Start periodic stats updater
 	p.wg.Add(1)
 	go p.updateStats()
+
+	// Start staged playlist ingestion worker
+	p.wg.Add(1)
+	go p.runPlaylistIngestWorker()
 
 	// Load current media state from database in background
 	// Don't block startup if the query hangs
@@ -783,25 +823,12 @@ func (p *Plugin) processQueueUpdate(queueData *framework.QueueUpdateData) error 
 			channel)
 
 	case "full":
-		// Replace entire queue with new items
-		logger.Info("MediaTracker", "Starting to process full playlist with %d items (queue event)", len(queueData.Items))
-		startTime := time.Now()
-
-		// First clear existing queue
-		if err := p.sqlClient.Exec(
-			"DELETE FROM daz_mediatracker_queue WHERE channel = $1",
-			channel); err != nil {
-			return fmt.Errorf("failed to clear queue: %w", err)
-		}
-
-		// Bulk insert all new items
-		if len(queueData.Items) > 0 {
-			if err := p.bulkInsertQueueItems(channel, queueData.Items); err != nil {
-				return fmt.Errorf("failed to bulk insert queue items: %w", err)
-			}
-		}
-
-		logger.Info("MediaTracker", "Finished processing %d playlist items in %v", len(queueData.Items), time.Since(startTime))
+		// Stage full queue ingestion asynchronously to avoid startup/reconnect SQL spikes.
+		p.enqueuePlaylistIngest(
+			channel,
+			toPlaylistItems(queueData.Items),
+			"queue event",
+		)
 
 	case "add":
 		// Add item at position
@@ -931,7 +958,7 @@ func (p *Plugin) insertQueueItem(channel string, item *framework.QueueItem) erro
 }
 
 // bulkInsertQueueItems performs a bulk insert of queue items to minimize database operations
-func (p *Plugin) bulkInsertQueueItems(channel string, items []framework.QueueItem) error {
+func (p *Plugin) bulkInsertQueueItems(channel string, items []framework.QueueItem, includeLibrary bool) error {
 	if len(items) == 0 {
 		return nil
 	}
@@ -972,8 +999,10 @@ func (p *Plugin) bulkInsertQueueItems(channel string, items []framework.QueueIte
 	}
 
 	// Bulk add to library (single operation for all items)
-	if err := p.bulkAddToLibrary(channel, items); err != nil {
-		logger.Error("MediaTracker", "Error bulk adding to library: %v", err)
+	if includeLibrary {
+		if err := p.bulkAddToLibrary(channel, items); err != nil {
+			logger.Error("MediaTracker", "Error bulk adding to library: %v", err)
+		}
 	}
 
 	logger.Debug("MediaTracker", "Bulk inserted %d queue items", len(items))
@@ -1340,58 +1369,8 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 		}
 		p.mu.Unlock()
 
-		logger.Info("MediaTracker", "Starting to process full playlist with %d items (playlist event)", len(playlistArray.Items))
-		startTime := time.Now()
-
-		// Process all items in batches to avoid overwhelming the database
-		// Reduced batch size for better timeout handling
-		batchSize := 25
-		for i := 0; i < len(playlistArray.Items); i += batchSize {
-			end := i + batchSize
-			if end > len(playlistArray.Items) {
-				end = len(playlistArray.Items)
-			}
-
-			batch := playlistArray.Items[i:end]
-
-			// Use bulk insert for better performance with extended timeout for large batches
-			if err := p.bulkAddPlaylistToLibraryWithTimeout(batch, channel); err != nil {
-				logger.Error("MediaTracker", "Failed to bulk add playlist items to library: %v", err)
-				// Fall back to individual inserts on bulk failure
-				for _, item := range batch {
-					if err := p.addToLibrary(
-						item.MediaID,
-						item.MediaType,
-						item.Title,
-						item.Duration,
-						item.QueuedBy,
-						channel,
-						item.Metadata,
-					); err != nil {
-						logger.Error("MediaTracker", "Failed to add playlist item to library: %v", err)
-					}
-				}
-			}
-
-			// Also update the queue table
-			for _, item := range batch {
-				if err := p.insertQueueItem(channel, &framework.QueueItem{
-					UID:       item.UID,
-					Position:  item.Position,
-					MediaID:   item.MediaID,
-					MediaType: item.MediaType,
-					Title:     item.Title,
-					Duration:  item.Duration,
-					QueuedBy:  item.QueuedBy,
-					QueuedAt:  time.Now().Unix(),
-				}); err != nil {
-					logger.Error("MediaTracker", "Failed to update queue: %v", err)
-				}
-			}
-		}
-
-		logger.Info("MediaTracker", "Finished processing %d playlist items in %v", len(playlistArray.Items), time.Since(startTime))
-		p.applyPendingSetCurrent(channel)
+		// Stage playlist ingestion asynchronously and coalesce bursts.
+		p.enqueuePlaylistIngest(channel, playlistArray.Items, "playlist event")
 		return nil
 	}
 
@@ -1403,6 +1382,219 @@ func (p *Plugin) handlePlaylistEvent(event framework.Event) error {
 	}
 
 	return nil
+}
+
+func (p *Plugin) enqueuePlaylistIngest(channel string, items []framework.PlaylistItem, eventName string) {
+	if channel == "" {
+		return
+	}
+
+	// Copy to avoid retaining/reusing slices owned by Cytube event structs.
+	itemCopy := make([]framework.PlaylistItem, len(items))
+	copy(itemCopy, items)
+
+	req := playlistIngestRequest{
+		channel:   channel,
+		items:     itemCopy,
+		enqueued:  time.Now(),
+		eventName: eventName,
+	}
+
+	p.mu.Lock()
+	if p.pendingPlaylistIngest == nil {
+		p.pendingPlaylistIngest = make(map[string]playlistIngestRequest)
+	}
+	p.pendingPlaylistIngest[channel] = req
+	pendingCount := len(p.pendingPlaylistIngest)
+	p.mu.Unlock()
+
+	logger.Info(
+		"MediaTracker",
+		"Queued staged playlist ingestion for channel %s (%d items, source: %s, pending channels: %d)",
+		channel,
+		len(items),
+		eventName,
+		pendingCount,
+	)
+
+	select {
+	case p.playlistIngestNotify <- struct{}{}:
+	default:
+	}
+}
+
+func (p *Plugin) popNextPlaylistIngest() (playlistIngestRequest, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for channel, req := range p.pendingPlaylistIngest {
+		delete(p.pendingPlaylistIngest, channel)
+		return req, true
+	}
+
+	return playlistIngestRequest{}, false
+}
+
+func (p *Plugin) runPlaylistIngestWorker() {
+	defer p.wg.Done()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-p.playlistIngestNotify:
+			for {
+				req, ok := p.popNextPlaylistIngest()
+				if !ok {
+					break
+				}
+				p.processPlaylistIngest(req)
+			}
+		}
+	}
+}
+
+func (p *Plugin) processPlaylistIngest(req playlistIngestRequest) {
+	if req.channel == "" {
+		return
+	}
+
+	start := time.Now()
+	totalItems := len(req.items)
+	batchSize := p.config.PlaylistIngestBatchSize
+	pause := time.Duration(p.config.PlaylistIngestPauseMS) * time.Millisecond
+	phaseDelay := time.Duration(p.config.PlaylistPhase2DelayMS) * time.Millisecond
+
+	logger.Info(
+		"MediaTracker",
+		"Starting staged playlist ingestion for channel %s (%d items, source: %s, queued %v ago)",
+		req.channel,
+		totalItems,
+		req.eventName,
+		time.Since(req.enqueued).Round(time.Millisecond),
+	)
+
+	// Phase 1: refresh queue table in throttled chunks so setCurrent resolution is available early.
+	if err := p.sqlClient.Exec("DELETE FROM daz_mediatracker_queue WHERE channel = $1", req.channel); err != nil {
+		logger.Error("MediaTracker", "Failed to clear queue before staged ingestion for channel %s: %v", req.channel, err)
+		return
+	}
+
+	queueItems := toQueueItems(req.items)
+	for i := 0; i < len(queueItems); i += batchSize {
+		end := i + batchSize
+		if end > len(queueItems) {
+			end = len(queueItems)
+		}
+
+		if err := p.bulkInsertQueueItems(req.channel, queueItems[i:end], false); err != nil {
+			logger.Error("MediaTracker", "Failed to ingest queue batch for channel %s (%d-%d): %v", req.channel, i, end, err)
+			return
+		}
+
+		if !p.waitForIngestionPause(pause, end, len(queueItems)) {
+			return
+		}
+	}
+
+	p.applyPendingSetCurrent(req.channel)
+
+	// Phase 2: backfill media library with paced bulk inserts.
+	if phaseDelay > 0 {
+		if !p.waitForIngestionPause(phaseDelay, 0, 1) {
+			return
+		}
+	}
+
+	for i := 0; i < len(req.items); i += batchSize {
+		end := i + batchSize
+		if end > len(req.items) {
+			end = len(req.items)
+		}
+
+		batchCtx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
+		err := p.bulkAddPlaylistToLibraryWithContext(batchCtx, req.items[i:end], req.channel)
+		cancel()
+		if err != nil {
+			logger.Error("MediaTracker", "Failed to ingest library batch for channel %s (%d-%d): %v", req.channel, i, end, err)
+			// Fall back to individual inserts for resilience on partial failures.
+			for _, item := range req.items[i:end] {
+				if addErr := p.addToLibrary(
+					item.MediaID,
+					item.MediaType,
+					item.Title,
+					item.Duration,
+					item.QueuedBy,
+					req.channel,
+					item.Metadata,
+				); addErr != nil {
+					logger.Error("MediaTracker", "Failed to fallback-add playlist item to library for channel %s: %v", req.channel, addErr)
+				}
+			}
+		}
+
+		if !p.waitForIngestionPause(pause, end, len(req.items)) {
+			return
+		}
+	}
+
+	logger.Info(
+		"MediaTracker",
+		"Finished staged playlist ingestion for channel %s (%d items) in %v",
+		req.channel,
+		totalItems,
+		time.Since(start),
+	)
+}
+
+func (p *Plugin) waitForIngestionPause(pause time.Duration, batchEnd, total int) bool {
+	if pause <= 0 || batchEnd >= total {
+		return true
+	}
+
+	timer := time.NewTimer(pause)
+	defer timer.Stop()
+	select {
+	case <-p.ctx.Done():
+		logger.Info("MediaTracker", "Stopping staged playlist ingestion due to shutdown")
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func toPlaylistItems(items []framework.QueueItem) []framework.PlaylistItem {
+	result := make([]framework.PlaylistItem, 0, len(items))
+	for _, item := range items {
+		result = append(result, framework.PlaylistItem{
+			UID:       item.UID,
+			Position:  item.Position,
+			MediaID:   item.MediaID,
+			MediaType: item.MediaType,
+			Title:     item.Title,
+			Duration:  item.Duration,
+			QueuedBy:  item.QueuedBy,
+		})
+	}
+	return result
+}
+
+func toQueueItems(items []framework.PlaylistItem) []framework.QueueItem {
+	result := make([]framework.QueueItem, 0, len(items))
+	queuedAt := time.Now().Unix()
+	for _, item := range items {
+		result = append(result, framework.QueueItem{
+			UID:       item.UID,
+			Position:  item.Position,
+			MediaID:   item.MediaID,
+			MediaType: item.MediaType,
+			Title:     item.Title,
+			Duration:  item.Duration,
+			QueuedBy:  item.QueuedBy,
+			QueuedAt:  queuedAt,
+		})
+	}
+	return result
 }
 
 // addToLibrary adds a media item to the library if it doesn't already exist
