@@ -214,7 +214,8 @@ func TestPluginInit(t *testing.T) {
 
 func TestIsBotMentioned(t *testing.T) {
 	plugin := &Plugin{
-		botName: "Dazza",
+		botName:    "Dazza",
+		botAliases: buildBotNameAliases("Dazza"),
 	}
 
 	tests := []struct {
@@ -226,9 +227,14 @@ func TestIsBotMentioned(t *testing.T) {
 		{"hey dazza", true, "Lowercase mention"},
 		{"@Dazza what's up", true, "@mention"},
 		{"@dazza test", true, "Lowercase @mention"},
+		{"yo daz", true, "Short alias mention"},
+		{"@daz you there", true, "Short alias @mention"},
+		{"hey dazz", true, "Intermediate alias mention"},
+		{"yo dazzaa", true, "Small mutation mention"},
 		{"Hello world", false, "No mention"},
-		{"The word dazzle contains dazz", false, "Partial match in another word"},
+		{"The word dazzle is flashy", false, "Partial match in another word"},
 		{"DAZZA", true, "Uppercase mention"},
+		{"pizza", false, "Unrelated similar word"},
 	}
 
 	for _, tt := range tests {
@@ -238,6 +244,43 @@ func TestIsBotMentioned(t *testing.T) {
 				t.Errorf("isBotMentioned(%q) = %v, expected %v", tt.message, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestIsBotIdentityRecognizesAliases(t *testing.T) {
+	plugin := &Plugin{
+		botName:    "Dazza",
+		botAliases: buildBotNameAliases("Dazza"),
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{name: "canonical", input: "Dazza", expected: true},
+		{name: "short", input: "daz", expected: true},
+		{name: "collapsed duplicate", input: "daza", expected: true},
+		{name: "different user", input: "dazzler", expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := plugin.isBotIdentity(tt.input)
+			if got != tt.expected {
+				t.Fatalf("isBotIdentity(%q)=%v want %v", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestBuildBotNameAliasesSkipsCommonWords(t *testing.T) {
+	aliases := buildBotNameAliases("Theree")
+	if _, exists := aliases["there"]; exists {
+		t.Fatalf("expected common word alias to be skipped")
+	}
+	if _, exists := aliases["the"]; exists {
+		t.Fatalf("expected common short word alias to be skipped")
 	}
 }
 
@@ -655,10 +698,11 @@ func TestHandleChatMessageGreetingFollowUpSkipsWhenNoOtherHumans(t *testing.T) {
 	ollamaPlugin.config.FollowUpEnabled = true
 	ollamaPlugin.config.FollowUpWindowSeconds = 120
 	ollamaPlugin.botName = "Dazza"
+	ollamaPlugin.botAliases = buildBotNameAliases("Dazza")
 	ollamaPlugin.userLists = map[string]map[string]bool{
 		"testchannel": {
 			"alice": true,
-			"Dazza": true,
+			"daz":   true,
 		},
 	}
 

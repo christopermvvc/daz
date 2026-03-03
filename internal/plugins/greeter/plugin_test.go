@@ -86,6 +86,35 @@ func TestNewPlugin(t *testing.T) {
 	assert.Equal(t, "greeter", plugin.Name())
 }
 
+func TestMatchesBotIdentity(t *testing.T) {
+	tests := []struct {
+		name     string
+		username string
+		botName  string
+		expected bool
+	}{
+		{name: "canonical", username: "Dazza", botName: "Dazza", expected: true},
+		{name: "intermediate alias", username: "dazz", botName: "Dazza", expected: true},
+		{name: "short alias", username: "daz", botName: "Dazza", expected: true},
+		{name: "collapsed mutation", username: "daza", botName: "Dazza", expected: true},
+		{name: "different user", username: "dazzler", botName: "Dazza", expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchesBotIdentity(tt.username, tt.botName)
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestBuildGreeterBotAliasesSkipsCommonWords(t *testing.T) {
+	aliases := buildGreeterBotAliases("Theree")
+	if _, exists := aliases["there"]; exists {
+		t.Fatalf("expected common word alias to be skipped")
+	}
+}
+
 func TestPluginDependencies(t *testing.T) {
 	plugin := New()
 	// Cast to PluginWithDependencies interface

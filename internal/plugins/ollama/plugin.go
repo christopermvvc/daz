@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/hildolfr/daz/internal/framework"
 	"github.com/hildolfr/daz/internal/logger"
@@ -52,6 +53,15 @@ var fallbackResponses = []string{
 	"nice",
 	"i feel that",
 	"that checks out",
+}
+
+var botAliasStopwords = map[string]struct{}{
+	"the": {}, "and": {}, "for": {}, "are": {}, "you": {}, "not": {}, "its": {}, "our": {},
+	"that": {}, "this": {}, "with": {}, "have": {}, "from": {}, "your": {}, "youre": {},
+	"they": {}, "them": {}, "then": {}, "than": {}, "there": {}, "here": {}, "what": {},
+	"when": {}, "where": {}, "will": {}, "want": {}, "need": {}, "make": {}, "take": {},
+	"give": {}, "came": {}, "come": {}, "gone": {}, "done": {}, "just": {}, "also": {},
+	"into": {}, "onto": {}, "over": {}, "under": {}, "after": {}, "before": {},
 }
 
 type listenerControlRequest struct {
@@ -200,6 +210,8 @@ type Plugin struct {
 
 	// Bot name for mention detection
 	botName string
+	// Normalized bot-name aliases (including short forms) used for mention/self matching.
+	botAliases map[string]struct{}
 
 	// Ready channel
 	readyChan chan struct{}
@@ -353,6 +365,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 			p.botName = "Dazza"
 		}
 	}
+	p.botAliases = buildBotNameAliases(p.botName)
 
 	return p.Initialize(bus)
 }
@@ -868,7 +881,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	}
 
 	// Skip messages from the bot itself to prevent self-replies
-	if strings.EqualFold(username, p.botName) || strings.EqualFold(username, "dazza") {
+	if p.isBotIdentity(username) {
 		logger.Debug(p.name, "Skipping message from bot itself")
 		return nil
 	}
@@ -1034,19 +1047,14 @@ func (p *Plugin) isListenerDisabled(channel string) bool {
 
 // isBotMentioned checks if the message mentions the bot
 func (p *Plugin) isBotMentioned(message string) bool {
-	lowerMessage := strings.ToLower(message)
-	lowerBotName := strings.ToLower(p.botName)
-
-	// Check for direct mention
-	if strings.Contains(lowerMessage, lowerBotName) {
-		return true
+	fields := strings.FieldsFunc(message, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	for _, field := range fields {
+		if p.isBotIdentity(field) || p.isLikelyBotMutation(field) {
+			return true
+		}
 	}
-
-	// Check for @mention
-	if strings.Contains(lowerMessage, "@"+lowerBotName) {
-		return true
-	}
-
 	return false
 }
 
@@ -1310,7 +1318,7 @@ func (p *Plugin) hasOtherHumanInChannel(channel, username string) bool {
 		if strings.EqualFold(otherUsername, username) {
 			continue
 		}
-		if strings.EqualFold(otherUsername, p.botName) || strings.EqualFold(otherUsername, "dazza") {
+		if p.isBotIdentity(otherUsername) {
 			continue
 		}
 		if strings.EqualFold(otherUsername, "system") {
@@ -1603,15 +1611,17 @@ func (p *Plugin) getChatHistory(channel string, limit int) ([]string, error) {
 		WHERE channel_name = $1 
 			AND event_type = 'cytube.event.chatMsg'
 			AND message IS NOT NULL
-			AND LOWER(username) != LOWER($3)
-			AND LOWER(username) != 'dazza'
 			AND username NOT LIKE '[%'
 		ORDER BY created_at DESC 
 		LIMIT $2
 	`
 
+	queryLimit := limit * 3
+	if queryLimit < 50 {
+		queryLimit = 50
+	}
 	helper := framework.NewSQLRequestHelper(p.eventBus, p.name)
-	rows, err := helper.FastQuery(ctx, query, channel, limit, p.botName)
+	rows, err := helper.FastQuery(ctx, query, channel, queryLimit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query chat history: %w", err)
 	}
@@ -1629,11 +1639,177 @@ func (p *Plugin) getChatHistory(channel string, limit int) ([]string, error) {
 			logger.Warn(p.name, "Failed to scan chat history row: %v", err)
 			continue
 		}
+		if p.isBotIdentity(username) || strings.EqualFold(username, "system") {
+			continue
+		}
 		// Format as "username: message" for context
 		history = append([]string{fmt.Sprintf("%s: %s", username, message)}, history...)
+		if len(history) >= limit {
+			break
+		}
 	}
 
 	return history, nil
+}
+
+func (p *Plugin) botAliasSet() map[string]struct{} {
+	if len(p.botAliases) > 0 {
+		return p.botAliases
+	}
+	return buildBotNameAliases(p.botName)
+}
+
+func (p *Plugin) isBotIdentity(candidate string) bool {
+	normalized := normalizeBotToken(candidate)
+	if normalized == "" {
+		return false
+	}
+	_, ok := p.botAliasSet()[normalized]
+	return ok
+}
+
+func (p *Plugin) isLikelyBotMutation(candidate string) bool {
+	normalized := normalizeBotToken(candidate)
+	if normalized == "" {
+		return false
+	}
+
+	canonical := normalizeBotToken(p.botName)
+	if len(canonical) < 4 || len(normalized) < 4 {
+		return false
+	}
+	// Allow small additions/substitutions around the canonical bot name,
+	// but avoid treating simple truncations as typos.
+	if len(normalized) < len(canonical) || len(normalized) > len(canonical)+1 {
+		return false
+	}
+
+	return editDistanceAtMostOne(normalized, canonical)
+}
+
+func buildBotNameAliases(botName string) map[string]struct{} {
+	aliases := make(map[string]struct{})
+	normalized := normalizeBotToken(botName)
+	if normalized == "" {
+		return aliases
+	}
+
+	addAlias := func(value string) {
+		value = normalizeBotToken(value)
+		if len(value) >= 3 && !isCommonAliasWord(value) {
+			aliases[value] = struct{}{}
+		}
+	}
+
+	addAlias(normalized)
+	collapsed := collapseRepeatedRunes(normalized)
+	addAlias(collapsed)
+
+	baseForms := []string{normalized, collapsed}
+	for _, base := range baseForms {
+		runes := []rune(base)
+		for trim := 1; trim <= 2; trim++ {
+			n := len(runes) - trim
+			if n < 3 {
+				continue
+			}
+			short := string(runes[:n])
+			addAlias(short)
+			addAlias(collapseRepeatedRunes(short))
+		}
+	}
+
+	return aliases
+}
+
+func isCommonAliasWord(value string) bool {
+	_, exists := botAliasStopwords[value]
+	return exists
+}
+
+func normalizeBotToken(value string) string {
+	var builder strings.Builder
+	builder.Grow(len(value))
+	for _, r := range strings.ToLower(value) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
+}
+
+func collapseRepeatedRunes(value string) string {
+	runes := []rune(value)
+	if len(runes) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(value))
+	last := rune(0)
+	for i, r := range runes {
+		if i == 0 || r != last {
+			builder.WriteRune(r)
+			last = r
+		}
+	}
+	return builder.String()
+}
+
+func editDistanceAtMostOne(a, b string) bool {
+	ar := []rune(a)
+	br := []rune(b)
+	alen := len(ar)
+	blen := len(br)
+
+	if alen == 0 || blen == 0 {
+		return false
+	}
+	if alen > blen+1 || blen > alen+1 {
+		return false
+	}
+
+	if alen == blen {
+		diff := 0
+		for i := 0; i < alen; i++ {
+			if ar[i] != br[i] {
+				diff++
+				if diff > 1 {
+					return false
+				}
+			}
+		}
+		return diff <= 1
+	}
+
+	longer := ar
+	shorter := br
+	if blen > alen {
+		longer = br
+		shorter = ar
+	}
+
+	i := 0
+	j := 0
+	diff := 0
+	for i < len(longer) && j < len(shorter) {
+		if longer[i] == shorter[j] {
+			i++
+			j++
+			continue
+		}
+		diff++
+		if diff > 1 {
+			return false
+		}
+		i++
+	}
+
+	if i < len(longer) {
+		diff++
+	}
+
+	return diff <= 1
 }
 
 // callOllamaWithContext makes a request to Ollama with chat history context

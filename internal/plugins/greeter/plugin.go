@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/hildolfr/daz/internal/framework"
 	"github.com/hildolfr/daz/internal/logger"
@@ -29,6 +30,15 @@ const (
 	questionEndHint      = " End your greeting with a question mark."
 	followUpGreetingMode = "greeting"
 )
+
+var greeterBotAliasStopwords = map[string]struct{}{
+	"the": {}, "and": {}, "for": {}, "are": {}, "you": {}, "not": {}, "its": {}, "our": {},
+	"that": {}, "this": {}, "with": {}, "have": {}, "from": {}, "your": {}, "youre": {},
+	"they": {}, "them": {}, "then": {}, "than": {}, "there": {}, "here": {}, "what": {},
+	"when": {}, "where": {}, "will": {}, "want": {}, "need": {}, "make": {}, "take": {},
+	"give": {}, "came": {}, "come": {}, "gone": {}, "done": {}, "just": {}, "also": {},
+	"into": {}, "onto": {}, "over": {}, "under": {}, "after": {}, "before": {},
+}
 
 // Config holds greeter plugin configuration
 type Config struct {
@@ -476,13 +486,9 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 		return nil
 	}
 
-	// Don't greet ourselves - check against bot name from environment
-	botName := os.Getenv("DAZ_BOT_NAME")
-	if botName == "" {
-		botName = "Dazza" // Default fallback
-	}
-
-	if strings.EqualFold(username, botName) {
+	// Don't greet ourselves, including short forms/mutations of the configured bot name.
+	botName := resolveBotName()
+	if matchesBotIdentity(username, botName) {
 		logger.Debug(p.name, "SKIP REASON: Self-greeting detected - username=%s, botName=%s", username, botName)
 		return nil
 	}
@@ -1217,4 +1223,91 @@ func (p *Plugin) sendDelayedFortune(channel string, delay time.Duration) {
 			logger.Info(p.name, "Sent fortune to channel %s: %s", channel, fortune)
 		}
 	}
+}
+
+func resolveBotName() string {
+	botName := strings.TrimSpace(os.Getenv("DAZ_BOT_NAME"))
+	if botName == "" {
+		return "Dazza"
+	}
+	return botName
+}
+
+func matchesBotIdentity(candidate, botName string) bool {
+	normalizedCandidate := normalizeGreeterBotToken(candidate)
+	if normalizedCandidate == "" {
+		return false
+	}
+	aliases := buildGreeterBotAliases(botName)
+	_, ok := aliases[normalizedCandidate]
+	return ok
+}
+
+func buildGreeterBotAliases(botName string) map[string]struct{} {
+	aliases := make(map[string]struct{})
+	normalized := normalizeGreeterBotToken(botName)
+	if normalized == "" {
+		return aliases
+	}
+
+	addAlias := func(value string) {
+		value = normalizeGreeterBotToken(value)
+		if len(value) >= 3 && !isCommonGreeterAliasWord(value) {
+			aliases[value] = struct{}{}
+		}
+	}
+
+	addAlias(normalized)
+	collapsed := collapseGreeterRepeatedRunes(normalized)
+	addAlias(collapsed)
+
+	baseForms := []string{normalized, collapsed}
+	for _, base := range baseForms {
+		runes := []rune(base)
+		for trim := 1; trim <= 2; trim++ {
+			n := len(runes) - trim
+			if n < 3 {
+				continue
+			}
+			short := string(runes[:n])
+			addAlias(short)
+			addAlias(collapseGreeterRepeatedRunes(short))
+		}
+	}
+
+	return aliases
+}
+
+func normalizeGreeterBotToken(value string) string {
+	var builder strings.Builder
+	builder.Grow(len(value))
+	for _, r := range strings.ToLower(value) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
+}
+
+func collapseGreeterRepeatedRunes(value string) string {
+	runes := []rune(value)
+	if len(runes) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(value))
+	last := rune(0)
+	for i, r := range runes {
+		if i == 0 || r != last {
+			builder.WriteRune(r)
+			last = r
+		}
+	}
+	return builder.String()
+}
+
+func isCommonGreeterAliasWord(value string) bool {
+	_, exists := greeterBotAliasStopwords[value]
+	return exists
 }
