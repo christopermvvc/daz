@@ -1,6 +1,8 @@
 package gallery
 
 import (
+	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -165,5 +167,28 @@ func TestHTMLGenerator_SafeImageTitle(t *testing.T) {
 	// Check that raw img tag is NOT present
 	if strings.Contains(html, "<img src=x onerror=alert('xss')>") {
 		t.Error("HTML should not contain raw malicious img tags")
+	}
+}
+
+func TestGenerateSharedGalleryRejectsProjectRootLikePath(t *testing.T) {
+	outputDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte("module example.com/test\n"), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(outputDir, "internal"), 0755); err != nil {
+		t.Fatalf("failed to create internal dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(outputDir, "cmd"), 0755); err != nil {
+		t.Fatalf("failed to create cmd dir: %v", err)
+	}
+
+	store := &Store{}
+	config := &Config{
+		HTMLOutputPath: outputDir,
+	}
+	generator := NewHTMLGenerator(store, config)
+
+	if err := generator.GenerateSharedGallery(context.Background(), nil); err == nil {
+		t.Fatalf("expected unsafe output path error for project-like root path")
 	}
 }

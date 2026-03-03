@@ -1,0 +1,20 @@
+[
+  {
+    "id": "std",
+    "name": "STD",
+    "type": "debuff",
+    "description": "Lingering consequences from bad decisions.",
+    "aliases": [
+      "sti"
+    ]
+  },
+  {
+    "id": "clumsy",
+    "name": "Clumsy",
+    "type": "debuff",
+    "description": "Awkward timing and sloppy execution.",
+    "aliases": [
+      "sloppy"
+    ]
+  }
+]

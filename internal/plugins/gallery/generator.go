@@ -1045,7 +1045,25 @@ func (g *HTMLGenerator) isSafeOutputPath() bool {
 	if !filepath.IsAbs(outputPath) {
 		return false
 	}
+	if isLikelyProjectRoot(outputPath) {
+		return false
+	}
 	return true
+}
+
+func isLikelyProjectRoot(path string) bool {
+	goModPath := filepath.Join(path, "go.mod")
+	if _, err := os.Stat(goModPath); err != nil {
+		return false
+	}
+	internalDir := filepath.Join(path, "internal")
+	cmdDir := filepath.Join(path, "cmd")
+	if info, err := os.Stat(internalDir); err == nil && info.IsDir() {
+		if info, err := os.Stat(cmdDir); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *HTMLGenerator) isSafeGitDir() bool {
@@ -1068,20 +1086,7 @@ func (g *HTMLGenerator) resetGitState() {
 		logger.Warn("gallery", "Skipping git reset/clean for unsafe output path: %s", g.config.HTMLOutputPath)
 		return
 	}
-
-	// Try to reset to clean state
-	cmd := exec.Command("git", "reset", "--hard", "HEAD")
-	cmd.Dir = g.config.HTMLOutputPath
-	if err := cmd.Run(); err != nil {
-		logger.Error("gallery", "Failed to reset git state: %v", err)
-	}
-
-	// Clean untracked files
-	cmd = exec.Command("git", "clean", "-fd")
-	cmd.Dir = g.config.HTMLOutputPath
-	if err := cmd.Run(); err != nil {
-		logger.Error("gallery", "Failed to clean git directory: %v", err)
-	}
+	logger.Warn("gallery", "Skipping destructive git recovery in %s; manual cleanup may be required", g.config.HTMLOutputPath)
 }
 
 // pushToGitHub commits and pushes gallery HTML to GitHub Pages

@@ -220,3 +220,31 @@ func TestHelpGenerateAllPublishesToGitHub(t *testing.T) {
 		t.Fatalf("expected GenerateAll to invoke git push, got calls: %v", calls)
 	}
 }
+
+func TestHelpGenerateAllRejectsProjectRootLikePath(t *testing.T) {
+	outputDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte("module example.com/test\n"), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(outputDir, "internal"), 0755); err != nil {
+		t.Fatalf("failed to create internal dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(outputDir, "cmd"), 0755); err != nil {
+		t.Fatalf("failed to create cmd dir: %v", err)
+	}
+
+	config := &Config{
+		ShowAliases:       true,
+		GenerateHTML:      true,
+		HTMLOutputPath:    outputDir,
+		HelpBaseURL:       defaultHelpBaseURL,
+		IncludeRestricted: true,
+	}
+	generator := NewHTMLGenerator(config, func() []*commandEntry {
+		return []*commandEntry{{Primary: "ping", Description: "ping the bot"}}
+	}, true, true)
+
+	if err := generator.GenerateAllWithoutPublish(context.Background()); err == nil {
+		t.Fatalf("expected unsafe output path error for project-like root path")
+	}
+}

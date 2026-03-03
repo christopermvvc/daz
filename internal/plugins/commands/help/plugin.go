@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -43,6 +44,7 @@ type Plugin struct {
 
 	htmlDirty      atomic.Bool
 	htmlDirtyCh    chan struct{}
+	htmlGenerateMu sync.Mutex
 	generator      *HTMLGenerator
 	adminGenerator *HTMLGenerator
 
@@ -542,12 +544,15 @@ func (p *Plugin) generateHelpForGenerator(generator *HTMLGenerator, publish bool
 	if generator == nil {
 		return
 	}
+	p.htmlGenerateMu.Lock()
+	defer p.htmlGenerateMu.Unlock()
+
 	p.htmlDirty.Store(false)
 	ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
 	defer cancel()
 
 	var err error
-	if publish {
+	if publish && !runningUnderGoTest() {
 		err = generator.GenerateAll(ctx)
 	} else {
 		err = generator.GenerateAllWithoutPublish(ctx)
@@ -555,6 +560,10 @@ func (p *Plugin) generateHelpForGenerator(generator *HTMLGenerator, publish bool
 	if err != nil {
 		logger.Error(p.name, "Failed to generate help HTML: %v", err)
 	}
+}
+
+func runningUnderGoTest() bool {
+	return strings.HasSuffix(filepath.Base(os.Args[0]), ".test")
 }
 
 func (p *Plugin) helpURLForRequest(req *framework.PluginRequest) string {

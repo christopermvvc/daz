@@ -1,0 +1,20 @@
+[
+  {
+    "id": "lucky",
+    "name": "Lucky",
+    "type": "buff",
+    "description": "Things keep breaking your way.",
+    "aliases": [
+      "luck"
+    ]
+  },
+  {
+    "id": "tough_skin",
+    "name": "Tough Skin",
+    "type": "buff",
+    "description": "Harder to shake mentally.",
+    "aliases": [
+      "tough"
+    ]
+  }
+]

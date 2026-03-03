@@ -37,6 +37,10 @@
       "cooldown_minutes": 5
     },
     "playerstate": {},
+    "bufftracker": {
+      "buff_dictionary_path": "internal/plugins/bufftracker/dictionaries/buffs.json",
+      "debuff_dictionary_path": "internal/plugins/bufftracker/dictionaries/debuffs.json"
+    },
     "fishing": {}
   }
 }

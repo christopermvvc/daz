@@ -319,7 +319,25 @@ func (g *HTMLGenerator) isSafeOutputPath() bool {
 	if !filepath.IsAbs(outputPath) {
 		return false
 	}
+	if isLikelyProjectRoot(outputPath) {
+		return false
+	}
 	return true
+}
+
+func isLikelyProjectRoot(path string) bool {
+	goModPath := filepath.Join(path, "go.mod")
+	if _, err := os.Stat(goModPath); err != nil {
+		return false
+	}
+	internalDir := filepath.Join(path, "internal")
+	cmdDir := filepath.Join(path, "cmd")
+	if info, err := os.Stat(internalDir); err == nil && info.IsDir() {
+		if info, err := os.Stat(cmdDir); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *HTMLGenerator) isSafeGitDir() bool {
@@ -341,14 +359,7 @@ func (g *HTMLGenerator) resetGitState() {
 		logger.Warn("help", "Skipping git reset/clean for unsafe output path: %s", g.config.HTMLOutputPath)
 		return
 	}
-
-	if _, err := g.runGit(context.Background(), nil, "reset", "--hard", "HEAD"); err != nil {
-		logger.Error("help", "Failed to reset git state: %v", err)
-	}
-
-	if _, err := g.runGit(context.Background(), nil, "clean", "-fd"); err != nil {
-		logger.Error("help", "Failed to clean git directory: %v", err)
-	}
+	logger.Warn("help", "Skipping destructive git recovery in %s; manual cleanup may be required", g.config.HTMLOutputPath)
 }
 
 func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
