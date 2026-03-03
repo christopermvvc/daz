@@ -82,12 +82,13 @@
   const STATE_SAVE_DEBOUNCE_MS = 250;
   const WS_TOKEN_STORAGE_KEY = 'daz-wsbridge-token-v1';
   const WS_URL_STORAGE_KEY = 'daz-wsbridge-url-v1';
-  const WS_QUERY_TOKEN_KEY = 'daz_ws_token';
   const WS_QUERY_URL_KEY = 'daz_ws_url';
   const WS_QUERY_HOST_KEY = 'daz_ws_host';
   const WS_RUNTIME_HOST_KEY = '__DAZ_WSBRIDGE_HOST';
   const WS_DEFAULT_PORT = '8091';
   const WS_DEFAULT_PATH = '/ws';
+  const WS_PROTOCOL_VERSION = 'daz.v1';
+  const WS_PROTOCOL_TOKEN_PREFIX = 'daz-token.';
   const WS_REQUEST_TIMEOUT_MS = 7000;
   const WS_BALANCE_REFRESH_MS = 30000;
 
@@ -669,11 +670,6 @@
       return runtimeToken;
     }
 
-    const queryToken = parseQueryStringValue(WS_QUERY_TOKEN_KEY);
-    if (queryToken) {
-      return queryToken;
-    }
-
     return readStorageString(WS_TOKEN_STORAGE_KEY);
   }
 
@@ -769,11 +765,20 @@
       if (!url.pathname || url.pathname === '/') {
         url.pathname = WS_DEFAULT_PATH;
       }
-      url.searchParams.set('token', token);
+      url.searchParams.delete('token');
       return { url: url.toString(), token };
     } catch (err) {
       return { url: '', token: '' };
     }
+  }
+
+  function resolveWsProtocols(token) {
+    const protocols = [WS_PROTOCOL_VERSION];
+    const trimmed = typeof token === 'string' ? token.trim() : '';
+    if (trimmed) {
+      protocols.push(`${WS_PROTOCOL_TOKEN_PREFIX}${trimmed}`);
+    }
+    return protocols;
   }
 
   function clearPendingWsRequests(reason) {
@@ -959,7 +964,7 @@
 
     let socket;
     try {
-      socket = new WebSocket(resolved.url);
+      socket = new WebSocket(resolved.url, resolveWsProtocols(resolved.token));
     } catch (err) {
       setCurrencyNote('Live balance offline (socket init failed)');
       scheduleWsReconnect();

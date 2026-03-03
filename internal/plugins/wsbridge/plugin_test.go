@@ -158,6 +158,7 @@ func TestAuthenticateSources(t *testing.T) {
 		"token-query":  {Username: "query"},
 		"token-bearer": {Username: "bearer"},
 		"token-cookie": {Username: "cookie"},
+		"token-proto":  {Username: "proto"},
 	}
 
 	queryReq := httptest.NewRequest("GET", "http://example.com/ws?token=token-query", nil)
@@ -178,6 +179,13 @@ func TestAuthenticateSources(t *testing.T) {
 	profile, ok = p.authenticate(cookieReq)
 	if !ok || profile.Username != "cookie" {
 		t.Fatalf("cookie token auth failed: ok=%v username=%q", ok, profile.Username)
+	}
+
+	protoReq := httptest.NewRequest("GET", "http://example.com/ws", nil)
+	protoReq.Header.Set("Sec-WebSocket-Protocol", "daz.v1,daz-token.token-proto")
+	profile, ok = p.authenticate(protoReq)
+	if !ok || profile.Username != "proto" {
+		t.Fatalf("subprotocol token auth failed: ok=%v username=%q", ok, profile.Username)
 	}
 }
 

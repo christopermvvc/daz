@@ -32,6 +32,8 @@ const (
 	defaultRateLimitBurst           = 40
 	defaultBalanceTimeout           = 6 * time.Second
 	commandCorrelationWindow        = 8 * time.Second
+	wsProtocolV1                    = "daz.v1"
+	wsTokenProtocolPrefix           = "daz-token."
 )
 
 type Config struct {
@@ -245,6 +247,7 @@ func (p *Plugin) Init(configData json.RawMessage, bus framework.EventBus) error 
 		ReadBufferSize:  p.config.ReadBufferSize,
 		WriteBufferSize: p.config.WriteBufferSize,
 		CheckOrigin:     p.checkOrigin,
+		Subprotocols:    []string{wsProtocolV1},
 	}
 
 	return nil
@@ -330,7 +333,7 @@ func (p *Plugin) Start() error {
 	p.server = &http.Server{
 		Addr:         p.config.ListenAddr,
 		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
+		ReadTimeout:  time.Duration(p.config.AuthTimeoutSeconds) * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
@@ -476,6 +479,14 @@ func (p *Plugin) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) authenticate(r *http.Request) (authProfile, bool) {
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
 	if token == "" {
+		for _, protocol := range websocket.Subprotocols(r) {
+			if candidate := tokenFromProtocol(protocol); candidate != "" {
+				token = candidate
+				break
+			}
+		}
+	}
+	if token == "" {
 		authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
 		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
 			token = strings.TrimSpace(authHeader[7:])
@@ -491,6 +502,23 @@ func (p *Plugin) authenticate(r *http.Request) (authProfile, bool) {
 	}
 	profile, ok := p.tokenMap[token]
 	return profile, ok
+}
+
+func tokenFromProtocol(protocol string) string {
+	value := strings.TrimSpace(protocol)
+	if value == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, wsTokenProtocolPrefix) {
+		token := strings.TrimSpace(value[len(wsTokenProtocolPrefix):])
+		if token != "" {
+			return token
+		}
+	}
+
+	return ""
 }
 
 func (p *Plugin) readPump(client *clientState) {
