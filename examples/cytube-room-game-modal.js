@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const LOADER_BUILD_ID = '94fb3ff22-reorder';
+  const LOADER_BUILD_ID = '94fb3ff22-command-rows-v1';
   const LOADER_SOURCE = (() => {
     const current = document.currentScript;
     return current && current.src ? current.src : 'inline-or-unknown';
@@ -52,6 +52,8 @@
   const STORAGE_RESTORE_TOP_KEY = 'daz-cytube-game-modal-restore-top-v1';
   const STORAGE_RESTORE_WIDTH_KEY = 'daz-cytube-game-modal-restore-width-v1';
   const STORAGE_RESTORE_HEIGHT_KEY = 'daz-cytube-game-modal-restore-height-v1';
+  const STORAGE_SECTION_COLLAPSE_KEY = 'daz-cytube-game-modal-section-collapsed-v1';
+  const STORAGE_COMMAND_PANEL_KEY = 'daz-cytube-game-modal-command-panels-v1';
   const DEFAULT_EFFECTS = {
     buffs: {},
     debuffs: {},
@@ -89,6 +91,16 @@
     restoreTop: null,
     restoreWidth: null,
     restoreHeight: null,
+    collapsedSections: {
+      currency: false,
+      needs: false,
+      buffs: false,
+    },
+    commandPanels: {
+      games: false,
+      cmds: false,
+      etc: false,
+    },
   };
 
   function clamp(value, min, max) {
@@ -206,6 +218,30 @@
       state.restoreTop = parseStoredNumber(window.localStorage.getItem(STORAGE_RESTORE_TOP_KEY), null);
       state.restoreWidth = parseStoredNumber(window.localStorage.getItem(STORAGE_RESTORE_WIDTH_KEY), null);
       state.restoreHeight = parseStoredNumber(window.localStorage.getItem(STORAGE_RESTORE_HEIGHT_KEY), null);
+
+      const storedSections = window.localStorage.getItem(STORAGE_SECTION_COLLAPSE_KEY);
+      if (storedSections) {
+        const parsedSections = JSON.parse(storedSections);
+        if (parsedSections && typeof parsedSections === 'object') {
+          Object.keys(state.collapsedSections).forEach((key) => {
+            if (typeof parsedSections[key] === 'boolean') {
+              state.collapsedSections[key] = parsedSections[key];
+            }
+          });
+        }
+      }
+
+      const storedCommandPanels = window.localStorage.getItem(STORAGE_COMMAND_PANEL_KEY);
+      if (storedCommandPanels) {
+        const parsedPanels = JSON.parse(storedCommandPanels);
+        if (parsedPanels && typeof parsedPanels === 'object') {
+          Object.keys(state.commandPanels).forEach((key) => {
+            if (typeof parsedPanels[key] === 'boolean') {
+              state.commandPanels[key] = parsedPanels[key];
+            }
+          });
+        }
+      }
     } catch (err) {
       // localStorage unavailable in restricted contexts.
     }
@@ -245,6 +281,8 @@
       if (Number.isFinite(state.restoreHeight)) {
         window.localStorage.setItem(STORAGE_RESTORE_HEIGHT_KEY, String(Math.round(state.restoreHeight)));
       }
+      window.localStorage.setItem(STORAGE_SECTION_COLLAPSE_KEY, JSON.stringify(state.collapsedSections));
+      window.localStorage.setItem(STORAGE_COMMAND_PANEL_KEY, JSON.stringify(state.commandPanels));
     } catch (err) {
       // ignore storage failures.
     }
@@ -385,6 +423,65 @@
       applyGeometry();
     }
     saveState();
+  }
+
+  function applySectionCollapseState() {
+    const root = document.getElementById('daz-game-modal-root');
+    if (!root) {
+      return;
+    }
+
+    const collapsed = state.collapsedSections || {};
+    Object.keys(collapsed).forEach((key) => {
+      const section = root.querySelector(`.daz-game-card[data-section="${key}"]`);
+      if (!section) {
+        return;
+      }
+      const isCollapsed = Boolean(collapsed[key]);
+      const toggle = section.querySelector('[data-action="toggle-section"]');
+      section.classList.toggle('is-collapsed', isCollapsed);
+      section.setAttribute('aria-expanded', String(!isCollapsed));
+      if (toggle) {
+        toggle.textContent = isCollapsed ? '▸' : '▾';
+        toggle.setAttribute('aria-expanded', String(!isCollapsed));
+      }
+      const content = section.querySelector('.daz-game-card-content');
+      if (content) {
+        content.setAttribute('aria-hidden', String(isCollapsed));
+      }
+    });
+  }
+
+  function applyCommandPanelState() {
+    const root = document.getElementById('daz-game-modal-root');
+    if (!root) {
+      return;
+    }
+
+    const panelState = state.commandPanels || {};
+    Object.keys(panelState).forEach((key) => {
+      const panel = root.querySelector(`.daz-game-command-category[data-command-category="${key}"]`);
+      if (!panel) {
+        return;
+      }
+      const isOpen = Boolean(panelState[key]);
+      const toggle = panel.querySelector('[data-action="toggle-command-category"]');
+      const list = panel.querySelector('.daz-game-command-list');
+      panel.classList.toggle('is-open', isOpen);
+      panel.setAttribute('aria-expanded', String(isOpen));
+      if (toggle) {
+        const chevron = toggle.querySelector('[data-command-chevron]');
+        if (chevron) {
+          chevron.textContent = isOpen ? '▾' : '▸';
+        } else {
+          toggle.textContent = isOpen ? '▾' : '▸';
+        }
+        toggle.setAttribute('aria-expanded', String(isOpen));
+      }
+      if (list) {
+        list.setAttribute('aria-hidden', String(!isOpen));
+      }
+    });
   }
 
   function refreshBalance() {
@@ -706,6 +803,28 @@
         setMode(state.mode === 'minimized' ? 'open' : 'minimized');
         return;
       }
+      if (action === 'toggle-section') {
+        event.preventDefault();
+        event.stopPropagation();
+        const section = actionTarget.getAttribute('data-section-key');
+        if (section && state.collapsedSections && Object.prototype.hasOwnProperty.call(state.collapsedSections, section)) {
+          state.collapsedSections[section] = !state.collapsedSections[section];
+          applySectionCollapseState();
+          saveState();
+        }
+        return;
+      }
+      if (action === 'toggle-command-category') {
+        event.preventDefault();
+        event.stopPropagation();
+        const category = actionTarget.getAttribute('data-command-category');
+        if (category && state.commandPanels && Object.prototype.hasOwnProperty.call(state.commandPanels, category)) {
+          state.commandPanels[category] = !state.commandPanels[category];
+          applyCommandPanelState();
+          saveState();
+        }
+        return;
+      }
       return;
     }
   }
@@ -752,6 +871,8 @@
     refreshBalance();
     refreshNeeds();
     refreshEffects();
+    applySectionCollapseState();
+    applyCommandPanelState();
     updateModeUI();
     saveState();
   }
