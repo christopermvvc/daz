@@ -10,9 +10,7 @@
   const current = document.currentScript;
   const base = current && current.src ? current.src.replace(/[^/]+$/, '') : '';
   const moduleUrl = `${base}ui/bootstrap.mjs`;
-  const legacyUrl = `${base}../cytube-room-game-modal.js`;
   const MODULE_READY_TIMEOUT_MS = 2500;
-  const legacyId = 'daz-game-modal-legacy-fallback-script';
 
   function appendStatus(message, asError) {
     const status = document.getElementById('daz-game-modal-inline-status') || document.createElement('div');
@@ -32,48 +30,28 @@
     }
   }
 
-  function loadLegacy(reason) {
-    clearStatus();
-    if (window.__dazGameModalActive) {
-      return;
-    }
-    if (!reason) {
-      appendStatus('daz game modal: legacy fallback');
-    } else {
-      appendStatus(`daz game modal: fallback (${reason})`, true);
-    }
-    const existing = document.getElementById(legacyId);
-    if (existing) {
-      return;
-    }
-    const script = document.createElement('script');
-    script.id = legacyId;
-    script.async = true;
-    script.src = legacyUrl;
-    script.onload = clearStatus;
-    script.onerror = () => appendStatus('daz game modal: legacy fallback failed', true);
-    (document.head || document.documentElement).appendChild(script);
-  }
-
   if (!supportsModules) {
-    loadLegacy('module scripts unsupported');
+    appendStatus('daz game modal: module scripts unsupported in this browser', true);
     return;
   }
 
   const moduleScript = document.createElement('script');
   moduleScript.type = 'module';
   moduleScript.src = moduleUrl;
-  moduleScript.onload = () => clearStatus();
-  moduleScript.onerror = () => loadLegacy('module entry failed');
+  moduleScript.onload = () => {
+    setTimeout(clearStatus, 1200);
+  };
+  moduleScript.onerror = () => {
+    appendStatus('daz game modal: module entry failed', true);
+    setTimeout(clearStatus, 4000);
+  };
   (document.head || document.documentElement).appendChild(moduleScript);
 
   window.__dazGameModalModuleLoading = true;
   setTimeout(() => {
     if (!window.__dazGameModalActive) {
-      loadLegacy('module timeout');
-      clearStatus();
-      appendStatus('daz game modal: module path timed out, loaded fallback', true);
-      setTimeout(clearStatus, 2500);
+      appendStatus('daz game modal: module bootstrap did not initialize', true);
+      setTimeout(clearStatus, 4000);
     }
   }, MODULE_READY_TIMEOUT_MS);
 
