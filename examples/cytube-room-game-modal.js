@@ -433,11 +433,13 @@
       #daz-game-modal-root.daz-state-minimized {
         width: 220px;
         height: 38px;
+        bottom: 12px;
+        left: 12px;
       }
 
       #daz-game-modal-root.daz-state-minimized #daz-game-modal-header {
         gap: 0;
-        justify-content: space-between;
+        justify-content: flex-start;
       }
 
       #daz-game-modal-root.daz-state-minimized #daz-game-modal-title {
@@ -453,8 +455,9 @@
       }
 
       #daz-game-modal-root.daz-state-minimized #daz-game-modal-actions {
-        margin-left: auto;
+        margin-right: auto;
         flex-shrink: 0;
+        margin-left: 0;
       }
 
       #daz-game-modal-root.daz-state-minimized #daz-game-modal-body {
@@ -770,9 +773,15 @@
 
     root.style.setProperty('position', 'fixed', 'important');
     root.style.setProperty('left', `${state.left}px`, 'important');
-    root.style.setProperty('top', `${state.top}px`, 'important');
     root.style.setProperty('right', 'auto', 'important');
-    root.style.setProperty('bottom', 'auto', 'important');
+    if (isMinimized) {
+      root.style.setProperty('left', `${DEFAULT_MARGIN}px`, 'important');
+      root.style.setProperty('top', 'auto', 'important');
+      root.style.setProperty('bottom', `${DEFAULT_MARGIN}px`, 'important');
+    } else {
+      root.style.setProperty('top', `${state.top}px`, 'important');
+      root.style.setProperty('bottom', 'auto', 'important');
+    }
     root.style.setProperty('width', `${widthForRender}px`, 'important');
     root.style.setProperty('height', `${heightForRender}px`, 'important');
     root.style.setProperty('display', 'block', 'important');
