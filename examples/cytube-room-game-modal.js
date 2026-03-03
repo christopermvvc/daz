@@ -1,10 +1,32 @@
 (function () {
   'use strict';
 
-  if (window.__dazGameModalActive) {
+  const existingRoot = document.getElementById('daz-game-modal-root');
+  if (window.__dazGameModalActive && existingRoot) {
     return;
   }
   window.__dazGameModalActive = true;
+  const statusId = 'daz-game-modal-inline-status';
+
+  function showInlineStatus(message, asError) {
+    const status = document.getElementById(statusId) || document.createElement('div');
+    status.id = statusId;
+    status.textContent = message;
+    status.style.cssText =
+      'position:fixed;right:12px;top:12px;z-index:2147483647;background:' +
+      (asError ? '#4a120f' : '#2d1810') +
+      ';color:#d4af37;border:1px solid rgba(212,175,55,.45);padding:6px 10px;font:12px/1.3 Cinzel,Georgia,serif;max-width:40vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    (document.body || document.documentElement).appendChild(status);
+  }
+
+  function hideInlineStatus() {
+    const status = document.getElementById(statusId);
+    if (status) {
+      status.remove();
+    }
+  }
+
+  showInlineStatus('daz game modal: initializing...');
 
   const STORAGE_MODE_KEY = 'daz-cytube-game-modal-mode-v1';
   const STORAGE_BALANCE_KEY = 'daz-cytube-game-modal-balance-v1';
@@ -588,6 +610,29 @@
     (document.head || document.documentElement).appendChild(style);
   }
 
+  function enforceFallbackVisuals(root) {
+    if (!root || root.dataset.fallbackApplied === '1') {
+      return;
+    }
+    root.dataset.fallbackApplied = '1';
+    root.style.position = 'fixed';
+    root.style.left = '12px';
+    root.style.bottom = '12px';
+    root.style.width = 'clamp(320px, 34vw, 700px)';
+    root.style.height = 'clamp(250px, 36vh, 420px)';
+    root.style.zIndex = '2147483647';
+    root.style.display = 'block';
+    root.style.visibility = 'visible';
+    root.style.background = '#140f0a';
+    root.style.border = '1px solid rgba(212,175,55,.35)';
+    root.style.borderRadius = '8px';
+    root.style.color = '#d4af37';
+    root.style.pointerEvents = 'auto';
+    root.style.userSelect = 'none';
+    root.style.fontFamily = 'Cinzel, Georgia, serif';
+    root.style.letterSpacing = '0.5px';
+  }
+
   function mount() {
     if (document.getElementById('daz-game-modal-root')) {
       return;
@@ -600,7 +645,9 @@
     maybeInjectStyles();
     const container = document.body || document.documentElement;
     container.appendChild(root);
+    enforceFallbackVisuals(root);
     console.info('[daz-game-modal] mounted', { rootId: root.id });
+    hideInlineStatus();
     bindEvents();
 
     refreshBalance();
@@ -621,5 +668,6 @@
     console.info('[daz-game-modal] bundle loaded; root exists now?', !!document.getElementById('daz-game-modal-root'));
   } catch (err) {
     console.error('[daz-game-modal] Failed to mount modal:', err);
+    showInlineStatus('daz game modal: failed to mount', true);
   }
 })();
