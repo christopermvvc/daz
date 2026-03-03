@@ -1,5 +1,14 @@
 # Ingestion Backpressure Work TODO
 
+## WebSocket UX Bridge (Phase 1)
+- [x] Add `wsbridge` plugin startup/config wiring.
+- [x] Define stable inbound/outbound websocket envelope and explicit subscriptions.
+- [x] Support authenticated command dispatch (`command.execute`) with correlation IDs.
+- [x] Add per-client heartbeat + inbound rate limiting.
+- [x] Add baseline privacy filtering for PM/plugin responses by session user.
+- [x] Add focused unit tests for matcher/auth/channel/rate-limit behavior.
+- [x] Run full `go test ./...` and push.
+
 ## Scope
 - [x] Confirm target scope is everything except stale-guard bypass (`#5`).
 

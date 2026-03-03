@@ -177,6 +177,7 @@ Daz's event-driven architecture ensures maximum performance and reliability:
 - **SQL** - Database operations and event logging
 - **EventFilter** - Event routing and command detection
 - **Retry** - Persistent retry mechanism for failed operations
+- **WSBridge** - Authenticated WebSocket bridge for external UX clients
 
 ### Feature Plugins
 - **UserTracker** - Track user sessions and activity

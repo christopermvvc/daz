@@ -55,6 +55,33 @@
     "eventfilter": {
       "command_prefix": "!"
     },
+    "wsbridge": {
+      "enabled": false,
+      "listen_addr": ":8091",
+      "path": "/ws",
+      "default_channel": "your_channel_name",
+      "session_cookie_name": "daz_session",
+      "allowed_origins": [
+        "https://your-ui.example.com"
+      ],
+      "auth_timeout_seconds": 10,
+      "heartbeat_interval_seconds": 20,
+      "client_timeout_seconds": 60,
+      "max_message_bytes": 16384,
+      "max_subscriptions": 64,
+      "max_outbound_queue": 256,
+      "rate_limit_per_second": 20,
+      "rate_limit_burst": 40,
+      "tokens": [
+        {
+          "token": "replace-with-strong-random-token",
+          "username": "ui_user",
+          "rank": 3,
+          "admin": false,
+          "channels": ["your_channel_name"]
+        }
+      ]
+    },
     "help": {
       "show_aliases": true,
       "generate_html": true,

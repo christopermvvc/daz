@@ -58,6 +58,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/speechflavor"
 	"github.com/hildolfr/daz/internal/plugins/sql"
 	"github.com/hildolfr/daz/internal/plugins/usertracker"
+	"github.com/hildolfr/daz/internal/plugins/wsbridge"
 	"github.com/hildolfr/daz/pkg/eventbus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -229,6 +230,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"sql", sql.NewPlugin()},
 		{"retry", retry.NewPlugin()},
 		{"eventfilter", eventfilter.New()},
+		{"wsbridge", wsbridge.New()},
 		{"usertracker", usertracker.New()},
 		{"mediatracker", mediatracker.New()},
 		{"analytics", analytics.New()},
@@ -281,6 +283,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["sql"] = cfg.GetPluginConfig("sql")
 	pluginConfigs["retry"] = cfg.GetPluginConfig("retry")
 	pluginConfigs["eventfilter"] = cfg.GetPluginConfig("eventfilter")
+	pluginConfigs["wsbridge"] = cfg.GetPluginConfig("wsbridge")
 	pluginConfigs["usertracker"] = cfg.GetPluginConfig("usertracker")
 	pluginConfigs["mediatracker"] = cfg.GetPluginConfig("mediatracker")
 	pluginConfigs["analytics"] = cfg.GetPluginConfig("analytics")
