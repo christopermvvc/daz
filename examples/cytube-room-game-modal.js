@@ -6,27 +6,6 @@
     return;
   }
   window.__dazGameModalActive = true;
-  const statusId = 'daz-game-modal-inline-status';
-
-  function showInlineStatus(message, asError) {
-    const status = document.getElementById(statusId) || document.createElement('div');
-    status.id = statusId;
-    status.textContent = message;
-    status.style.cssText =
-      'position:fixed;left:12px;bottom:12px;z-index:2147483647;background:' +
-      (asError ? '#4a120f' : '#2d1810') +
-      ';color:#d4af37;border:1px solid rgba(212,175,55,.45);padding:6px 10px;font:12px/1.3 Cinzel,Georgia,serif;max-width:40vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 0 12px rgba(0,0,0,.35);';
-    (document.body || document.documentElement).appendChild(status);
-  }
-
-  function hideInlineStatus() {
-    const status = document.getElementById(statusId);
-    if (status) {
-      status.remove();
-    }
-  }
-
-  showInlineStatus('daz game modal: initializing...');
 
   const STORAGE_MODE_KEY = 'daz-cytube-game-modal-mode-v1';
   const STORAGE_BALANCE_KEY = 'daz-cytube-game-modal-balance-v1';
@@ -321,7 +300,6 @@
   }
 
   async function ensureUiModules() {
-    showInlineStatus('daz game modal: loading ui modules...');
     for (const url of UI_MODULE_FILES) {
       await loadUiModule(url);
     }
@@ -329,7 +307,6 @@
       throw new Error('daz game modal: ui modules did not initialize');
     }
     uiViewLoaded = true;
-    hideInlineStatus();
   }
 
   function cssText() {
@@ -344,13 +321,6 @@
       throw new Error('daz game modal: missing UI view module');
     }
     return window.__dazGameModalView.createMarkup();
-  }
-
-  function getPlaceholderMessage(action) {
-    if (!uiViewLoaded || !window.__dazGameModalView || typeof window.__dazGameModalView.placeholderMessageFor !== 'function') {
-      return null;
-    }
-    return window.__dazGameModalView.placeholderMessageFor(action);
   }
 
   function updateModeUI() {
@@ -683,25 +653,6 @@
     (document.head || document.documentElement).appendChild(style);
   }
 
-  function enforceFallbackVisuals(root) {
-    if (!root || root.dataset.fallbackApplied === '1') {
-      return;
-    }
-    root.dataset.fallbackApplied = '1';
-    root.style.position = 'fixed';
-    root.style.setProperty('display', 'block', 'important');
-    root.style.setProperty('visibility', 'visible', 'important');
-    root.style.setProperty('z-index', '2147483647', 'important');
-    root.style.setProperty('background', '#140f0a', 'important');
-    root.style.setProperty('border', '1px solid rgba(212,175,55,.35)', 'important');
-    root.style.setProperty('border-radius', '8px', 'important');
-    root.style.setProperty('color', '#d4af37', 'important');
-    root.style.setProperty('pointer-events', 'auto', 'important');
-    root.style.setProperty('user-select', 'none', 'important');
-    root.style.setProperty('font-family', 'Cinzel, Georgia, serif', 'important');
-    root.style.setProperty('letter-spacing', '0.5px', 'important');
-  }
-
   function mount() {
     if (document.getElementById('daz-game-modal-root')) {
       return;
@@ -714,10 +665,8 @@
     maybeInjectStyles();
     const container = document.body || document.documentElement;
     container.appendChild(root);
-    enforceFallbackVisuals(root);
     applyGeometry();
     console.info('[daz-game-modal] mounted', { rootId: root.id });
-    hideInlineStatus();
     bindEvents();
 
     refreshBalance();
@@ -740,7 +689,7 @@
     } catch (err) {
       console.error('[daz-game-modal] Failed to mount modal:', err);
       window.__dazGameModalLoadError = true;
-      showInlineStatus(`daz game modal: failed to mount (${err && err.message ? err.message : 'unknown error'})`, true);
+      throw err;
     }
   }
 
