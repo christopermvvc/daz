@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
@@ -311,6 +313,10 @@ func (p *Plugin) runUpdateCycle(channel, username string) {
 	p.logf("INFO", "update built new commit for %s: %s", username, current.short)
 
 	if err := p.runCommand(ctx, p.config.RepoPath, p.config.RestartCommand...); err != nil {
+		if isExpectedRestartInterruption(err) {
+			p.logf("INFO", "restart command interrupted for %s after commit %s (expected during self-restart): %v", username, current.short, err)
+			return
+		}
 		p.logf("ERROR", "restart failed for %s after commit %s: %v", username, current.short, err)
 		p.sendChat(channel, fmt.Sprintf("%s: Build succeeded for %s, but restart failed: %v", username, current.short, err))
 		return
@@ -397,6 +403,29 @@ func (p *Plugin) runCommandOutput(ctx context.Context, workingDir string, comman
 		return "", fmt.Errorf("%w: %s", err, out)
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+func isExpectedRestartInterruption(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			sig := status.Signal()
+			if sig == syscall.SIGTERM || sig == syscall.SIGKILL {
+				return true
+			}
+		}
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "signal: killed") || strings.Contains(msg, "signal: terminated")
 }
 
 func (p *Plugin) sendChat(channel, message string) {

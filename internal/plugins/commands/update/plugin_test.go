@@ -309,6 +309,130 @@ func TestRunUpdateCycleNoopStillSendsAndSkipsRestart(t *testing.T) {
 	}
 }
 
+func TestRunUpdateCycleRestartInterruptionIsNotReportedAsFailure(t *testing.T) {
+	bus := &testEventBus{}
+	p := New().(*Plugin)
+	if err := p.Init([]byte(`{"operation_timeout_seconds":10}`), bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+
+	logCall := 0
+	shortCall := 0
+	p.commandOutputFunc = func(_ context.Context, _ string, command ...string) (string, error) {
+		cmd := strings.Join(command, " ")
+		switch {
+		case strings.Contains(cmd, "git log -1"):
+			logCall++
+			if logCall == 1 {
+				return "origfull\x00old subject", nil
+			}
+			return "newfull\x00new subject", nil
+		case strings.Contains(cmd, "git rev-parse"):
+			shortCall++
+			if shortCall == 1 {
+				return "orig123", nil
+			}
+			return "new456", nil
+		default:
+			return "", fmt.Errorf("unexpected command: %v", command)
+		}
+	}
+
+	p.runGitCommandFunc = func(_ context.Context, _ string, args ...string) error {
+		if len(args) == 0 {
+			return fmt.Errorf("empty git command")
+		}
+		return nil
+	}
+
+	buildCmd := strings.Join(p.config.BuildCommand, " ")
+	restartCmd := strings.Join(p.config.RestartCommand, " ")
+	buildCalled := false
+	restartCalled := false
+	p.runCommandFunc = func(_ context.Context, _ string, command ...string) error {
+		cmd := strings.Join(command, " ")
+		switch cmd {
+		case buildCmd:
+			buildCalled = true
+			return nil
+		case restartCmd:
+			restartCalled = true
+			return fmt.Errorf("signal: killed:")
+		default:
+			return fmt.Errorf("unexpected command: %v", command)
+		}
+	}
+
+	p.runUpdateCycle("always_always_sunny", "alice")
+
+	if !buildCalled || !restartCalled {
+		t.Fatalf("expected build and restart commands to run (build=%v restart=%v)", buildCalled, restartCalled)
+	}
+	if !bus.hasMessage("cytube.send", "always_always_sunny", "alice: pulled commit new456") {
+		t.Fatalf("expected pull/restart status message")
+	}
+	if bus.hasMessage("cytube.send", "always_always_sunny", "alice: Build succeeded for new456, but restart failed:") {
+		t.Fatalf("did not expect false restart failure message for self-restart interruption")
+	}
+}
+
+func TestRunUpdateCycleRestartFailureStillReported(t *testing.T) {
+	bus := &testEventBus{}
+	p := New().(*Plugin)
+	if err := p.Init([]byte(`{"operation_timeout_seconds":10}`), bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+
+	logCall := 0
+	shortCall := 0
+	p.commandOutputFunc = func(_ context.Context, _ string, command ...string) (string, error) {
+		cmd := strings.Join(command, " ")
+		switch {
+		case strings.Contains(cmd, "git log -1"):
+			logCall++
+			if logCall == 1 {
+				return "origfull\x00old subject", nil
+			}
+			return "newfull\x00new subject", nil
+		case strings.Contains(cmd, "git rev-parse"):
+			shortCall++
+			if shortCall == 1 {
+				return "orig123", nil
+			}
+			return "new456", nil
+		default:
+			return "", fmt.Errorf("unexpected command: %v", command)
+		}
+	}
+
+	p.runGitCommandFunc = func(_ context.Context, _ string, args ...string) error {
+		if len(args) == 0 {
+			return fmt.Errorf("empty git command")
+		}
+		return nil
+	}
+
+	buildCmd := strings.Join(p.config.BuildCommand, " ")
+	restartCmd := strings.Join(p.config.RestartCommand, " ")
+	p.runCommandFunc = func(_ context.Context, _ string, command ...string) error {
+		cmd := strings.Join(command, " ")
+		switch cmd {
+		case buildCmd:
+			return nil
+		case restartCmd:
+			return fmt.Errorf("exit status 4: access denied")
+		default:
+			return fmt.Errorf("unexpected command: %v", command)
+		}
+	}
+
+	p.runUpdateCycle("always_always_sunny", "alice")
+
+	if !bus.hasMessage("cytube.send", "always_always_sunny", "alice: Build succeeded for new456, but restart failed: exit status 4: access denied") {
+		t.Fatalf("expected concrete restart failure to be reported")
+	}
+}
+
 func TestUpdateLogWritesToFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "update.log")
