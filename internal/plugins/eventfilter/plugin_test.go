@@ -307,6 +307,128 @@ func TestCommandDetection(t *testing.T) {
 	}
 }
 
+func TestAdminOnlyCommandBlocked(t *testing.T) {
+	p := NewPlugin(&Config{
+		CommandPrefix: "!",
+		AdminUsers:    []string{"owner"},
+	})
+	mockBus := NewMockEventBus()
+
+	if err := p.Initialize(mockBus); err != nil {
+		t.Fatalf("Failed to initialize: %v", err)
+	}
+	if err := p.Start(); err != nil {
+		t.Fatalf("Failed to start: %v", err)
+	}
+
+	p.mu.Lock()
+	p.commandRegistry["test"] = &CommandInfo{
+		PluginName: "testplugin",
+		MinRank:    0,
+		Enabled:    true,
+		AdminOnly:  true,
+	}
+	p.registryLoaded = true
+	p.mu.Unlock()
+
+	chatData := &framework.EventData{
+		ChatMessage: &framework.ChatMessageData{
+			Username: "nobody",
+			Message:  "!test",
+			UserRank: 10,
+			Channel:  "testchannel",
+		},
+	}
+
+	chatEvent := &framework.DataEvent{
+		EventType: eventbus.EventCytubeChatMsg,
+		EventTime: time.Now(),
+		Data:      chatData,
+	}
+
+	if err := p.handleChatMessage(chatEvent); err != nil {
+		t.Fatalf("Failed to handle chat message: %v", err)
+	}
+
+	for _, b := range mockBus.broadcasts {
+		if b.eventType == "command.testplugin.execute" {
+			t.Fatal("Expected admin-only command to be blocked, but it was routed")
+		}
+	}
+
+	foundDeniedPM := false
+	for _, b := range mockBus.broadcasts {
+		if b.eventType == "cytube.send.pm" && b.data != nil && b.data.PrivateMessage != nil {
+			if b.data.PrivateMessage.ToUser == "nobody" {
+				foundDeniedPM = true
+				if !strings.Contains(b.data.PrivateMessage.Message, "admin access required") {
+					t.Fatalf("Expected denial message to mention admin access, got %q", b.data.PrivateMessage.Message)
+				}
+			}
+		}
+	}
+
+	if !foundDeniedPM {
+		t.Fatal("Expected admin-only command to send denial PM")
+	}
+}
+
+func TestAdminOnlyCommandAllowedForAdmin(t *testing.T) {
+	p := NewPlugin(&Config{
+		CommandPrefix: "!",
+		AdminUsers:    []string{"owner"},
+	})
+	mockBus := NewMockEventBus()
+
+	if err := p.Initialize(mockBus); err != nil {
+		t.Fatalf("Failed to initialize: %v", err)
+	}
+	if err := p.Start(); err != nil {
+		t.Fatalf("Failed to start: %v", err)
+	}
+
+	p.mu.Lock()
+	p.commandRegistry["test"] = &CommandInfo{
+		PluginName: "testplugin",
+		MinRank:    0,
+		Enabled:    true,
+		AdminOnly:  true,
+	}
+	p.registryLoaded = true
+	p.mu.Unlock()
+
+	chatData := &framework.EventData{
+		ChatMessage: &framework.ChatMessageData{
+			Username: "owner",
+			Message:  "!test",
+			UserRank: 10,
+			Channel:  "testchannel",
+		},
+	}
+
+	chatEvent := &framework.DataEvent{
+		EventType: eventbus.EventCytubeChatMsg,
+		EventTime: time.Now(),
+		Data:      chatData,
+	}
+
+	if err := p.handleChatMessage(chatEvent); err != nil {
+		t.Fatalf("Failed to handle chat message: %v", err)
+	}
+
+	if len(mockBus.broadcasts) == 0 {
+		t.Fatal("Expected command to be routed for admin user")
+	}
+
+	for _, b := range mockBus.broadcasts {
+		if b.eventType == "command.testplugin.execute" {
+			return
+		}
+	}
+
+	t.Fatal("Expected command to route to command.testplugin.execute")
+}
+
 func TestEventRouting(t *testing.T) {
 	p := NewPlugin(&Config{
 		RoutingRules: []RoutingRule{

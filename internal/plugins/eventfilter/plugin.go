@@ -1007,6 +1007,18 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 	}
 
 	isAdmin := p.isAdmin(chatData.Username)
+
+	if cmdInfo.AdminOnly && !isAdmin {
+		err := fmt.Errorf("insufficient permissions for command %s: admin access required", cmdName)
+		if logErr := p.logCommand(cmdName, chatData.Username, chatData.Channel, nil, false, err.Error()); logErr != nil {
+			logger.Warn("EventFilter", "Failed to log command failure: %v", logErr)
+		}
+		correlationID := fmt.Sprintf("admin-only-%s-%d", cmdName, time.Now().UnixNano())
+		p.emitFailureEvent("eventfilter.command.error", correlationID, "admin_only", err)
+		p.sendCommandDenied(chatData.Username, chatData.Channel, err)
+		return
+	}
+
 	// Check user rank (skip for PMs from admins)
 	if !isFromPM || !isAdmin {
 		if chatData.UserRank < cmdInfo.MinRank {
@@ -1085,6 +1097,25 @@ func (p *Plugin) handleCommandWithContext(event *framework.DataEvent, chatData f
 		// Emit failure event for retry
 		correlationID := fmt.Sprintf("cmd-%s-%d", cmdName, time.Now().UnixNano())
 		p.emitFailureEvent("eventfilter.command.failed", correlationID, "command_routing", err)
+	}
+}
+
+func (p *Plugin) sendCommandDenied(username, channel string, err error) {
+	if err == nil || username == "" || p.eventBus == nil {
+		return
+	}
+
+	pmData := &framework.EventData{
+		PrivateMessage: &framework.PrivateMessageData{
+			ToUser:  username,
+			Message: fmt.Sprintf("Command blocked: %v", err),
+			Channel: channel,
+		},
+	}
+
+	if err := p.eventBus.Broadcast("cytube.send.pm", pmData); err != nil {
+		logger.Warn("EventFilter", "Failed to send command denied PM to %s: %v", username, err)
+		p.emitFailureEvent("eventfilter.pm.failed", fmt.Sprintf("command-denied-%s-%d", username, time.Now().UnixNano()), "pm_response", err)
 	}
 }
 
