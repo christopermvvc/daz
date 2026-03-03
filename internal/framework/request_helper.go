@@ -108,6 +108,7 @@ var requestMetrics = newRequestMetrics()
 var commandPrioritySources = map[string]struct{}{
 	"about":          {},
 	"bong":           {},
+	"bug":            {},
 	"clap":           {},
 	"couchcoins":     {},
 	"eventfilter":    {},

@@ -22,6 +22,7 @@ import (
 	"github.com/hildolfr/daz/internal/plugins/bufftracker"
 	"github.com/hildolfr/daz/internal/plugins/commands/about"
 	"github.com/hildolfr/daz/internal/plugins/commands/bong"
+	"github.com/hildolfr/daz/internal/plugins/commands/bug"
 	"github.com/hildolfr/daz/internal/plugins/commands/clap"
 	"github.com/hildolfr/daz/internal/plugins/commands/couchcoins"
 	"github.com/hildolfr/daz/internal/plugins/commands/fishing"
@@ -240,6 +241,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		{"gallery", gallery.New()},
 		{"about", about.New()},
 		{"bong", bong.New()},
+		{"bug", bug.New()},
 		{"bufftracker", bufftracker.New()},
 		{"clap", clap.New()},
 		{"couchcoins", couchcoins.New()},
@@ -290,6 +292,7 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 	pluginConfigs["greetingengine"] = cfg.GetPluginConfig("greetingengine")
 	pluginConfigs["about"] = cfg.GetPluginConfig("about")
 	pluginConfigs["bong"] = cfg.GetPluginConfig("bong")
+	pluginConfigs["bug"] = cfg.GetPluginConfig("bug")
 	pluginConfigs["bufftracker"] = cfg.GetPluginConfig("bufftracker")
 	pluginConfigs["clap"] = cfg.GetPluginConfig("clap")
 	pluginConfigs["couchcoins"] = cfg.GetPluginConfig("couchcoins")
