@@ -34,6 +34,10 @@ type Plugin struct {
 	running         bool
 	lastUseByUser   map[string]time.Time
 	activeReminders map[string]*reminderEntry
+
+	speechFlavor      *framework.SpeechFlavorClient
+	rewriteMessage    func(ctx context.Context, req framework.SpeechFlavorRewriteRequest) (framework.SpeechFlavorRewriteResponse, error)
+	rewriteTimeoutDur time.Duration
 }
 
 const (
@@ -66,6 +70,9 @@ func (p *Plugin) Ready() bool {
 func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.eventBus = bus
 	p.ctx, p.cancel = context.WithCancel(context.Background())
+	p.speechFlavor = framework.NewSpeechFlavorClient(bus, p.name)
+	p.rewriteMessage = p.speechFlavor.Rewrite
+	p.rewriteTimeoutDur = 2 * time.Second
 
 	if len(config) > 0 {
 		if err := json.Unmarshal(config, &p.config); err != nil {
@@ -186,36 +193,42 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 
 	args := req.Data.Command.Args
 	if len(args) < 1 {
-		p.sendChannelMessage(channel, "usage: !reminder <duration>")
+		p.sendChannelMessage(channel, username, "usage: !reminder <duration>", nil)
 		return nil
 	}
 
 	if remaining, ok := p.checkCooldown(channel, username); !ok {
-		msg := fmt.Sprintf("easy on it mate, wait %ds", int(remaining.Seconds())+1)
-		p.sendChannelMessage(channel, msg)
+		p.sendChannelMessage(channel, username, "easy on it mate, wait {seconds}s", map[string]string{
+			"{seconds}": fmt.Sprintf("%d", int(remaining.Seconds())+1),
+		})
 		return nil
 	}
 
 	if p.hasActiveReminder(channel, username) {
-		p.sendChannelMessage(channel, fmt.Sprintf("%s, ya already got a reminder runnin", username))
+		p.sendChannelMessage(channel, username, "{username}, ya already got a reminder runnin", map[string]string{
+			"{username}": username,
+		})
 		return nil
 	}
 
 	input := strings.TrimSpace(args[0])
 	duration, ok := parseTimeString(input)
 	if !ok || duration <= 0 {
-		p.sendChannelMessage(channel, "dunno what time that is mate, try like '5m' or '1h30m'")
+		p.sendChannelMessage(channel, username, "dunno what time that is mate, try like '5m' or '1h30m'", nil)
 		return nil
 	}
 
 	maxDuration := time.Duration(p.config.MaxDurationSeconds) * time.Second
 	if duration > maxDuration {
-		p.sendChannelMessage(channel, "fuck off I'm not remembering that for more than a day")
+		p.sendChannelMessage(channel, username, "fuck off I'm not remembering that for more than a day", nil)
 		return nil
 	}
 
 	p.scheduleReminder(channel, username, input, duration)
-	p.sendChannelMessage(channel, fmt.Sprintf("righto %s, timer set for %s", username, input))
+	p.sendChannelMessage(channel, username, "righto {username}, timer set for {duration}", map[string]string{
+		"{username}": username,
+		"{duration}": input,
+	})
 	return nil
 }
 
@@ -230,8 +243,10 @@ func (p *Plugin) scheduleReminder(channel, username, input string, duration time
 		default:
 		}
 
-		message := fmt.Sprintf("%s, it has been %s mate!", username, input)
-		p.sendChannelMessage(channel, message)
+		p.sendChannelMessage(channel, username, "{username}, it has been {duration} mate!", map[string]string{
+			"{username}": username,
+			"{duration}": input,
+		})
 
 		p.mu.Lock()
 		delete(p.activeReminders, key)
@@ -274,9 +289,15 @@ func (p *Plugin) checkCooldown(channel, username string) (time.Duration, bool) {
 	return 0, true
 }
 
-func (p *Plugin) sendChannelMessage(channel, message string) {
+func (p *Plugin) sendChannelMessage(channel, username, template string, replacements map[string]string) {
 	if strings.TrimSpace(channel) == "" {
 		return
+	}
+
+	flavoredTemplate := p.maybeFlavorMessage(channel, username, template)
+	message := applyTemplateReplacements(flavoredTemplate, replacements)
+	if strings.TrimSpace(message) == "" {
+		message = applyTemplateReplacements(template, replacements)
 	}
 
 	chat := &framework.EventData{
@@ -286,6 +307,51 @@ func (p *Plugin) sendChannelMessage(channel, message string) {
 		},
 	}
 	_ = p.eventBus.Broadcast("cytube.send", chat)
+}
+
+func (p *Plugin) maybeFlavorMessage(channel, username, message string) string {
+	base := strings.TrimSpace(message)
+	if base == "" || p.rewriteMessage == nil {
+		return message
+	}
+
+	ctx := context.Background()
+	if p.ctx != nil {
+		ctx = p.ctx
+	}
+
+	timeout := p.rewriteTimeoutDur
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	preserveTokens := true
+	resp, err := p.rewriteMessage(reqCtx, framework.SpeechFlavorRewriteRequest{
+		Channel:        channel,
+		Username:       username,
+		Text:           base,
+		PreserveTokens: &preserveTokens,
+	})
+	if err != nil {
+		return message
+	}
+
+	rewritten := strings.TrimSpace(resp.Text)
+	if rewritten == "" {
+		return message
+	}
+
+	return rewritten
+}
+
+func applyTemplateReplacements(template string, replacements map[string]string) string {
+	result := template
+	for placeholder, value := range replacements {
+		result = strings.ReplaceAll(result, placeholder, value)
+	}
+	return result
 }
 
 func reminderKey(channel, username string) string {

@@ -21,6 +21,10 @@ type Plugin struct {
 	wg        sync.WaitGroup
 	running   bool
 	startTime time.Time
+
+	speechFlavor      *framework.SpeechFlavorClient
+	rewriteMessage    func(ctx context.Context, req framework.SpeechFlavorRewriteRequest) (framework.SpeechFlavorRewriteResponse, error)
+	rewriteTimeoutDur time.Duration
 }
 
 func New() framework.Plugin {
@@ -32,6 +36,9 @@ func New() framework.Plugin {
 func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.eventBus = bus
 	p.ctx, p.cancel = context.WithCancel(context.Background())
+	p.speechFlavor = framework.NewSpeechFlavorClient(bus, p.name)
+	p.rewriteMessage = p.speechFlavor.Rewrite
+	p.rewriteTimeoutDur = 2 * time.Second
 	return nil
 }
 
@@ -216,6 +223,8 @@ func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
 	responseMessage := message
 	if !isAdmin {
 		responseMessage = "This command is admin-only."
+	} else {
+		responseMessage = p.maybeFlavorMessage(channel, username, responseMessage)
 	}
 
 	// Send response via plugin response system
@@ -243,6 +252,66 @@ func (p *Plugin) sendResponse(req *framework.PluginRequest, message string) {
 		// Emit failure event for retry
 		p.emitFailureEvent("command.uptime.failed", req.ID, "response_delivery", err)
 	}
+}
+
+func (p *Plugin) maybeFlavorMessage(channel, username, message string) string {
+	base := strings.TrimSpace(message)
+	if base == "" || p.rewriteMessage == nil {
+		return message
+	}
+
+	template := base
+	const uptimePrefix = "Bot uptime: "
+	if strings.HasPrefix(base, uptimePrefix) {
+		uptimePart := strings.TrimSpace(strings.TrimPrefix(base, uptimePrefix))
+		if uptimePart != "" {
+			template = uptimePrefix + "{uptime}"
+		}
+	}
+
+	ctx := context.Background()
+	if p.ctx != nil {
+		ctx = p.ctx
+	}
+
+	timeout := p.rewriteTimeoutDur
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	preserveTokens := true
+	resp, err := p.rewriteMessage(reqCtx, framework.SpeechFlavorRewriteRequest{
+		Channel:        channel,
+		Username:       username,
+		Text:           template,
+		PreserveTokens: &preserveTokens,
+	})
+	if err != nil {
+		return message
+	}
+
+	rewritten := strings.TrimSpace(resp.Text)
+	if rewritten == "" {
+		return message
+	}
+
+	if strings.HasPrefix(base, uptimePrefix) {
+		uptimePart := strings.TrimSpace(strings.TrimPrefix(base, uptimePrefix))
+		if uptimePart != "" {
+			if !strings.Contains(rewritten, "{uptime}") {
+				return message
+			}
+			rewritten = strings.ReplaceAll(rewritten, "{uptime}", uptimePart)
+		}
+	}
+
+	if strings.TrimSpace(rewritten) == "" {
+		return message
+	}
+
+	return rewritten
 }
 
 // emitFailureEvent emits a failure event for the retry mechanism

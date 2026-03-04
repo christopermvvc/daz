@@ -433,6 +433,137 @@ func TestHandleCommand(t *testing.T) {
 	}
 }
 
+func TestHandleCommandAdminUsesSpeechFlavor(t *testing.T) {
+	plugin := New().(*Plugin)
+	bus := newMockEventBus()
+
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := plugin.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	plugin.startTime = time.Now().Add(-65 * time.Second)
+	plugin.rewriteMessage = func(ctx context.Context, req framework.SpeechFlavorRewriteRequest) (framework.SpeechFlavorRewriteResponse, error) {
+		_ = ctx
+		if req.Text != "Bot uptime: {uptime}" {
+			t.Fatalf("expected uptime template rewrite input, got %q", req.Text)
+		}
+		return framework.SpeechFlavorRewriteResponse{
+			Text: "still kickin after {uptime}",
+		}, nil
+	}
+
+	eventData := &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			From: "eventfilter",
+			To:   "uptime",
+			Data: &framework.RequestData{
+				Command: &framework.CommandData{
+					Name: "uptime",
+					Params: map[string]string{
+						"channel":  "test-channel",
+						"username": "alice",
+						"is_admin": "true",
+					},
+				},
+			},
+		},
+	}
+	event := framework.NewDataEvent("command.uptime.execute", eventData)
+
+	bus.mu.Lock()
+	handler := bus.subscriptions["command.uptime.execute"][0]
+	bus.mu.Unlock()
+	if err := handler(event); err != nil {
+		t.Fatalf("handleCommand() error = %v", err)
+	}
+
+	select {
+	case <-bus.sendNotify:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Timeout waiting for async handler")
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	if len(bus.broadcasts) < 2 {
+		t.Fatalf("expected at least 2 broadcasts, got %d", len(bus.broadcasts))
+	}
+	out := bus.broadcasts[len(bus.broadcasts)-1].data.PluginResponse.Data.CommandResult.Output
+	if !strings.HasPrefix(out, "still kickin after ") {
+		t.Fatalf("expected flavored uptime output, got %q", out)
+	}
+	if strings.Contains(out, "{uptime}") {
+		t.Fatalf("expected uptime placeholder to be replaced, got %q", out)
+	}
+}
+
+func TestHandleCommandAdminFlavorFallbackOnRewriteError(t *testing.T) {
+	plugin := New().(*Plugin)
+	bus := newMockEventBus()
+
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := plugin.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	plugin.startTime = time.Now().Add(-11 * time.Second)
+	plugin.rewriteMessage = func(ctx context.Context, req framework.SpeechFlavorRewriteRequest) (framework.SpeechFlavorRewriteResponse, error) {
+		_ = ctx
+		_ = req
+		return framework.SpeechFlavorRewriteResponse{}, fmt.Errorf("rewrite unavailable")
+	}
+
+	eventData := &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			From: "eventfilter",
+			To:   "uptime",
+			Data: &framework.RequestData{
+				Command: &framework.CommandData{
+					Name: "uptime",
+					Params: map[string]string{
+						"channel":  "test-channel",
+						"username": "alice",
+						"is_admin": "true",
+					},
+				},
+			},
+		},
+	}
+	event := framework.NewDataEvent("command.uptime.execute", eventData)
+
+	bus.mu.Lock()
+	handler := bus.subscriptions["command.uptime.execute"][0]
+	bus.mu.Unlock()
+	if err := handler(event); err != nil {
+		t.Fatalf("handleCommand() error = %v", err)
+	}
+
+	select {
+	case <-bus.sendNotify:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Timeout waiting for async handler")
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	if len(bus.broadcasts) < 2 {
+		t.Fatalf("expected at least 2 broadcasts, got %d", len(bus.broadcasts))
+	}
+	out := bus.broadcasts[len(bus.broadcasts)-1].data.PluginResponse.Data.CommandResult.Output
+	if !strings.HasPrefix(out, "Bot uptime: ") {
+		t.Fatalf("expected fallback uptime output, got %q", out)
+	}
+}
+
 func containsAny(value string, options []string) bool {
 	for _, option := range options {
 		if strings.Contains(value, option) {
