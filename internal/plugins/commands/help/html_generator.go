@@ -23,6 +23,8 @@ const (
 	defaultHelpBaseURL     = "https://hildolfr.github.io/daz/help/"
 	helpMarkerFile         = ".daz_help_marker"
 	helpPublishStatePrefix = ".daz_help_publish_state_"
+	helpPublishTokenEnv    = "DAZ_HELP_GITHUB_TOKEN"
+	pagesPublishTokenEnv   = "DAZ_GH_PAGES_TOKEN"
 )
 
 type publishState struct {
@@ -162,6 +164,16 @@ func mustResolveHelpFallbackPath() string {
 		return filepath.Clean(defaultHelpOutputPath)
 	}
 	return fallbackAbs
+}
+
+func resolveHelpPublishToken() string {
+	if token := strings.TrimSpace(os.Getenv(helpPublishTokenEnv)); token != "" {
+		return token
+	}
+	if token := strings.TrimSpace(os.Getenv(pagesPublishTokenEnv)); token != "" {
+		return token
+	}
+	return ""
 }
 
 func (g *HTMLGenerator) GenerateAll(ctx context.Context) error {
@@ -477,14 +489,14 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 		}
 	}()
 
-	githubToken := os.Getenv("GITHUB_TOKEN")
+	githubToken := resolveHelpPublishToken()
 	logger.Info("help", "Publishing help pages to GitHub Pages from %s (branch gh-pages)", g.config.HTMLOutputPath)
 
 	runAuthPush := func() error {
 		if githubToken == "" {
 			deployKey, err := g.deployKeyResolver()
 			if err != nil {
-				return fmt.Errorf("no GitHub token and no deploy key configured")
+				return fmt.Errorf("no pages publish token configured and deploy key not found")
 			}
 			logger.Info("help", "Using SSH deploy key for help page publish: %s", deployKey)
 			if _, err := g.runGit(ctx, []string{
@@ -496,7 +508,7 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 			return nil
 		}
 
-		logger.Info("help", "Using GitHub token for help page publish")
+		logger.Info("help", "Using pages publish token for help page publish")
 		authURL := fmt.Sprintf("https://x-access-token:%s@github.com/hildolfr/daz.git", githubToken)
 		if _, err := g.runGit(ctx, []string{"GIT_TERMINAL_PROMPT=0"}, "push", authURL, "gh-pages", "--force"); err != nil {
 			return fmt.Errorf("push failed: %w", err)

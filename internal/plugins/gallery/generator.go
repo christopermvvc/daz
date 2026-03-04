@@ -28,6 +28,11 @@ type HTMLGenerator struct {
 const defaultGalleryOutputPath = "./data/galleries"
 const galleryPublishStateFile = ".daz_gallery_publish_state.json"
 
+const (
+	galleryPublishTokenEnv = "DAZ_GALLERY_GITHUB_TOKEN"
+	pagesPublishTokenEnv   = "DAZ_GH_PAGES_TOKEN"
+)
+
 type publishState struct {
 	ContentHash   string    `json:"content_hash"`
 	LastPublished time.Time `json:"last_published"`
@@ -102,6 +107,16 @@ func mustResolveFallbackPath() string {
 		return filepath.Clean(defaultGalleryOutputPath)
 	}
 	return fallbackAbs
+}
+
+func resolveGalleryPublishToken() string {
+	if token := strings.TrimSpace(os.Getenv(galleryPublishTokenEnv)); token != "" {
+		return token
+	}
+	if token := strings.TrimSpace(os.Getenv(pagesPublishTokenEnv)); token != "" {
+		return token
+	}
+	return ""
 }
 
 // GenerateAllGalleries generates a single shared HTML gallery for all users
@@ -1201,8 +1216,8 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 		}
 	}()
 
-	// Get GitHub token once
-	githubToken := os.Getenv("GITHUB_TOKEN")
+	// Resolve optional dedicated pages publish token once.
+	githubToken := resolveGalleryPublishToken()
 
 	// Helper function to run git commands
 	runGitCmd := func(args ...string) error {
@@ -1246,7 +1261,7 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 		if githubToken == "" {
 			deployKey, err := resolveDeployKey()
 			if err != nil {
-				return fmt.Errorf("no GitHub token configured")
+				return fmt.Errorf("no pages publish token configured and deploy key not found")
 			}
 			cmd := exec.CommandContext(ctx, "git", "push", "origin", "gh-pages", "--force")
 			cmd.Dir = g.config.HTMLOutputPath
@@ -1264,7 +1279,7 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 			return nil
 		}
 
-		// Use token directly in URL for authentication
+		// Use pages publish token directly in URL for authentication.
 		authURL := fmt.Sprintf("https://x-access-token:%s@github.com/hildolfr/daz.git", githubToken)
 		cmd := exec.CommandContext(ctx, "git", "push", authURL, "gh-pages", "--force")
 		cmd.Dir = g.config.HTMLOutputPath
@@ -1399,7 +1414,7 @@ func isPushRetryable(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "no GitHub token configured") || strings.Contains(msg, "deploy key not found") {
+	if strings.Contains(msg, "no pages publish token configured") || strings.Contains(msg, "deploy key not found") {
 		return false
 	}
 	return true

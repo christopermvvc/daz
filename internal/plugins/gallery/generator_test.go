@@ -286,7 +286,7 @@ func TestIsPushRetryable(t *testing.T) {
 		},
 		{
 			name:      "missing auth",
-			err:       fmt.Errorf("no GitHub token configured"),
+			err:       fmt.Errorf("no pages publish token configured and deploy key not found"),
 			retryable: false,
 		},
 		{
@@ -308,5 +308,24 @@ func TestIsPushRetryable(t *testing.T) {
 				t.Fatalf("isPushRetryable() = %v, want %v", got, tc.retryable)
 			}
 		})
+	}
+}
+
+func TestResolveGalleryPublishToken(t *testing.T) {
+	t.Setenv(galleryPublishTokenEnv, "")
+	t.Setenv(pagesPublishTokenEnv, "")
+	t.Setenv("GITHUB_TOKEN", "issue-only-token")
+	if got := resolveGalleryPublishToken(); got != "" {
+		t.Fatalf("expected empty token when dedicated env vars are unset, got %q", got)
+	}
+
+	t.Setenv(pagesPublishTokenEnv, "shared-pages-token")
+	if got := resolveGalleryPublishToken(); got != "shared-pages-token" {
+		t.Fatalf("expected shared pages token, got %q", got)
+	}
+
+	t.Setenv(galleryPublishTokenEnv, "gallery-pages-token")
+	if got := resolveGalleryPublishToken(); got != "gallery-pages-token" {
+		t.Fatalf("expected gallery token to take precedence, got %q", got)
 	}
 }

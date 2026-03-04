@@ -10,6 +10,31 @@ import (
 	"time"
 )
 
+func clearPublishTokenEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(helpPublishTokenEnv, "")
+	t.Setenv(pagesPublishTokenEnv, "")
+	t.Setenv("GITHUB_TOKEN", "")
+}
+
+func TestResolveHelpPublishToken(t *testing.T) {
+	clearPublishTokenEnv(t)
+	t.Setenv("GITHUB_TOKEN", "issue-only-token")
+	if got := resolveHelpPublishToken(); got != "" {
+		t.Fatalf("expected empty token when dedicated env vars are unset, got %q", got)
+	}
+
+	t.Setenv(pagesPublishTokenEnv, "shared-pages-token")
+	if got := resolveHelpPublishToken(); got != "shared-pages-token" {
+		t.Fatalf("expected shared pages token, got %q", got)
+	}
+
+	t.Setenv(helpPublishTokenEnv, "help-pages-token")
+	if got := resolveHelpPublishToken(); got != "help-pages-token" {
+		t.Fatalf("expected help token to take precedence, got %q", got)
+	}
+}
+
 func TestHelpGenerateAllMissingAuth(t *testing.T) {
 	outputDir := t.TempDir()
 	config := &Config{
@@ -32,7 +57,7 @@ func TestHelpGenerateAllMissingAuth(t *testing.T) {
 	generator.deployKeyResolver = func() (string, error) {
 		return "", fmt.Errorf("missing deploy key")
 	}
-	_ = os.Unsetenv("GITHUB_TOKEN")
+	clearPublishTokenEnv(t)
 
 	if err := generator.GenerateAll(context.Background()); err != nil {
 		t.Fatalf("GenerateAll() error = %v", err)
@@ -81,7 +106,7 @@ func TestHelpGenerateAllSkipsInitWhenGitExists(t *testing.T) {
 	generator.deployKeyResolver = func() (string, error) {
 		return "/tmp/deploy_key", nil
 	}
-	_ = os.Unsetenv("GITHUB_TOKEN")
+	clearPublishTokenEnv(t)
 
 	if err := generator.GenerateAll(context.Background()); err != nil {
 		t.Fatalf("GenerateAll() error = %v", err)
@@ -204,7 +229,7 @@ func TestHelpGenerateAllPublishesToGitHub(t *testing.T) {
 	generator.deployKeyResolver = func() (string, error) {
 		return "/tmp/deploy_key", nil
 	}
-	_ = os.Unsetenv("GITHUB_TOKEN")
+	clearPublishTokenEnv(t)
 
 	if err := generator.GenerateAll(context.Background()); err != nil {
 		t.Fatalf("GenerateAll() error = %v", err)
