@@ -63,7 +63,8 @@ func TestSpeechFlavorClientRewriteSuccess(t *testing.T) {
 	}
 
 	resp, err := client.Rewrite(context.Background(), SpeechFlavorRewriteRequest{
-		Text: "yes no",
+		Text:      "yes no",
+		TimeoutMS: 321,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -79,6 +80,13 @@ func TestSpeechFlavorClientRewriteSuccess(t *testing.T) {
 	}
 	if mockBus.lastRequest.PluginRequest.Type != "rewrite" {
 		t.Fatalf("expected rewrite operation, got %q", mockBus.lastRequest.PluginRequest.Type)
+	}
+	var sent SpeechFlavorRewriteRequest
+	if err := json.Unmarshal(mockBus.lastRequest.PluginRequest.Data.RawJSON, &sent); err != nil {
+		t.Fatalf("failed to decode sent request payload: %v", err)
+	}
+	if sent.TimeoutMS != 321 {
+		t.Fatalf("expected timeout_ms=321 in payload, got %d", sent.TimeoutMS)
 	}
 }
 

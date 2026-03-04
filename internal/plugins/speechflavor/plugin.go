@@ -83,6 +83,7 @@ type rewriteRequest struct {
 	Username       string   `json:"username"`
 	Text           string   `json:"text"`
 	PreserveTokens *bool    `json:"preserve_tokens,omitempty"`
+	TimeoutMS      int      `json:"timeout_ms,omitempty"`
 	Model          string   `json:"model,omitempty"`
 	Temperature    *float64 `json:"temperature,omitempty"`
 	MaxTokens      int      `json:"max_tokens,omitempty"`
@@ -293,6 +294,18 @@ func (p *Plugin) handleRewriteRequest(req *framework.PluginRequest) {
 	}
 
 	timeout := time.Duration(p.config.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = defaultTimeoutMS * time.Millisecond
+	}
+	if payload.TimeoutMS > 0 {
+		override := time.Duration(payload.TimeoutMS) * time.Millisecond
+		if override < timeout {
+			timeout = override
+		}
+	}
+	if timeout < 100*time.Millisecond {
+		timeout = 100 * time.Millisecond
+	}
 	ctx, cancel := context.WithTimeout(p.ctx, timeout)
 	defer cancel()
 

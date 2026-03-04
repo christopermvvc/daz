@@ -38,7 +38,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	p.speechFlavor = framework.NewSpeechFlavorClient(bus, p.name)
 	p.rewriteMessage = p.speechFlavor.Rewrite
-	p.rewriteTimeoutDur = 2 * time.Second
+	p.rewriteTimeoutDur = 900 * time.Millisecond
 	return nil
 }
 
@@ -276,17 +276,22 @@ func (p *Plugin) maybeFlavorMessage(channel, username, message string) string {
 
 	timeout := p.rewriteTimeoutDur
 	if timeout <= 0 {
-		timeout = 2 * time.Second
+		timeout = 900 * time.Millisecond
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	preserveTokens := true
+	timeoutMS := int(timeout / time.Millisecond)
+	if timeoutMS <= 0 {
+		timeoutMS = 1
+	}
 	resp, err := p.rewriteMessage(reqCtx, framework.SpeechFlavorRewriteRequest{
 		Channel:        channel,
 		Username:       username,
 		Text:           template,
 		PreserveTokens: &preserveTokens,
+		TimeoutMS:      timeoutMS,
 	})
 	if err != nil {
 		return message

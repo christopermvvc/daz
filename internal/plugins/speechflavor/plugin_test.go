@@ -225,6 +225,52 @@ func TestRewriteUsesConfiguredKeepAlive(t *testing.T) {
 	}
 }
 
+func TestRewriteHonorsRequestTimeoutOverride(t *testing.T) {
+	bus := &testEventBus{}
+	p := New().(*Plugin)
+	if err := p.Init([]byte(`{"timeout_ms":5000}`), bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+
+	p.generateFunc = func(ctx context.Context, req framework.OllamaGenerateRequest) (framework.OllamaGenerateResponse, error) {
+		_ = req
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatalf("expected deadline on generate context")
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > 450*time.Millisecond {
+			t.Fatalf("expected timeout override around 250ms, got remaining=%v", remaining)
+		}
+		return framework.OllamaGenerateResponse{
+			Text:  "yeah mate",
+			Model: "unit-model",
+		}, nil
+	}
+
+	raw := []byte(`{"text":"hello there","timeout_ms":250}`)
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				ID:   "rewrite-timeout-override",
+				To:   pluginName,
+				Type: operationRewrite,
+				Data: &framework.RequestData{RawJSON: raw},
+			},
+		},
+	}
+
+	if err := p.handlePluginRequest(event); err != nil {
+		t.Fatalf("handlePluginRequest error: %v", err)
+	}
+	if len(bus.deliveries) != 1 {
+		t.Fatalf("expected one delivery, got %d", len(bus.deliveries))
+	}
+	if !bus.deliveries[0].response.PluginResponse.Success {
+		t.Fatalf("expected success response")
+	}
+}
+
 func TestStartWarmOnStartTriggersWarmRequest(t *testing.T) {
 	bus := &testEventBus{}
 	p := New().(*Plugin)

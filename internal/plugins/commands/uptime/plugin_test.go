@@ -450,6 +450,9 @@ func TestHandleCommandAdminUsesSpeechFlavor(t *testing.T) {
 		if req.Text != "Bot uptime: {uptime}" {
 			t.Fatalf("expected uptime template rewrite input, got %q", req.Text)
 		}
+		if req.TimeoutMS <= 0 {
+			t.Fatalf("expected timeout_ms to be set, got %d", req.TimeoutMS)
+		}
 		return framework.SpeechFlavorRewriteResponse{
 			Text: "still kickin after {uptime}",
 		}, nil
@@ -561,6 +564,33 @@ func TestHandleCommandAdminFlavorFallbackOnRewriteError(t *testing.T) {
 	out := bus.broadcasts[len(bus.broadcasts)-1].data.PluginResponse.Data.CommandResult.Output
 	if !strings.HasPrefix(out, "Bot uptime: ") {
 		t.Fatalf("expected fallback uptime output, got %q", out)
+	}
+}
+
+func TestMaybeFlavorMessageRespectsTimeout(t *testing.T) {
+	plugin := New().(*Plugin)
+	bus := newMockEventBus()
+
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	plugin.rewriteTimeoutDur = 25 * time.Millisecond
+	plugin.rewriteMessage = func(ctx context.Context, req framework.SpeechFlavorRewriteRequest) (framework.SpeechFlavorRewriteResponse, error) {
+		_ = req
+		<-ctx.Done()
+		return framework.SpeechFlavorRewriteResponse{}, ctx.Err()
+	}
+
+	start := time.Now()
+	out := plugin.maybeFlavorMessage("always_always_sunny", "alice", "Bot uptime: 10s")
+	elapsed := time.Since(start)
+
+	if out != "Bot uptime: 10s" {
+		t.Fatalf("expected original message fallback, got %q", out)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("expected fast timeout fallback, took %v", elapsed)
 	}
 }
 

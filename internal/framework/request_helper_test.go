@@ -444,6 +444,52 @@ func TestSQLRequestPriority_CommandSourceIsHigh(t *testing.T) {
 	}
 }
 
+func TestPluginRequestPriority_CommandSourceIsHigh(t *testing.T) {
+	bus := newTestEventBus()
+	helper := NewRequestHelper(bus, "uptime")
+
+	if _, err := helper.FastRequest(context.Background(), "speechflavor", "plugin.request", &EventData{
+		PluginRequest: &PluginRequest{
+			From: "uptime",
+			To:   "speechflavor",
+			Type: "rewrite",
+		},
+	}); err != nil {
+		t.Fatalf("expected plugin request to succeed: %v", err)
+	}
+
+	metadata := bus.metadataByType["plugin.request"]
+	if metadata == nil {
+		t.Fatal("expected metadata for plugin.request")
+	}
+	if metadata.Priority != PriorityHigh {
+		t.Fatalf("expected high priority for command source plugin request, got %d", metadata.Priority)
+	}
+}
+
+func TestPluginRequestPriority_BackgroundSourceNormal(t *testing.T) {
+	bus := newTestEventBus()
+	helper := NewRequestHelper(bus, "mediatracker")
+
+	if _, err := helper.FastRequest(context.Background(), "speechflavor", "plugin.request", &EventData{
+		PluginRequest: &PluginRequest{
+			From: "mediatracker",
+			To:   "speechflavor",
+			Type: "rewrite",
+		},
+	}); err != nil {
+		t.Fatalf("expected plugin request to succeed: %v", err)
+	}
+
+	metadata := bus.metadataByType["plugin.request"]
+	if metadata == nil {
+		t.Fatal("expected metadata for plugin.request")
+	}
+	if metadata.Priority != PriorityNormal {
+		t.Fatalf("expected normal priority for background source plugin request, got %d", metadata.Priority)
+	}
+}
+
 func TestSQLRequestPriority_BackgroundSourceNormal(t *testing.T) {
 	bus := newTestEventBus()
 	helper := NewSQLRequestHelper(bus, "mediatracker")

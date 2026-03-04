@@ -328,11 +328,16 @@ func (p *Plugin) maybeFlavorMessage(channel, username, message string) string {
 	defer cancel()
 
 	preserveTokens := true
+	timeoutMS := int(timeout / time.Millisecond)
+	if timeoutMS <= 0 {
+		timeoutMS = 1
+	}
 	resp, err := p.rewriteMessage(reqCtx, framework.SpeechFlavorRewriteRequest{
 		Channel:        channel,
 		Username:       username,
 		Text:           base,
 		PreserveTokens: &preserveTokens,
+		TimeoutMS:      timeoutMS,
 	})
 	if err != nil {
 		return message

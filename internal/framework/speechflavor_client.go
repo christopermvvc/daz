@@ -15,6 +15,7 @@ type SpeechFlavorRewriteRequest struct {
 	Username       string   `json:"username,omitempty"`
 	Text           string   `json:"text"`
 	PreserveTokens *bool    `json:"preserve_tokens,omitempty"`
+	TimeoutMS      int      `json:"timeout_ms,omitempty"`
 	Model          string   `json:"model,omitempty"`
 	Temperature    *float64 `json:"temperature,omitempty"`
 	MaxTokens      int      `json:"max_tokens,omitempty"`

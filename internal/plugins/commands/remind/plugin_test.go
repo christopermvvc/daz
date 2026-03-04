@@ -226,6 +226,9 @@ func TestSendChannelMessageUsesSpeechFlavorTemplate(t *testing.T) {
 		if req.Text != "righto {username}, timer set for {duration}" {
 			t.Fatalf("unexpected rewrite text %q", req.Text)
 		}
+		if req.TimeoutMS <= 0 {
+			t.Fatalf("expected timeout_ms to be set, got %d", req.TimeoutMS)
+		}
 		return framework.SpeechFlavorRewriteResponse{
 			Text: "sweet as {username}, reminder locked for {duration}",
 		}, nil

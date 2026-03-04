@@ -320,13 +320,14 @@ func (h *RequestHelper) requestWithRetry(
 }
 
 func (h *RequestHelper) inferRequestPriority(target string, eventType string, config RequestConfig) int {
-	if target != "sql" {
-		return PriorityNormal
-	}
-
-	// Command and admin paths should not queue behind bulk ingestion and logging traffic.
+	// Command/admin paths should remain responsive even when they depend on
+	// plugin.request hops (for example speechflavor/ollama).
 	if isCommandPrioritySource(h.source) {
 		return PriorityHigh
+	}
+
+	if target != "sql" {
+		return PriorityNormal
 	}
 
 	// Fast SQL requests are generally user-facing and should get elevated dispatch priority.
