@@ -1023,6 +1023,80 @@ func TestHandlePluginRequestGenerateSuccess(t *testing.T) {
 	}
 }
 
+func TestHandlePluginRequestGenerateUsesRequestKeepAliveOverride(t *testing.T) {
+	plugin := New()
+	ollamaPlugin, ok := plugin.(*Plugin)
+	if !ok {
+		t.Fatalf("New() returned %T", plugin)
+	}
+	mockBus := NewMockEventBus()
+
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if r.URL.Path != "/api/chat" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		var req OllamaRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if req.KeepAlive != "22m" {
+			t.Errorf("expected keep_alive override '22m', got %q", req.KeepAlive)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ready"}}`))
+	}))
+	defer server.Close()
+
+	if err := ollamaPlugin.Init(nil, mockBus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	ollamaPlugin.config.OllamaURL = server.URL
+	ollamaPlugin.config.Model = "test-model"
+	ollamaPlugin.config.KeepAlive = "5m"
+
+	payload := framework.OllamaGenerateRequest{
+		Message:   "Hey",
+		Channel:   "test-channel",
+		Username:  "tester",
+		KeepAlive: "22m",
+	}
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload failed: %v", err)
+	}
+
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				ID:   "generate-keepalive-override",
+				To:   "ollama",
+				Type: "generate",
+				Data: &framework.RequestData{
+					RawJSON: rawPayload,
+				},
+			},
+		},
+	}
+
+	if err := ollamaPlugin.handlePluginRequest(event); err != nil {
+		t.Fatalf("handlePluginRequest failed: %v", err)
+	}
+	if serverCalls != 1 {
+		t.Fatalf("expected 1 call to ollama endpoint, got %d", serverCalls)
+	}
+}
+
 func TestHandlePluginRequestUnsupportedOperation(t *testing.T) {
 	plugin := New()
 	ollamaPlugin, ok := plugin.(*Plugin)

@@ -14,6 +14,7 @@ type OllamaGenerateRequest struct {
 	Message        string            `json:"message"`
 	SystemPrompt   string            `json:"system_prompt,omitempty"`
 	Model          string            `json:"model,omitempty"`
+	KeepAlive      string            `json:"keep_alive,omitempty"`
 	Temperature    float64           `json:"temperature,omitempty"`
 	MaxTokens      int               `json:"max_tokens,omitempty"`
 	IncludeHistory bool              `json:"include_history"`

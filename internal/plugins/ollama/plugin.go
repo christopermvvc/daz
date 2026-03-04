@@ -558,6 +558,11 @@ func (p *Plugin) handleGenerateRequest(req *framework.PluginRequest) {
 		systemPrompt = fmt.Sprintf("%s\n\nExtra context:\n%s", systemPrompt, strings.Join(extraBits, "\n"))
 	}
 
+	keepAlive := strings.TrimSpace(payload.KeepAlive)
+	if keepAlive == "" {
+		keepAlive = p.config.KeepAlive
+	}
+
 	chatHistory := []string{}
 	if payload.IncludeHistory {
 		historyLimit := payload.HistoryLimit
@@ -572,7 +577,15 @@ func (p *Plugin) handleGenerateRequest(req *framework.PluginRequest) {
 		}
 	}
 
-	response, err := p.callOllamaWithPrompt(model, systemPrompt, userMessage, temperature, numPredict, chatHistory)
+	response, err := p.callOllamaWithPromptKeepAlive(
+		model,
+		systemPrompt,
+		userMessage,
+		temperature,
+		numPredict,
+		keepAlive,
+		chatHistory,
+	)
 	if err != nil {
 		p.deliverError(req, errorCodeGenerationFail, err.Error(), nil)
 		return
@@ -664,6 +677,7 @@ func (p *Plugin) callOllamaWithModel(
 	model,
 	systemPrompt,
 	userMessage string,
+	keepAliveOverride string,
 	temperature float64,
 	numPredict int,
 ) (string, error) {
@@ -672,7 +686,10 @@ func (p *Plugin) callOllamaWithModel(
 		ollamaURL = defaultOllamaURL
 	}
 
-	keepAlive := strings.TrimSpace(p.config.KeepAlive)
+	keepAlive := strings.TrimSpace(keepAliveOverride)
+	if keepAlive == "" {
+		keepAlive = strings.TrimSpace(p.config.KeepAlive)
+	}
 	if keepAlive == "" {
 		keepAlive = defaultKeepAlive
 	}
@@ -1847,6 +1864,26 @@ func (p *Plugin) callOllamaWithPrompt(
 	numPredict int,
 	chatHistory []string,
 ) (string, error) {
+	return p.callOllamaWithPromptKeepAlive(
+		model,
+		systemPrompt,
+		userMessage,
+		temperature,
+		numPredict,
+		"",
+		chatHistory,
+	)
+}
+
+func (p *Plugin) callOllamaWithPromptKeepAlive(
+	model,
+	systemPrompt,
+	userMessage string,
+	temperature float64,
+	numPredict int,
+	keepAlive string,
+	chatHistory []string,
+) (string, error) {
 	// Keep the historical signature behavior for callers that do not need extras.
 	contextPrompt := strings.TrimSpace(systemPrompt)
 	if len(chatHistory) > 0 {
@@ -1857,7 +1894,7 @@ func (p *Plugin) callOllamaWithPrompt(
 		contextPrompt += "\nRespond to the following user message:"
 	}
 
-	return p.callOllamaWithModel(model, contextPrompt, userMessage, temperature, numPredict)
+	return p.callOllamaWithModel(model, contextPrompt, userMessage, keepAlive, temperature, numPredict)
 }
 
 // recordResponse records the response in the database

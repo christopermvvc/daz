@@ -26,6 +26,7 @@ const (
 	defaultTimeoutMS  = 5000
 	defaultMaxTokens  = 96
 	defaultTemp       = 0.6
+	defaultKeepAlive  = "15m"
 	minLengthRatio    = 0.45
 	maxLengthRatio    = 1.75
 	minPolarityTokens = 1
@@ -53,10 +54,13 @@ type Config struct {
 	Enabled            bool    `json:"enabled"`
 	RewriteStylePrompt string  `json:"rewrite_style_prompt"`
 	Model              string  `json:"model"`
+	KeepAlive          string  `json:"keep_alive"`
 	Temperature        float64 `json:"temperature"`
 	MaxTokens          int     `json:"max_tokens"`
 	TimeoutMS          int     `json:"timeout_ms"`
 	PreserveTokens     bool    `json:"preserve_tokens"`
+	WarmOnStart        bool    `json:"warm_on_start"`
+	WarmIntervalSecs   int     `json:"warm_interval_seconds"`
 }
 
 type Plugin struct {
@@ -106,6 +110,8 @@ func New() framework.Plugin {
 			MaxTokens:      defaultMaxTokens,
 			TimeoutMS:      defaultTimeoutMS,
 			PreserveTokens: true,
+			KeepAlive:      defaultKeepAlive,
+			WarmOnStart:    true,
 		},
 		readyChan: make(chan struct{}),
 		status: framework.PluginStatus{
@@ -151,6 +157,9 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	if p.config.TimeoutMS <= 0 {
 		p.config.TimeoutMS = defaultTimeoutMS
 	}
+	if strings.TrimSpace(p.config.KeepAlive) == "" {
+		p.config.KeepAlive = defaultKeepAlive
+	}
 	if strings.TrimSpace(p.config.RewriteStylePrompt) == "" {
 		p.config.RewriteStylePrompt = defaultRewriteStylePrompt(resolveBotName())
 	}
@@ -181,6 +190,16 @@ func (p *Plugin) Start() error {
 
 	p.running = true
 	p.status.State = stateRunning
+
+	if p.config.Enabled && p.generateFunc != nil {
+		if p.config.WarmOnStart {
+			go p.warmModel("startup")
+		}
+		if p.config.WarmIntervalSecs > 0 {
+			go p.runWarmLoop(time.Duration(p.config.WarmIntervalSecs) * time.Second)
+		}
+	}
+
 	select {
 	case <-p.readyChan:
 	default:
@@ -283,6 +302,7 @@ func (p *Plugin) handleRewriteRequest(req *framework.PluginRequest) {
 		Message:      rewritable,
 		SystemPrompt: p.config.RewriteStylePrompt,
 		Model:        strings.TrimSpace(payload.Model),
+		KeepAlive:    strings.TrimSpace(p.config.KeepAlive),
 		MaxTokens:    p.config.MaxTokens,
 		Temperature:  p.config.Temperature,
 		ExtraContext: map[string]string{
@@ -358,6 +378,69 @@ func (p *Plugin) handleRewriteRequest(req *framework.PluginRequest) {
 		Model:        resp.Model,
 		FallbackUsed: false,
 	})
+}
+
+func (p *Plugin) runWarmLoop(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.warmModel("interval")
+		}
+	}
+}
+
+func (p *Plugin) warmModel(reason string) {
+	p.mu.RLock()
+	generate := p.generateFunc
+	cfg := *p.config
+	ctx := p.ctx
+	p.mu.RUnlock()
+
+	if generate == nil || ctx == nil || !cfg.Enabled {
+		return
+	}
+
+	timeout := time.Duration(cfg.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = defaultTimeoutMS * time.Millisecond
+	}
+	if timeout < 2*time.Second {
+		timeout = 2 * time.Second
+	}
+	if timeout > 20*time.Second {
+		timeout = 20 * time.Second
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	_, err := generate(reqCtx, framework.OllamaGenerateRequest{
+		Channel:   "system",
+		Username:  "speechflavor",
+		Message:   "warm the model cache",
+		Model:     strings.TrimSpace(cfg.Model),
+		KeepAlive: strings.TrimSpace(cfg.KeepAlive),
+		MaxTokens: 8,
+		ExtraContext: map[string]string{
+			"source": "speechflavor",
+			"mode":   "warmup",
+			"reason": reason,
+		},
+		SystemPrompt: "You are performing a model warmup request. Reply with exactly: ok",
+	})
+	if err != nil {
+		logger.Debug(p.name, "warmup request failed (%s): %v", reason, err)
+		return
+	}
+	logger.Debug(p.name, "warmup request succeeded (%s)", reason)
 }
 
 func (p *Plugin) parseRewriteRequest(req *framework.PluginRequest) (*rewriteRequest, error) {

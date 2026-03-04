@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
 )
@@ -178,6 +179,86 @@ func TestRewriteSuccessPreservesTokens(t *testing.T) {
 	}
 	if payload.FallbackUsed {
 		t.Fatalf("did not expect fallback")
+	}
+}
+
+func TestRewriteUsesConfiguredKeepAlive(t *testing.T) {
+	bus := &testEventBus{}
+	p := New().(*Plugin)
+	if err := p.Init([]byte(`{"keep_alive":"25m"}`), bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+
+	p.generateFunc = func(ctx context.Context, req framework.OllamaGenerateRequest) (framework.OllamaGenerateResponse, error) {
+		_ = ctx
+		if req.KeepAlive != "25m" {
+			t.Fatalf("expected keep_alive 25m, got %q", req.KeepAlive)
+		}
+		return framework.OllamaGenerateResponse{
+			Text:  "hey there",
+			Model: "unit-model",
+		}, nil
+	}
+
+	raw := []byte(`{"text":"hello there"}`)
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			PluginRequest: &framework.PluginRequest{
+				ID:   "rewrite-keepalive",
+				To:   pluginName,
+				Type: operationRewrite,
+				Data: &framework.RequestData{RawJSON: raw},
+			},
+		},
+	}
+
+	if err := p.handlePluginRequest(event); err != nil {
+		t.Fatalf("handlePluginRequest error: %v", err)
+	}
+	if len(bus.deliveries) != 1 {
+		t.Fatalf("expected one delivery, got %d", len(bus.deliveries))
+	}
+
+	resp := bus.deliveries[0].response.PluginResponse
+	if !resp.Success {
+		t.Fatalf("expected success response, got error: %s", resp.Error)
+	}
+}
+
+func TestStartWarmOnStartTriggersWarmRequest(t *testing.T) {
+	bus := &testEventBus{}
+	p := New().(*Plugin)
+	if err := p.Init([]byte(`{"warm_on_start":true,"keep_alive":"11m","timeout_ms":2000}`), bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+
+	warmRequests := make(chan framework.OllamaGenerateRequest, 1)
+	p.generateFunc = func(ctx context.Context, req framework.OllamaGenerateRequest) (framework.OllamaGenerateResponse, error) {
+		_ = ctx
+		if req.ExtraContext["mode"] == "warmup" {
+			select {
+			case warmRequests <- req:
+			default:
+			}
+		}
+		return framework.OllamaGenerateResponse{
+			Text:  "ok",
+			Model: "warm-model",
+		}, nil
+	}
+
+	if err := p.Start(); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	defer p.Stop()
+
+	select {
+	case req := <-warmRequests:
+		if req.KeepAlive != "11m" {
+			t.Fatalf("expected warmup keep_alive 11m, got %q", req.KeepAlive)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected startup warm request")
 	}
 }
 

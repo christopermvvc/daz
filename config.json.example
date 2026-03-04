@@ -122,6 +122,9 @@
     "speechflavor": {
       "enabled": true,
       "preserve_tokens": true,
+      "keep_alive": "15m",
+      "warm_on_start": true,
+      "warm_interval_seconds": 0,
       "max_tokens": 96,
       "temperature": 0.6,
       "timeout_ms": 5000
