@@ -304,12 +304,15 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		p.markNonAdminRun(channel, username, p.now())
 	}
 
-	p.sendResponse(
-		username,
-		channel,
-		isPM,
-		fmt.Sprintf("bug filed as issue #%d: %s", issue.Number, issue.HTMLURL),
-	)
+	successMessage := fmt.Sprintf("bug filed as issue #%d: %s", issue.Number, issue.HTMLURL)
+	if isPM {
+		p.sendResponse(username, channel, true, successMessage)
+		return nil
+	}
+
+	// For public commands, deliver the link privately to avoid channel noise.
+	p.sendResponse(username, channel, true, successMessage)
+	p.sendResponse(username, channel, false, "bug filed. sent you the issue link in PM.")
 	return nil
 }
 

@@ -457,6 +457,36 @@ func TestHandleCommandPMUsesPluginResponse(t *testing.T) {
 	}
 }
 
+func TestHandleCommandPublicSuccessUsesPMForIssueLink(t *testing.T) {
+	bus := &testEventBus{}
+	p := New().(*Plugin)
+	if err := p.Init(nil, bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+	p.createIssueFunc = func(ctx context.Context, report bugReport) (*createdIssue, error) {
+		_ = ctx
+		_ = report
+		return &createdIssue{Number: 88, HTMLURL: "https://example.com/issues/88"}, nil
+	}
+
+	if err := p.handleCommand(mkBugCommandEvent("alice", "chan", false, false, "public", "bug")); err != nil {
+		t.Fatalf("public call error: %v", err)
+	}
+
+	pm := bus.lastPMMessage()
+	if !strings.Contains(pm, "issue #88") || !strings.Contains(pm, "https://example.com/issues/88") {
+		t.Fatalf("expected PM to contain issue link, got %q", pm)
+	}
+
+	chat := bus.lastChatMessage()
+	if !strings.Contains(strings.ToLower(chat), "sent you the issue link in pm") {
+		t.Fatalf("expected public ack to mention PM delivery, got %q", chat)
+	}
+	if strings.Contains(chat, "https://") {
+		t.Fatalf("public ack should not include issue URL, got %q", chat)
+	}
+}
+
 func TestHandleCommandHandlesNilOrNonDataEvent(t *testing.T) {
 	bus := &testEventBus{}
 	p := New().(*Plugin)
