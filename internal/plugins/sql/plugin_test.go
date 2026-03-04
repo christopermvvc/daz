@@ -159,8 +159,8 @@ func TestSplitConnectionBudget(t *testing.T) {
 			total:                20,
 			backgroundConfigured: 0,
 			gomaxprocs:           4,
-			wantCritical:         15,
-			wantBackground:       5,
+			wantCritical:         16,
+			wantBackground:       4,
 		},
 		{
 			name:                 "auto background split low cpu",
@@ -193,6 +193,53 @@ func TestSplitConnectionBudget(t *testing.T) {
 					tc.wantCritical,
 					tc.wantBackground,
 				)
+			}
+		})
+	}
+}
+
+func TestDefaultLaneConcurrency(t *testing.T) {
+	tests := []struct {
+		name               string
+		criticalConns      int
+		backgroundConns    int
+		gomaxprocs         int
+		wantCriticalLane   int
+		wantBackgroundLane int
+	}{
+		{
+			name:               "single cpu keeps lanes tight",
+			criticalConns:      10,
+			backgroundConns:    3,
+			gomaxprocs:         1,
+			wantCriticalLane:   2,
+			wantBackgroundLane: 1,
+		},
+		{
+			name:               "dual cpu moderate concurrency",
+			criticalConns:      10,
+			backgroundConns:    5,
+			gomaxprocs:         2,
+			wantCriticalLane:   4,
+			wantBackgroundLane: 2,
+		},
+		{
+			name:               "multi cpu bounded by gomaxprocs",
+			criticalConns:      20,
+			backgroundConns:    8,
+			gomaxprocs:         4,
+			wantCriticalLane:   8,
+			wantBackgroundLane: 4,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := defaultCriticalLaneConcurrency(tc.criticalConns, tc.gomaxprocs); got != tc.wantCriticalLane {
+				t.Fatalf("defaultCriticalLaneConcurrency(%d,%d)=%d want %d", tc.criticalConns, tc.gomaxprocs, got, tc.wantCriticalLane)
+			}
+			if got := defaultBackgroundLaneConcurrency(tc.backgroundConns, tc.gomaxprocs); got != tc.wantBackgroundLane {
+				t.Fatalf("defaultBackgroundLaneConcurrency(%d,%d)=%d want %d", tc.backgroundConns, tc.gomaxprocs, got, tc.wantBackgroundLane)
 			}
 		})
 	}
@@ -442,6 +489,68 @@ func TestFlushCoreEventBatchReturnsExecError(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("expected propagated exec error, got %v", err)
+	}
+}
+
+func TestFlushCoreEventBatchUsesCopyWhenConfigured(t *testing.T) {
+	var copyCalled atomic.Bool
+	var insertCalled atomic.Bool
+
+	p := &Plugin{
+		ctx: context.Background(),
+		coreEventCopyFn: func(ctx context.Context, entries []*coreEventLogEntry) error {
+			copyCalled.Store(true)
+			return nil
+		},
+		coreEventExecFn: func(ctx context.Context, query string, args ...interface{}) error {
+			insertCalled.Store(true)
+			return nil
+		},
+	}
+
+	err := p.flushCoreEventBatch([]*coreEventLogEntry{{
+		EventType: "cytube.event.chatMsg",
+		RawData:   []byte(`{}`),
+	}})
+	if err != nil {
+		t.Fatalf("unexpected flush error: %v", err)
+	}
+	if !copyCalled.Load() {
+		t.Fatal("expected copy path to be used")
+	}
+	if insertCalled.Load() {
+		t.Fatal("did not expect insert fallback when copy succeeds")
+	}
+}
+
+func TestFlushCoreEventBatchFallsBackWhenCopyFails(t *testing.T) {
+	var copyCalled atomic.Bool
+	var insertCalled atomic.Bool
+
+	p := &Plugin{
+		ctx: context.Background(),
+		coreEventCopyFn: func(ctx context.Context, entries []*coreEventLogEntry) error {
+			copyCalled.Store(true)
+			return errors.New("copy failed")
+		},
+		coreEventExecFn: func(ctx context.Context, query string, args ...interface{}) error {
+			insertCalled.Store(true)
+			return nil
+		},
+	}
+
+	err := p.flushCoreEventBatch([]*coreEventLogEntry{{
+		EventType: "cytube.event.chatMsg",
+		RawData:   []byte(`{}`),
+	}})
+	if err != nil {
+		t.Fatalf("unexpected flush error: %v", err)
+	}
+	if !copyCalled.Load() {
+		t.Fatal("expected copy path attempt")
+	}
+	if !insertCalled.Load() {
+		t.Fatal("expected insert fallback on copy failure")
 	}
 }
 

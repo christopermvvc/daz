@@ -9,8 +9,10 @@ import (
 
 // mockSQLEventBus implements EventBus interface for SQL client testing
 type mockSQLEventBus struct {
-	requests  map[string]*EventData
-	responses map[string]*EventData
+	requests              map[string]*EventData
+	responses             map[string]*EventData
+	requestCounts         map[string]int
+	execFailuresRemaining int
 }
 
 func (m *mockSQLEventBus) Send(target, eventType string, data *EventData) error {
@@ -44,6 +46,15 @@ func (m *mockSQLEventBus) Unsubscribe(pattern string, handler EventHandler) erro
 func (m *mockSQLEventBus) Request(ctx context.Context, target, eventType string, data *EventData, metadata *EventMetadata) (*EventData, error) {
 	// Capture the request
 	m.requests[eventType] = data
+	if m.requestCounts == nil {
+		m.requestCounts = make(map[string]int)
+	}
+	m.requestCounts[eventType]++
+
+	if eventType == "sql.exec.request" && m.execFailuresRemaining > 0 {
+		m.execFailuresRemaining--
+		return nil, context.DeadlineExceeded
+	}
 
 	// Return mock response based on event type
 	if eventType == "sql.exec.request" && data.SQLExecRequest != nil {
@@ -263,5 +274,24 @@ func TestSQLClient_QueryContext(t *testing.T) {
 
 	if params[1].Value != 21 {
 		t.Errorf("Expected second param value 21, got %v", params[1].Value)
+	}
+}
+
+func TestSQLClientExecUsesBestEffortSingleAttempt(t *testing.T) {
+	mockBus := &mockSQLEventBus{
+		requests:              make(map[string]*EventData),
+		responses:             make(map[string]*EventData),
+		requestCounts:         make(map[string]int),
+		execFailuresRemaining: 1,
+	}
+
+	client := NewSQLClient(mockBus, "test-client")
+	err := client.Exec("INSERT INTO test_table (name) VALUES ($1)", "demo")
+	if err == nil {
+		t.Fatal("expected Exec to fail on first-attempt error")
+	}
+
+	if got := mockBus.requestCounts["sql.exec.request"]; got != 1 {
+		t.Fatalf("expected exactly one exec attempt, got %d", got)
 	}
 }

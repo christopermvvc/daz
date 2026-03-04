@@ -93,15 +93,33 @@ type Config struct {
 	BufferSizes map[string]int
 }
 
+const (
+	pluginRequestRouteDefault    = "plugin.request"
+	pluginRequestRouteCommand    = "plugin.request.command"
+	pluginRequestRouteBackground = "plugin.request.background"
+)
+
+var backgroundPluginRequestSources = map[string]struct{}{
+	"analytics":    {},
+	"gallery":      {},
+	"help":         {},
+	"mediatracker": {},
+	"retry":        {},
+	"usertracker":  {},
+}
+
 // NewEventBus creates a new event bus instance
 func NewEventBus(config *Config) *EventBus {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Default buffer sizes
 	bufferSizes := map[string]int{
-		"cytube.event": 1000,
-		"sql.":         100, // Default for all SQL operations
-		"plugin.":      50,  // Default for all plugin operations
+		"cytube.event":               1000,
+		"sql.":                       100, // Default for all SQL operations
+		"plugin.":                    50,  // Default for all plugin operations
+		pluginRequestRouteDefault:    200,
+		pluginRequestRouteCommand:    300,
+		pluginRequestRouteBackground: 100,
 	}
 
 	// Override with config values
@@ -134,8 +152,11 @@ func NewEventBus(config *Config) *EventBus {
 
 	// Initialize queues for known event types
 	for eventType := range bufferSizes {
-		eb.getOrCreateQueue(eventType)
+		queue := eb.getOrCreateQueue(eventType)
+		eb.observeQueueDepth(eventType, queue)
 	}
+	eb.observeDispatchLaneMetrics()
+	eb.observePendingLaneMetrics()
 
 	return eb
 }
@@ -249,14 +270,17 @@ func (eb *EventBus) Broadcast(eventType string, data *framework.EventData) error
 	queue := eb.getOrCreateQueue(eventType)
 	if eb.shouldDropForQueuePressure(eventType, metadata, queue) {
 		eb.recordDroppedEvent(eventType)
+		eb.observeQueueDepth(eventType, queue)
 		return nil
 	}
 
 	// Push with default priority (0)
 	if !queue.push(msg, metadata.Priority) {
 		eb.recordDroppedEvent(eventType)
+		eb.observeQueueDepth(eventType, queue)
 		return nil // Don't return error for dropped events
 	}
+	eb.observeQueueDepth(eventType, queue)
 
 	return nil
 }
@@ -281,14 +305,17 @@ func (eb *EventBus) Send(target string, eventType string, data *framework.EventD
 	queue := eb.getOrCreateQueue("plugin.request")
 	if eb.shouldDropForQueuePressure("plugin.request", metadata, queue) {
 		eb.recordDroppedEvent("plugin.request")
+		eb.observeQueueDepth("plugin.request", queue)
 		return nil
 	}
 
 	// Push with default priority
 	if !queue.push(msg, metadata.Priority) {
 		eb.recordDroppedEvent("plugin.request")
+		eb.observeQueueDepth("plugin.request", queue)
 		return nil
 	}
+	eb.observeQueueDepth("plugin.request", queue)
 
 	return nil
 }
@@ -344,6 +371,8 @@ func (eb *EventBus) Start() error {
 		"sql.exec.request",
 		"log.request",
 		"plugin.request",
+		"plugin.request.command",
+		"plugin.request.background",
 		"plugin.response",
 	}
 
@@ -390,6 +419,7 @@ func (eb *EventBus) getOrCreateQueue(eventType string) *messageQueue {
 
 	queue := newMessageQueue(eb.getBufferSize(eventType))
 	eb.queues[eventType] = queue
+	eb.observeQueueDepth(eventType, queue)
 	return queue
 }
 
@@ -473,9 +503,10 @@ func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
 			logger.Info("EventBus", "Queue closed for %s", eventType)
 			return
 		}
+		eb.observeQueueDepth(eventType, queue)
 
 		// Get all matching subscribers
-		matching := eb.getMatchingSubscribers(eventType, msg)
+		matching := eb.getMatchingSubscribers(msg.Type, msg)
 
 		// Dispatch to each matching subscriber
 		for _, sub := range matching {
@@ -485,18 +516,21 @@ func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
 				continue
 			}
 
+			// Admit into an execution lane before spawning the handler goroutine.
+			// This keeps fanout bounded by lane capacity under burst pressure.
+			releaseDispatch := eb.acquireDispatchSlot(msg)
+
 			eb.handlerWg.Add(1)
-			go func(s subscriberInfo, m *eventMessage, releasePendingFn func()) {
+			go func(s subscriberInfo, m *eventMessage, releasePendingFn func(), releaseDispatchFn func()) {
 				defer func() {
 					if r := recover(); r != nil {
 						logger.Error("EventBus", "Handler panic for %s: %v\n%s", eventType, r, debug.Stack())
 					}
+					releaseDispatchFn()
 					releasePendingFn()
 					eb.handlerWg.Done()
 				}()
 
-				releaseDispatch := eb.acquireDispatchSlot(m)
-				defer releaseDispatch()
 				timer := prometheus.NewTimer(metrics.EventProcessingDuration.WithLabelValues(eventType))
 				defer timer.ObserveDuration()
 
@@ -506,7 +540,7 @@ func (eb *EventBus) routeEvents(eventType string, queue *messageQueue) {
 
 				// Track successful processing
 				metrics.EventsProcessed.WithLabelValues(eventType).Inc()
-			}(sub, msg, releasePending)
+			}(sub, msg, releasePending, releaseDispatch)
 		}
 	}
 }
@@ -576,7 +610,8 @@ func (eb *EventBus) acquireDispatchSlot(msg *eventMessage) func() {
 	if eb.isSQLRequestPath(msg) {
 		select {
 		case eb.dispatchSemSQL <- struct{}{}:
-			return func() { <-eb.dispatchSemSQL }
+			eb.observeDispatchLaneMetrics()
+			return eb.makeDispatchRelease(eb.dispatchSemSQL)
 		default:
 		}
 
@@ -584,19 +619,22 @@ func (eb *EventBus) acquireDispatchSlot(msg *eventMessage) func() {
 		// capacity when the dedicated SQL lane is full.
 		select {
 		case eb.dispatchSemHigh <- struct{}{}:
-			return func() { <-eb.dispatchSemHigh }
+			eb.observeDispatchLaneMetrics()
+			return eb.makeDispatchRelease(eb.dispatchSemHigh)
 		default:
 		}
 
 		select {
 		case eb.dispatchSemNormal <- struct{}{}:
-			return func() { <-eb.dispatchSemNormal }
+			eb.observeDispatchLaneMetrics()
+			return eb.makeDispatchRelease(eb.dispatchSemNormal)
 		default:
 		}
 
 		select {
 		case eb.dispatchSemSQL <- struct{}{}:
-			return func() { <-eb.dispatchSemSQL }
+			eb.observeDispatchLaneMetrics()
+			return eb.makeDispatchRelease(eb.dispatchSemSQL)
 		case <-eb.ctx.Done():
 			return func() {}
 		}
@@ -605,25 +643,29 @@ func (eb *EventBus) acquireDispatchSlot(msg *eventMessage) func() {
 	if commandPath {
 		select {
 		case eb.dispatchSemCommand <- struct{}{}:
-			return func() { <-eb.dispatchSemCommand }
+			eb.observeDispatchLaneMetrics()
+			return eb.makeDispatchRelease(eb.dispatchSemCommand)
 		default:
 		}
 
 		select {
 		case eb.dispatchSemHigh <- struct{}{}:
-			return func() { <-eb.dispatchSemHigh }
+			eb.observeDispatchLaneMetrics()
+			return eb.makeDispatchRelease(eb.dispatchSemHigh)
 		default:
 		}
 
 		select {
 		case eb.dispatchSemNormal <- struct{}{}:
-			return func() { <-eb.dispatchSemNormal }
+			eb.observeDispatchLaneMetrics()
+			return eb.makeDispatchRelease(eb.dispatchSemNormal)
 		default:
 		}
 
 		select {
 		case eb.dispatchSemCommand <- struct{}{}:
-			return func() { <-eb.dispatchSemCommand }
+			eb.observeDispatchLaneMetrics()
+			return eb.makeDispatchRelease(eb.dispatchSemCommand)
 		case <-eb.ctx.Done():
 			return func() {}
 		}
@@ -633,21 +675,24 @@ func (eb *EventBus) acquireDispatchSlot(msg *eventMessage) func() {
 	if priority > framework.PriorityNormal {
 		select {
 		case eb.dispatchSemHigh <- struct{}{}:
-			return func() { <-eb.dispatchSemHigh }
+			eb.observeDispatchLaneMetrics()
+			return eb.makeDispatchRelease(eb.dispatchSemHigh)
 		default:
 		}
 
 		// If high-priority workers are busy, opportunistically use normal workers.
 		select {
 		case eb.dispatchSemNormal <- struct{}{}:
-			return func() { <-eb.dispatchSemNormal }
+			eb.observeDispatchLaneMetrics()
+			return eb.makeDispatchRelease(eb.dispatchSemNormal)
 		default:
 		}
 
 		// If all workers are occupied, wait on reserved high-priority capacity.
 		select {
 		case eb.dispatchSemHigh <- struct{}{}:
-			return func() { <-eb.dispatchSemHigh }
+			eb.observeDispatchLaneMetrics()
+			return eb.makeDispatchRelease(eb.dispatchSemHigh)
 		case <-eb.ctx.Done():
 			return func() {}
 		}
@@ -656,20 +701,19 @@ func (eb *EventBus) acquireDispatchSlot(msg *eventMessage) func() {
 	// Normal-priority events cannot consume reserved high-priority capacity.
 	select {
 	case eb.dispatchSemNormal <- struct{}{}:
-		return func() { <-eb.dispatchSemNormal }
+		eb.observeDispatchLaneMetrics()
+		return eb.makeDispatchRelease(eb.dispatchSemNormal)
 	case <-eb.ctx.Done():
 		return func() {}
 	}
 }
 
 func (eb *EventBus) acquirePendingDispatchSlot(msg *eventMessage) (func(), bool) {
-	release := func() { <-eb.dispatchPending }
-	releaseSQL := func() { <-eb.dispatchPendingSQL }
-
 	if eb.isSQLRequestPath(msg) {
 		select {
 		case eb.dispatchPendingSQL <- struct{}{}:
-			return releaseSQL, true
+			eb.observePendingLaneMetrics()
+			return eb.makePendingRelease(eb.dispatchPendingSQL), true
 		case <-eb.ctx.Done():
 			return nil, false
 		}
@@ -678,7 +722,8 @@ func (eb *EventBus) acquirePendingDispatchSlot(msg *eventMessage) (func(), bool)
 	if eb.isCommandPath(msg) {
 		select {
 		case eb.dispatchPending <- struct{}{}:
-			return release, true
+			eb.observePendingLaneMetrics()
+			return eb.makePendingRelease(eb.dispatchPending), true
 		case <-eb.ctx.Done():
 			return nil, false
 		}
@@ -689,7 +734,8 @@ func (eb *EventBus) acquirePendingDispatchSlot(msg *eventMessage) (func(), bool)
 	if priority > framework.PriorityNormal {
 		select {
 		case eb.dispatchPending <- struct{}{}:
-			return release, true
+			eb.observePendingLaneMetrics()
+			return eb.makePendingRelease(eb.dispatchPending), true
 		case <-eb.ctx.Done():
 			return nil, false
 		}
@@ -697,7 +743,8 @@ func (eb *EventBus) acquirePendingDispatchSlot(msg *eventMessage) (func(), bool)
 
 	select {
 	case eb.dispatchPending <- struct{}{}:
-		return release, true
+		eb.observePendingLaneMetrics()
+		return eb.makePendingRelease(eb.dispatchPending), true
 	default:
 		if eb.shouldDropForPressure(msg.Type, msg.Metadata) {
 			return nil, false
@@ -706,7 +753,8 @@ func (eb *EventBus) acquirePendingDispatchSlot(msg *eventMessage) (func(), bool)
 
 	select {
 	case eb.dispatchPending <- struct{}{}:
-		return release, true
+		eb.observePendingLaneMetrics()
+		return eb.makePendingRelease(eb.dispatchPending), true
 	case <-eb.ctx.Done():
 		return nil, false
 	}
@@ -717,6 +765,51 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (eb *EventBus) makeDispatchRelease(ch chan struct{}) func() {
+	return func() {
+		<-ch
+		eb.observeDispatchLaneMetrics()
+	}
+}
+
+func (eb *EventBus) makePendingRelease(ch chan struct{}) func() {
+	return func() {
+		<-ch
+		eb.observePendingLaneMetrics()
+	}
+}
+
+func (eb *EventBus) observeQueueDepth(eventType string, queue *messageQueue) {
+	if queue == nil {
+		return
+	}
+	size, capacity := queue.size()
+	metrics.EventBusQueueDepth.WithLabelValues(eventType).Set(float64(size))
+	metrics.EventBusQueueCapacity.WithLabelValues(eventType).Set(float64(capacity))
+}
+
+func (eb *EventBus) observeDispatchLaneMetrics() {
+	metrics.EventBusDispatchLaneOccupancy.WithLabelValues("command").Set(float64(len(eb.dispatchSemCommand)))
+	metrics.EventBusDispatchLaneCapacity.WithLabelValues("command").Set(float64(cap(eb.dispatchSemCommand)))
+
+	metrics.EventBusDispatchLaneOccupancy.WithLabelValues("high").Set(float64(len(eb.dispatchSemHigh)))
+	metrics.EventBusDispatchLaneCapacity.WithLabelValues("high").Set(float64(cap(eb.dispatchSemHigh)))
+
+	metrics.EventBusDispatchLaneOccupancy.WithLabelValues("normal").Set(float64(len(eb.dispatchSemNormal)))
+	metrics.EventBusDispatchLaneCapacity.WithLabelValues("normal").Set(float64(cap(eb.dispatchSemNormal)))
+
+	metrics.EventBusDispatchLaneOccupancy.WithLabelValues("sql").Set(float64(len(eb.dispatchSemSQL)))
+	metrics.EventBusDispatchLaneCapacity.WithLabelValues("sql").Set(float64(cap(eb.dispatchSemSQL)))
+}
+
+func (eb *EventBus) observePendingLaneMetrics() {
+	metrics.EventBusPendingLaneOccupancy.WithLabelValues("shared").Set(float64(len(eb.dispatchPending)))
+	metrics.EventBusPendingLaneCapacity.WithLabelValues("shared").Set(float64(cap(eb.dispatchPending)))
+
+	metrics.EventBusPendingLaneOccupancy.WithLabelValues("sql").Set(float64(len(eb.dispatchPendingSQL)))
+	metrics.EventBusPendingLaneCapacity.WithLabelValues("sql").Set(float64(cap(eb.dispatchPendingSQL)))
 }
 
 // getMatchingSubscribers returns all subscribers that match the event type and tags
@@ -877,6 +970,7 @@ func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.Even
 	eb.startRouter(eventType, queue)
 	if eb.shouldDropForQueuePressure(eventType, metadata, queue) {
 		eb.recordDroppedEvent(eventType)
+		eb.observeQueueDepth(eventType, queue)
 		return nil
 	}
 
@@ -888,8 +982,10 @@ func (eb *EventBus) BroadcastWithMetadata(eventType string, data *framework.Even
 
 	if !queue.push(msg, priority) {
 		eb.recordDroppedEvent(eventType)
+		eb.observeQueueDepth(eventType, queue)
 		return nil
 	}
+	eb.observeQueueDepth(eventType, queue)
 
 	return nil
 }
@@ -903,10 +999,39 @@ func (eb *EventBus) SendWithMetadata(target string, eventType string, data *fram
 	// Update metadata with target
 	metadata.Target = target
 
-	routeType := eb.requestRouteType(target, eventType)
+	routeType, dispatchType := eb.requestRouteType(target, eventType, data, metadata)
+	msg := buildEventMessage(dispatchType, data, metadata)
 
-	// Use BroadcastWithMetadata with the selected request lane.
-	return eb.BroadcastWithMetadata(routeType, data, metadata)
+	eb.subMu.RLock()
+	hasExactSubscribers := len(eb.subscribers[dispatchType]) > 0
+	hasPatternSubscribers := len(eb.patternSubscribers) > 0
+	eb.subMu.RUnlock()
+
+	if !hasExactSubscribers && !hasPatternSubscribers {
+		return nil
+	}
+
+	queue := eb.getOrCreateQueue(routeType)
+	eb.startRouter(routeType, queue)
+
+	if eb.shouldDropForQueuePressure(dispatchType, metadata, queue) {
+		eb.recordDroppedEvent(routeType)
+		eb.observeQueueDepth(routeType, queue)
+		return nil
+	}
+
+	priority := 0
+	if metadata != nil {
+		priority = metadata.Priority
+	}
+
+	if !queue.push(msg, priority) {
+		eb.recordDroppedEvent(routeType)
+		eb.observeQueueDepth(routeType, queue)
+		return nil
+	}
+	eb.observeQueueDepth(routeType, queue)
+	return nil
 }
 
 // Request performs a synchronous request to a plugin
@@ -1025,14 +1150,45 @@ func buildEventMessage(eventType string, data *framework.EventData, metadata *fr
 	}
 }
 
-func (eb *EventBus) requestRouteType(target, eventType string) string {
+func (eb *EventBus) requestRouteType(
+	target, eventType string,
+	data *framework.EventData,
+	metadata *framework.EventMetadata,
+) (routeType string, dispatchType string) {
 	if target == "sql" {
 		switch eventType {
 		case "sql.query.request", "sql.exec.request", "sql.batch.request":
-			return eventType
+			return eventType, eventType
 		}
 	}
-	return "plugin.request"
+
+	dispatchType = pluginRequestRouteDefault
+
+	if metadata != nil && metadata.Priority > framework.PriorityNormal {
+		return pluginRequestRouteCommand, dispatchType
+	}
+
+	if data != nil && data.PluginRequest != nil {
+		req := data.PluginRequest
+		from := strings.ToLower(strings.TrimSpace(req.From))
+		reqType := strings.ToLower(strings.TrimSpace(req.Type))
+
+		if from == "eventfilter" && reqType == "execute" {
+			return pluginRequestRouteCommand, dispatchType
+		}
+		if _, ok := backgroundPluginRequestSources[from]; ok {
+			return pluginRequestRouteBackground, dispatchType
+		}
+	}
+
+	if metadata != nil {
+		source := strings.ToLower(strings.TrimSpace(metadata.Source))
+		if _, ok := backgroundPluginRequestSources[source]; ok {
+			return pluginRequestRouteBackground, dispatchType
+		}
+	}
+
+	return pluginRequestRouteDefault, dispatchType
 }
 
 func (eb *EventBus) sendRequestWithContext(
@@ -1042,12 +1198,12 @@ func (eb *EventBus) sendRequestWithContext(
 	data *framework.EventData,
 	metadata *framework.EventMetadata,
 ) error {
-	routeType := eb.requestRouteType(target, eventType)
-	msg := buildEventMessage(routeType, data, metadata)
+	routeType, dispatchType := eb.requestRouteType(target, eventType, data, metadata)
+	msg := buildEventMessage(dispatchType, data, metadata)
 
 	// Check if there are potential subscribers (exact or pattern)
 	eb.subMu.RLock()
-	hasExactSubscribers := len(eb.subscribers[routeType]) > 0
+	hasExactSubscribers := len(eb.subscribers[dispatchType]) > 0
 	hasPatternSubscribers := len(eb.patternSubscribers) > 0
 	eb.subMu.RUnlock()
 
@@ -1068,8 +1224,10 @@ func (eb *EventBus) sendRequestWithContext(
 	backoff := time.Millisecond
 	for {
 		if queue.push(msg, priority) {
+			eb.observeQueueDepth(routeType, queue)
 			return nil
 		}
+		eb.observeQueueDepth(routeType, queue)
 
 		select {
 		case <-ctx.Done():

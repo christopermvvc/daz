@@ -41,3 +41,19 @@
 - [x] Run targeted tests (`eventbus`, `eventfilter`, `sql`, `mediatracker`, `usertracker`) plus `go test ./...`.
 - [x] Push phased commits to `origin` (lane/debounce first, then jobs/migrations/tuning).
 - [ ] Validate on VPS with metrics: `!update` reach rate, SQL timeout count, dropped-event count.
+
+## Performance Follow-Up (selected: 1,3,4,5,6,7,8,9,10)
+- [x] 1. Tighten SQL connection/worker budget defaults for constrained hosts.
+- [x] 3. Add Postgres tuning guidance + startup diagnostics for low-memory deployments.
+- [x] 4. Reduce retry amplification for non-critical write paths.
+- [x] 5. Move SQL query/exec hot paths to direct `pgxpool` usage.
+- [x] 6. Switch `daz_core_events` batch ingestion to `COPY` with safe fallback.
+- [x] 7. Split `plugin.request` routing into classed lanes (command/default/background).
+- [x] 8. Bound EventBus handler fanout via admission-before-spawn behavior.
+- [x] 9. Add `pg_stat_statements` bootstrap + top-query visibility hooks.
+- [x] 10. Add queue depth and lane occupancy observability metrics.
+
+## Follow-Up Verification
+- [x] Add/extend tests for new SQL/EventBus routing and ingestion behavior.
+- [x] Run focused tests (`./pkg/eventbus`, `./internal/plugins/sql`, `./internal/framework`).
+- [x] Run full suite (`go test ./...`) and push.

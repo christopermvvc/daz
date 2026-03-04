@@ -476,6 +476,53 @@ func (h *SQLRequestHelper) ExecWithTimeout(
 	timeout time.Duration,
 	args ...interface{},
 ) (int64, error) {
+	// Use appropriate config based on timeout
+	var configName string
+	switch {
+	case timeout <= 5*time.Second:
+		configName = "fast"
+	case timeout <= 15*time.Second:
+		configName = "normal"
+	case timeout <= 30*time.Second:
+		configName = "slow"
+	default:
+		configName = "critical"
+	}
+
+	config, ok := DefaultRequestConfigs[configName]
+	if !ok {
+		return 0, fmt.Errorf("unknown request config: %s", configName)
+	}
+	config.Timeout = timeout
+
+	return h.execWithRequestConfig(ctx, query, timeout, config, args...)
+}
+
+// BestEffortExec executes a SQL statement with a single attempt.
+// This is intended for non-critical writes where retry amplification would
+// create unnecessary pressure during backlog conditions.
+func (h *SQLRequestHelper) BestEffortExec(
+	ctx context.Context,
+	query string,
+	args ...interface{},
+) (int64, error) {
+	config := RequestConfig{
+		Timeout:     10 * time.Second,
+		MaxRetries:  0,
+		RetryDelay:  0,
+		BackoffRate: 1.0,
+		MetricName:  "best_effort_exec",
+	}
+	return h.execWithRequestConfig(ctx, query, config.Timeout, config, args...)
+}
+
+func (h *SQLRequestHelper) execWithRequestConfig(
+	ctx context.Context,
+	query string,
+	timeout time.Duration,
+	config RequestConfig,
+	args ...interface{},
+) (int64, error) {
 	// Convert args to SQLParam
 	params := make([]SQLParam, len(args))
 	for i, arg := range args {
@@ -497,21 +544,8 @@ func (h *SQLRequestHelper) ExecWithTimeout(
 		},
 	}
 
-	// Use appropriate config based on timeout
-	var configName string
-	switch {
-	case timeout <= 5*time.Second:
-		configName = "fast"
-	case timeout <= 15*time.Second:
-		configName = "normal"
-	case timeout <= 30*time.Second:
-		configName = "slow"
-	default:
-		configName = "critical"
-	}
-
 	// Make the request
-	response, err := h.RequestWithConfig(ctx, "sql", "sql.exec.request", request, configName)
+	response, err := h.requestWithRetry(ctx, "sql", "sql.exec.request", request, config)
 	if err != nil {
 		return 0, fmt.Errorf("exec request failed: %w", err)
 	}

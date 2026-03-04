@@ -193,6 +193,8 @@ func run(coreConfig *core.Config, cfg *config.Config, healthPort int, startTime 
 		"sql.":                      100,
 		"plugin.":                   100,
 		"plugin.request":            200,
+		"plugin.request.command":    300,
+		"plugin.request.background": 100,
 		eventbus.EventPluginCommand: 100,
 	}
 	for key, value := range defaults {

@@ -19,7 +19,6 @@ import (
 	"github.com/hildolfr/daz/internal/metrics"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -44,23 +43,32 @@ type Plugin struct {
 	coreEventBatchSize  int
 	coreEventFlushEvery time.Duration
 	coreEventDrops      atomic.Int64
+	coreEventCopyErrors atomic.Int64
+	coreEventCopyFn     func(context.Context, []*coreEventLogEntry) error
 	coreEventExecFn     func(context.Context, string, ...interface{}) error
 
 	sqlCriticalSem     chan struct{}
 	sqlBackgroundSem   chan struct{}
 	sqlBackgroundPend  chan struct{}
 	sqlBackgroundDrops atomic.Int64
+
+	pgStatAvailable atomic.Bool
 }
 
 type Config struct {
-	Database                 DatabaseConfig `json:"database"`
-	LoggerRules              []LoggerRule   `json:"logger_rules"`
-	BackgroundMaxConnections int            `json:"background_max_connections"`
-	BackgroundQueueMax       int            `json:"background_queue_max"`
-	BackgroundQueueWaitMS    int            `json:"background_queue_wait_ms"`
-	CoreEventQueueSize       int            `json:"core_event_queue_size"`
-	CoreEventBatchSize       int            `json:"core_event_batch_size"`
-	CoreEventFlushMS         int            `json:"core_event_flush_ms"`
+	Database                  DatabaseConfig `json:"database"`
+	LoggerRules               []LoggerRule   `json:"logger_rules"`
+	BackgroundMaxConnections  int            `json:"background_max_connections"`
+	CriticalLaneConcurrency   int            `json:"critical_lane_concurrency"`
+	BackgroundLaneConcurrency int            `json:"background_lane_concurrency"`
+	BackgroundQueueMax        int            `json:"background_queue_max"`
+	BackgroundQueueWaitMS     int            `json:"background_queue_wait_ms"`
+	CoreEventQueueSize        int            `json:"core_event_queue_size"`
+	CoreEventBatchSize        int            `json:"core_event_batch_size"`
+	CoreEventFlushMS          int            `json:"core_event_flush_ms"`
+	EnablePGStatStatements    *bool          `json:"enable_pg_stat_statements,omitempty"`
+	PGStatReportIntervalSec   int            `json:"pg_stat_report_interval_seconds"`
+	PGStatTopN                int            `json:"pg_stat_top_n"`
 }
 
 type DatabaseConfig struct {
@@ -195,7 +203,12 @@ func (p *Plugin) Init(configData json.RawMessage, bus framework.EventBus) error 
 	p.coreEventBatchSize = p.config.CoreEventBatchSize
 	p.coreEventFlushEvery = time.Duration(p.config.CoreEventFlushMS) * time.Millisecond
 	p.coreEventLogQueue = make(chan *coreEventLogEntry, p.config.CoreEventQueueSize)
+	p.coreEventCopyFn = p.copyCoreEventBatch
 	p.coreEventExecFn = p.execLog
+
+	if p.config.PGStatTopN <= 0 {
+		p.config.PGStatTopN = 5
+	}
 
 	logger.Debug("SQL", "Initialized with %d logger rules", len(p.loggerRules))
 	return nil
@@ -283,6 +296,7 @@ func (p *Plugin) Start() error {
 		}
 
 		p.startCoreEventWriter()
+		p.startPGStatReporter()
 
 		// Signal that the plugin is ready after database is connected
 		close(p.readyChan)
@@ -370,6 +384,8 @@ func (p *Plugin) connectDatabase() error {
 	}
 	criticalConns, backgroundConns := splitConnectionBudget(totalConns, p.config.BackgroundMaxConnections)
 	p.configureSQLRequestLanes(criticalConns, backgroundConns)
+	metrics.SQLPoolConfiguredConnections.WithLabelValues("critical").Set(float64(criticalConns))
+	metrics.SQLPoolConfiguredConnections.WithLabelValues("background").Set(float64(backgroundConns))
 
 	poolConfig, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
@@ -413,47 +429,6 @@ func (p *Plugin) connectDatabase() error {
 		p.logPool = logPool
 	}
 
-	connConfig, err := pgx.ParseConfig(connStr)
-	if err != nil {
-		if p.logPool != nil && p.logPool != p.pool {
-			p.logPool.Close()
-		}
-		p.pool.Close()
-		return fmt.Errorf("failed to parse config for stdlib: %w", err)
-	}
-
-	dbConnStr := stdlib.RegisterConnConfig(connConfig)
-	db, err := sql.Open("pgx", dbConnStr)
-	if err != nil {
-		if p.logPool != nil && p.logPool != p.pool {
-			p.logPool.Close()
-		}
-		p.pool.Close()
-		return fmt.Errorf("failed to open stdlib connection: %w", err)
-	}
-
-	// Set connection pool settings for stdlib
-	db.SetMaxOpenConns(criticalConns)
-	idleConns := criticalConns / 2
-	if idleConns < 1 {
-		idleConns = 1
-	}
-	db.SetMaxIdleConns(idleConns)
-	db.SetConnMaxLifetime(time.Duration(p.config.Database.MaxConnLifetime) * time.Second)
-
-	if err := db.PingContext(ctx); err != nil {
-		if p.logPool != nil && p.logPool != p.pool {
-			p.logPool.Close()
-		}
-		p.pool.Close()
-		if closeErr := db.Close(); closeErr != nil {
-			logger.Error("SQL", "Failed to close database after ping error: %v", closeErr)
-		}
-		return fmt.Errorf("failed to ping stdlib database: %w", err)
-	}
-
-	p.db = db
-
 	logger.Debug("SQL", "Initializing database schema...")
 	schemaStart := time.Now()
 	if err := p.initializeSchema(ctx); err != nil {
@@ -461,12 +436,12 @@ func (p *Plugin) connectDatabase() error {
 			p.logPool.Close()
 		}
 		p.pool.Close()
-		if closeErr := db.Close(); closeErr != nil {
-			logger.Error("SQL", "Failed to close database after schema init error: %v", closeErr)
-		}
 		return fmt.Errorf("failed to initialize schema: %w", err)
 	}
 	logger.Debug("SQL", "Schema initialization completed in %v", time.Since(schemaStart))
+
+	p.logPostgresTuningDiagnostics(ctx)
+	p.initializePGStatStatements(ctx)
 
 	logger.Debug("SQL", "Connected to database successfully (critical_conns=%d background_conns=%d)", criticalConns, backgroundConns)
 	return nil
@@ -503,12 +478,13 @@ func splitConnectionBudgetForCPU(total int, configuredBackground int, gomaxprocs
 }
 
 func defaultBackgroundConnections(total int, gomaxprocs int) int {
-	if total <= 1 {
+	if total <= 2 {
 		return 0
 	}
 
 	if gomaxprocs <= 1 {
-		background := total / 6
+		// Keep low-CPU hosts heavily biased toward command/critical capacity.
+		background := total / 8
 		if background < 1 {
 			background = 1
 		}
@@ -521,11 +497,67 @@ func defaultBackgroundConnections(total int, gomaxprocs int) int {
 		return background
 	}
 
-	background := total / 4
+	background := total / 5
 	if background < 1 {
 		background = 1
 	}
+	if background > 4 {
+		background = 4
+	}
+	if background >= total {
+		background = total - 1
+	}
 	return background
+}
+
+func defaultCriticalLaneConcurrency(criticalConns int, gomaxprocs int) int {
+	if criticalConns <= 0 {
+		return 1
+	}
+
+	switch {
+	case gomaxprocs <= 1:
+		if criticalConns > 2 {
+			return 2
+		}
+	case gomaxprocs == 2:
+		if criticalConns > 4 {
+			return 4
+		}
+	default:
+		limit := gomaxprocs * 2
+		if limit < 4 {
+			limit = 4
+		}
+		if criticalConns > limit {
+			return limit
+		}
+	}
+
+	return criticalConns
+}
+
+func defaultBackgroundLaneConcurrency(backgroundConns int, gomaxprocs int) int {
+	if backgroundConns <= 0 {
+		return 0
+	}
+
+	switch {
+	case gomaxprocs <= 1:
+		if backgroundConns > 1 {
+			return 1
+		}
+	case gomaxprocs == 2:
+		if backgroundConns > 2 {
+			return 2
+		}
+	default:
+		if backgroundConns > gomaxprocs {
+			return gomaxprocs
+		}
+	}
+
+	return backgroundConns
 }
 
 func defaultBackgroundQueueMax(backgroundConns int, gomaxprocs int) int {
@@ -553,21 +585,31 @@ func (p *Plugin) configureSQLRequestLanes(criticalConns, backgroundConns int) {
 		backgroundConns = 0
 	}
 
-	p.sqlCriticalSem = make(chan struct{}, criticalConns)
+	criticalLaneConcurrency := p.config.CriticalLaneConcurrency
+	if criticalLaneConcurrency <= 0 || criticalLaneConcurrency > criticalConns {
+		criticalLaneConcurrency = defaultCriticalLaneConcurrency(criticalConns, runtime.GOMAXPROCS(0))
+	}
+	p.sqlCriticalSem = make(chan struct{}, criticalLaneConcurrency)
 
 	if backgroundConns == 0 {
 		p.sqlBackgroundSem = nil
 		p.sqlBackgroundPend = nil
+		p.observeSQLLaneMetrics()
 		return
 	}
 
-	p.sqlBackgroundSem = make(chan struct{}, backgroundConns)
+	backgroundLaneConcurrency := p.config.BackgroundLaneConcurrency
+	if backgroundLaneConcurrency <= 0 || backgroundLaneConcurrency > backgroundConns {
+		backgroundLaneConcurrency = defaultBackgroundLaneConcurrency(backgroundConns, runtime.GOMAXPROCS(0))
+	}
+	p.sqlBackgroundSem = make(chan struct{}, backgroundLaneConcurrency)
 
 	queueMax := p.config.BackgroundQueueMax
 	if queueMax <= 0 {
 		queueMax = defaultBackgroundQueueMax(backgroundConns, runtime.GOMAXPROCS(0))
 	}
 	p.sqlBackgroundPend = make(chan struct{}, queueMax)
+	p.observeSQLLaneMetrics()
 }
 
 type sqlRequestLane int
@@ -602,7 +644,11 @@ func (p *Plugin) acquireSQLRequestLane(ctx context.Context, source, query string
 	if lane == sqlLaneCritical || p.sqlBackgroundSem == nil {
 		select {
 		case p.sqlCriticalSem <- struct{}{}:
-			return func() { <-p.sqlCriticalSem }, nil
+			p.observeSQLLaneMetrics()
+			return func() {
+				<-p.sqlCriticalSem
+				p.observeSQLLaneMetrics()
+			}, nil
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -610,7 +656,11 @@ func (p *Plugin) acquireSQLRequestLane(ctx context.Context, source, query string
 
 	select {
 	case p.sqlBackgroundSem <- struct{}{}:
-		return func() { <-p.sqlBackgroundSem }, nil
+		p.observeSQLLaneMetrics()
+		return func() {
+			<-p.sqlBackgroundSem
+			p.observeSQLLaneMetrics()
+		}, nil
 	default:
 	}
 
@@ -621,12 +671,14 @@ func (p *Plugin) acquireSQLRequestLane(ctx context.Context, source, query string
 
 	select {
 	case p.sqlBackgroundPend <- struct{}{}:
+		p.observeSQLLaneMetrics()
 	default:
 		p.recordBackgroundSQLDrop(source, query)
 		return nil, fmt.Errorf("background SQL lane saturated")
 	}
 	defer func() {
 		<-p.sqlBackgroundPend
+		p.observeSQLLaneMetrics()
 	}()
 
 	waitMS := p.config.BackgroundQueueWaitMS
@@ -643,7 +695,11 @@ func (p *Plugin) acquireSQLRequestLane(ctx context.Context, source, query string
 
 	select {
 	case p.sqlBackgroundSem <- struct{}{}:
-		return func() { <-p.sqlBackgroundSem }, nil
+		p.observeSQLLaneMetrics()
+		return func() {
+			<-p.sqlBackgroundSem
+			p.observeSQLLaneMetrics()
+		}, nil
 	case <-waitCtx.Done():
 		p.recordBackgroundSQLDrop(source, query)
 		if ctx.Err() != nil {
@@ -655,6 +711,7 @@ func (p *Plugin) acquireSQLRequestLane(ctx context.Context, source, query string
 
 func (p *Plugin) recordBackgroundSQLDrop(source, query string) {
 	drops := p.sqlBackgroundDrops.Add(1)
+	metrics.SQLLaneDrops.WithLabelValues("background").Inc()
 	if drops == 1 || drops%100 == 0 {
 		trimmedQuery := strings.TrimSpace(query)
 		if len(trimmedQuery) > 80 {
@@ -684,6 +741,7 @@ func (p *Plugin) startCoreEventWriter() {
 	if p.coreEventLogQueue == nil {
 		return
 	}
+	p.observeSQLLaneMetrics()
 
 	p.workerWg.Add(1)
 	go p.runCoreEventWriter()
@@ -713,6 +771,7 @@ func (p *Plugin) runCoreEventWriter() {
 			for {
 				select {
 				case entry := <-p.coreEventLogQueue:
+					p.observeSQLLaneMetrics()
 					if entry != nil {
 						batch = append(batch, entry)
 						if len(batch) >= p.coreEventBatchSize {
@@ -725,6 +784,7 @@ func (p *Plugin) runCoreEventWriter() {
 				}
 			}
 		case entry := <-p.coreEventLogQueue:
+			p.observeSQLLaneMetrics()
 			if entry == nil {
 				continue
 			}
@@ -746,6 +806,27 @@ func (p *Plugin) flushCoreEventBatch(entries []*coreEventLogEntry) error {
 	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
 	defer cancel()
 
+	copyFn := p.coreEventCopyFn
+	if copyFn != nil {
+		if err := copyFn(ctx, entries); err == nil {
+			metrics.DatabaseQueries.WithLabelValues("insert").Add(float64(len(entries)))
+			return nil
+		} else {
+			copyErrors := p.coreEventCopyErrors.Add(1)
+			if copyErrors == 1 || copyErrors%100 == 0 {
+				logger.Warn("SQL", "COPY batch insert failed, falling back to INSERT ... ON CONFLICT (count=%d): %v", copyErrors, err)
+			}
+		}
+	}
+
+	if err := p.flushCoreEventBatchWithInsert(ctx, entries); err != nil {
+		return err
+	}
+	metrics.DatabaseQueries.WithLabelValues("insert").Add(float64(len(entries)))
+	return nil
+}
+
+func (p *Plugin) flushCoreEventBatchWithInsert(ctx context.Context, entries []*coreEventLogEntry) error {
 	execFn := p.coreEventExecFn
 	if execFn == nil {
 		execFn = p.execLog
@@ -755,10 +836,53 @@ func (p *Plugin) flushCoreEventBatch(entries []*coreEventLogEntry) error {
 	if err := execFn(ctx, query, args...); err != nil {
 		return err
 	}
-
-	metrics.DatabaseQueries.WithLabelValues("insert").Add(float64(len(entries)))
-
 	return nil
+}
+
+func (p *Plugin) copyCoreEventBatch(ctx context.Context, entries []*coreEventLogEntry) error {
+	pool := p.getLogPool()
+	if pool == nil {
+		return fmt.Errorf("database not connected")
+	}
+
+	rows := make([][]interface{}, 0, len(entries))
+	for _, entry := range entries {
+		rows = append(rows, []interface{}{
+			entry.EventType,
+			entry.Channel,
+			entry.Timestamp,
+			entry.Username,
+			entry.Message,
+			entry.MessageTime,
+			entry.ToUser,
+			entry.VideoID,
+			entry.VideoType,
+			entry.Title,
+			entry.Duration,
+			entry.RawData,
+		})
+	}
+
+	_, err := pool.CopyFrom(
+		ctx,
+		pgx.Identifier{"daz_core_events"},
+		[]string{
+			"event_type",
+			"channel_name",
+			"timestamp",
+			"username",
+			"message",
+			"message_time",
+			"to_user",
+			"video_id",
+			"video_type",
+			"title",
+			"duration",
+			"raw_data",
+		},
+		pgx.CopyFromRows(rows),
+	)
+	return err
 }
 
 func buildCoreEventBatchInsert(entries []*coreEventLogEntry) (string, []interface{}) {
@@ -815,6 +939,7 @@ func (p *Plugin) enqueueCoreEventLog(entry *coreEventLogEntry) {
 			metrics.DatabaseErrors.Inc()
 			logger.Error("SQL", "Failed to sync flush core event log: %v", err)
 		}
+		p.observeSQLLaneMetrics()
 		return
 	}
 
@@ -822,15 +947,18 @@ func (p *Plugin) enqueueCoreEventLog(entry *coreEventLogEntry) {
 		capacity := cap(queue)
 		if capacity > 0 && len(queue) >= (capacity*80)/100 {
 			drops := p.coreEventDrops.Add(1)
+			metrics.SQLLaneDrops.WithLabelValues("core_event").Inc()
 			if drops%100 == 1 {
 				logger.Warn("SQL", "Dropping non-critical core event logs under pressure (dropped=%d)", drops)
 			}
+			p.observeSQLLaneMetrics()
 			return
 		}
 	}
 
 	select {
 	case queue <- entry:
+		p.observeSQLLaneMetrics()
 		return
 	default:
 	}
@@ -841,6 +969,7 @@ func (p *Plugin) enqueueCoreEventLog(entry *coreEventLogEntry) {
 
 		select {
 		case queue <- entry:
+			p.observeSQLLaneMetrics()
 			return
 		case <-timer.C:
 		case <-p.ctx.Done():
@@ -849,9 +978,209 @@ func (p *Plugin) enqueueCoreEventLog(entry *coreEventLogEntry) {
 	}
 
 	drops := p.coreEventDrops.Add(1)
+	metrics.SQLLaneDrops.WithLabelValues("core_event").Inc()
 	if drops%100 == 1 {
 		logger.Warn("SQL", "Dropped core event logs due to full queue (dropped=%d)", drops)
 	}
+	p.observeSQLLaneMetrics()
+}
+
+func (p *Plugin) observeSQLLaneMetrics() {
+	metrics.SQLLaneOccupancy.WithLabelValues("critical_active").Set(float64(len(p.sqlCriticalSem)))
+	metrics.SQLLaneCapacity.WithLabelValues("critical_active").Set(float64(cap(p.sqlCriticalSem)))
+
+	if p.sqlBackgroundSem == nil {
+		metrics.SQLLaneOccupancy.WithLabelValues("background_active").Set(0)
+		metrics.SQLLaneCapacity.WithLabelValues("background_active").Set(0)
+	} else {
+		metrics.SQLLaneOccupancy.WithLabelValues("background_active").Set(float64(len(p.sqlBackgroundSem)))
+		metrics.SQLLaneCapacity.WithLabelValues("background_active").Set(float64(cap(p.sqlBackgroundSem)))
+	}
+
+	if p.sqlBackgroundPend == nil {
+		metrics.SQLLaneOccupancy.WithLabelValues("background_pending").Set(0)
+		metrics.SQLLaneCapacity.WithLabelValues("background_pending").Set(0)
+	} else {
+		metrics.SQLLaneOccupancy.WithLabelValues("background_pending").Set(float64(len(p.sqlBackgroundPend)))
+		metrics.SQLLaneCapacity.WithLabelValues("background_pending").Set(float64(cap(p.sqlBackgroundPend)))
+	}
+
+	if p.coreEventLogQueue == nil {
+		metrics.SQLLaneOccupancy.WithLabelValues("core_event_queue").Set(0)
+		metrics.SQLLaneCapacity.WithLabelValues("core_event_queue").Set(0)
+	} else {
+		metrics.SQLLaneOccupancy.WithLabelValues("core_event_queue").Set(float64(len(p.coreEventLogQueue)))
+		metrics.SQLLaneCapacity.WithLabelValues("core_event_queue").Set(float64(cap(p.coreEventLogQueue)))
+	}
+}
+
+func (p *Plugin) pgStatEnabled() bool {
+	return p.config.EnablePGStatStatements == nil || *p.config.EnablePGStatStatements
+}
+
+func (p *Plugin) initializePGStatStatements(ctx context.Context) {
+	if !p.pgStatEnabled() || p.pool == nil {
+		return
+	}
+
+	var available bool
+	if err := p.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements')`).Scan(&available); err != nil {
+		logger.Warn("SQL", "Unable to inspect pg_stat_statements extension state: %v", err)
+		return
+	}
+
+	if !available {
+		if _, err := p.pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS pg_stat_statements`); err != nil {
+			logger.Warn("SQL", "Unable to enable pg_stat_statements (non-fatal): %v", err)
+		}
+		if err := p.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements')`).Scan(&available); err != nil {
+			logger.Warn("SQL", "Unable to verify pg_stat_statements availability: %v", err)
+			return
+		}
+	}
+
+	if !available {
+		logger.Warn("SQL", "pg_stat_statements is unavailable; top query reporting disabled")
+		return
+	}
+
+	p.pgStatAvailable.Store(true)
+	p.reportTopPGStatQueries(ctx, "startup")
+}
+
+func (p *Plugin) startPGStatReporter() {
+	if !p.pgStatAvailable.Load() || p.ctx == nil {
+		return
+	}
+
+	intervalSeconds := p.config.PGStatReportIntervalSec
+	if intervalSeconds <= 0 {
+		return
+	}
+	interval := time.Duration(intervalSeconds) * time.Second
+
+	p.workerWg.Add(1)
+	go func() {
+		defer p.workerWg.Done()
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-p.ctx.Done():
+				return
+			case <-ticker.C:
+				p.reportTopPGStatQueries(p.ctx, "periodic")
+			}
+		}
+	}()
+}
+
+func (p *Plugin) reportTopPGStatQueries(ctx context.Context, reason string) {
+	if !p.pgStatAvailable.Load() || p.pool == nil {
+		return
+	}
+
+	topN := p.config.PGStatTopN
+	if topN <= 0 {
+		topN = 5
+	}
+
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := p.pool.Query(queryCtx, `
+		SELECT query, calls, total_exec_time, mean_exec_time
+		FROM pg_stat_statements
+		WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+		ORDER BY total_exec_time DESC
+		LIMIT $1
+	`, topN)
+	if err != nil {
+		logger.Warn("SQL", "Unable to read pg_stat_statements (%s): %v", reason, err)
+		return
+	}
+	defer rows.Close()
+
+	rank := 0
+	for rows.Next() {
+		var text string
+		var calls int64
+		var totalMS float64
+		var meanMS float64
+		if err := rows.Scan(&text, &calls, &totalMS, &meanMS); err != nil {
+			logger.Warn("SQL", "Failed scanning pg_stat_statements row: %v", err)
+			continue
+		}
+
+		rank++
+		trimmed := strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+		if len(trimmed) > 140 {
+			trimmed = trimmed[:140] + "..."
+		}
+		logger.Info("SQL", "pg_stat top[%d/%d] (%s): calls=%d total_ms=%.1f mean_ms=%.2f sql=%q", rank, topN, reason, calls, totalMS, meanMS, trimmed)
+	}
+}
+
+func (p *Plugin) logPostgresTuningDiagnostics(ctx context.Context) {
+	if p.pool == nil {
+		return
+	}
+
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	type settingRow struct {
+		name    string
+		setting string
+		unit    string
+	}
+
+	rows, err := p.pool.Query(queryCtx, `
+		SELECT name, setting, unit
+		FROM pg_settings
+		WHERE name IN ('shared_buffers', 'work_mem', 'effective_cache_size', 'max_connections')
+	`)
+	if err != nil {
+		logger.Warn("SQL", "Unable to read pg_settings for tuning diagnostics: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	settings := make(map[string]settingRow)
+	for rows.Next() {
+		var row settingRow
+		if err := rows.Scan(&row.name, &row.setting, &row.unit); err != nil {
+			continue
+		}
+		settings[row.name] = row
+	}
+
+	if shared, ok := settings["shared_buffers"]; ok {
+		if bytes, err := p.pgSettingBytes(queryCtx, shared.setting, shared.unit); err == nil && bytes < 64*1024*1024 {
+			logger.Warn("SQL", "Postgres shared_buffers appears low (%s%s). Consider >= 64MB for better ingest throughput.", shared.setting, shared.unit)
+		}
+	}
+	if workMem, ok := settings["work_mem"]; ok {
+		if bytes, err := p.pgSettingBytes(queryCtx, workMem.setting, workMem.unit); err == nil && bytes < 2*1024*1024 {
+			logger.Warn("SQL", "Postgres work_mem appears low (%s%s). Consider >= 2MB to reduce sort/hash stalls.", workMem.setting, workMem.unit)
+		}
+	}
+	if cacheSize, ok := settings["effective_cache_size"]; ok {
+		if bytes, err := p.pgSettingBytes(queryCtx, cacheSize.setting, cacheSize.unit); err == nil && bytes < 256*1024*1024 {
+			logger.Warn("SQL", "Postgres effective_cache_size appears low (%s%s). Consider >= 256MB when possible.", cacheSize.setting, cacheSize.unit)
+		}
+	}
+}
+
+func (p *Plugin) pgSettingBytes(ctx context.Context, setting, unit string) (int64, error) {
+	var bytes int64
+	value := strings.TrimSpace(setting + unit)
+	if err := p.pool.QueryRow(ctx, `SELECT pg_size_bytes($1)`, value).Scan(&bytes); err != nil {
+		return 0, err
+	}
+	return bytes, nil
 }
 
 func isCriticalCoreEvent(eventType string) bool {

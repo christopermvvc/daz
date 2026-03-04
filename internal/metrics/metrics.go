@@ -32,6 +32,54 @@ var (
 		[]string{"event_type"},
 	)
 
+	EventBusQueueDepth = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "daz_eventbus_queue_depth",
+			Help: "Current queue depth per event bus route",
+		},
+		[]string{"event_type"},
+	)
+
+	EventBusQueueCapacity = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "daz_eventbus_queue_capacity",
+			Help: "Configured queue capacity per event bus route",
+		},
+		[]string{"event_type"},
+	)
+
+	EventBusDispatchLaneOccupancy = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "daz_eventbus_dispatch_lane_occupancy",
+			Help: "Current occupied workers per event bus dispatch lane",
+		},
+		[]string{"lane"},
+	)
+
+	EventBusDispatchLaneCapacity = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "daz_eventbus_dispatch_lane_capacity",
+			Help: "Configured worker capacity per event bus dispatch lane",
+		},
+		[]string{"lane"},
+	)
+
+	EventBusPendingLaneOccupancy = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "daz_eventbus_pending_lane_occupancy",
+			Help: "Current pending-dispatch occupancy per event bus lane",
+		},
+		[]string{"lane"},
+	)
+
+	EventBusPendingLaneCapacity = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "daz_eventbus_pending_lane_capacity",
+			Help: "Configured pending-dispatch capacity per event bus lane",
+		},
+		[]string{"lane"},
+	)
+
 	// Plugin metrics
 	PluginStatus = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -87,6 +135,38 @@ var (
 			Help:    "Duration of database queries in seconds",
 			Buckets: prometheus.DefBuckets,
 		},
+	)
+
+	SQLLaneOccupancy = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "daz_sql_lane_occupancy",
+			Help: "Current occupied slots per SQL execution lane",
+		},
+		[]string{"lane"},
+	)
+
+	SQLLaneCapacity = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "daz_sql_lane_capacity",
+			Help: "Configured slot capacity per SQL execution lane",
+		},
+		[]string{"lane"},
+	)
+
+	SQLLaneDrops = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "daz_sql_lane_drops_total",
+			Help: "Total dropped SQL/background queue items by lane",
+		},
+		[]string{"lane"},
+	)
+
+	SQLPoolConfiguredConnections = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "daz_sql_pool_configured_connections",
+			Help: "Configured connection budgets for SQL pools",
+		},
+		[]string{"pool"},
 	)
 
 	// Cytube connection metrics

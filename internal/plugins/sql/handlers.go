@@ -83,6 +83,46 @@ func convertToJSONCompatible(val interface{}) interface{} {
 	}
 }
 
+func collectPGXRows(rows pgx.Rows) ([]string, [][]json.RawMessage, error) {
+	defer rows.Close()
+
+	fields := rows.FieldDescriptions()
+	columns := make([]string, len(fields))
+	for i, field := range fields {
+		columns[i] = string(field.Name)
+	}
+
+	resultRows := make([][]json.RawMessage, 0)
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get row values: %w", err)
+		}
+
+		row := make([]json.RawMessage, len(values))
+		for i, val := range values {
+			if val == nil {
+				row[i] = json.RawMessage("null")
+				continue
+			}
+
+			jsonCompatibleVal := convertToJSONCompatible(val)
+			jsonVal, err := json.Marshal(jsonCompatibleVal)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to marshal row value: %w", err)
+			}
+			row[i] = jsonVal
+		}
+		resultRows = append(resultRows, row)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("rows iteration error: %w", err)
+	}
+
+	return columns, resultRows, nil
+}
+
 // handlePluginRequest handles targeted plugin requests sent via eventBus.Request
 func (p *Plugin) handlePluginRequest(event framework.Event) error {
 	// This handler receives all "plugin.request" events and routes them based on metadata
@@ -429,7 +469,7 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 	// Execute query
 	// queryStartTime := time.Now()
 	// log.Printf("[SQL Plugin] Starting database query at %v", queryStartTime)
-	rows, err := p.db.QueryContext(ctx, req.Query, params...)
+	rows, err := p.pool.Query(ctx, req.Query, params...)
 	// queryEndTime := time.Now()
 	// queryDuration := queryEndTime.Sub(queryStartTime)
 	// log.Printf("[SQL Plugin] Database query completed at %v (took %v)", queryEndTime, queryDuration)
@@ -459,56 +499,12 @@ func (p *Plugin) handleSQLQuery(event framework.Event) error {
 		}
 		return fmt.Errorf("query failed: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			logger.Error("SQL", "Error closing rows: %v", err)
-		}
-	}()
-
 	// Convert rows to response format
 	// rowProcessingStartTime := time.Now()
 	// log.Printf("[SQL Plugin] Starting row processing at %v", rowProcessingStartTime)
-
-	columns, err := rows.Columns()
+	columns, resultRows, err := collectPGXRows(rows)
 	if err != nil {
-		return fmt.Errorf("failed to get columns: %w", err)
-	}
-
-	var resultRows [][]json.RawMessage
-	rowCount := 0
-	for rows.Next() {
-		rowCount++
-		// Create slice of interface{} to hold column values
-		values := make([]interface{}, len(columns))
-		scanArgs := make([]interface{}, len(columns))
-		for i := range values {
-			scanArgs[i] = &values[i]
-		}
-
-		if err := rows.Scan(scanArgs...); err != nil {
-			return fmt.Errorf("failed to scan row: %w", err)
-		}
-
-		// Convert values to JSON
-		row := make([]json.RawMessage, len(columns))
-		for i, val := range values {
-			if val == nil {
-				row[i] = json.RawMessage("null")
-			} else {
-				// Convert database types to JSON-compatible types
-				jsonCompatibleVal := convertToJSONCompatible(val)
-				jsonVal, err := json.Marshal(jsonCompatibleVal)
-				if err != nil {
-					return fmt.Errorf("failed to marshal value: %w", err)
-				}
-				row[i] = jsonVal
-			}
-		}
-		resultRows = append(resultRows, row)
-	}
-
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("rows iteration error: %w", err)
+		return fmt.Errorf("failed to collect query rows: %w", err)
 	}
 
 	// rowProcessingEndTime := time.Now()
@@ -649,7 +645,7 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 	// Execute statement
 	// execStartTime := time.Now()
 	// log.Printf("[SQL Plugin] Starting database exec at %v", execStartTime)
-	result, err := p.db.ExecContext(ctx, req.Query, params...)
+	result, err := p.pool.Exec(ctx, req.Query, params...)
 	// execEndTime := time.Now()
 	// execDuration := execEndTime.Sub(execStartTime)
 	// log.Printf("[SQL Plugin] Database exec completed at %v (took %v)", execEndTime, execDuration)
@@ -681,8 +677,7 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 	}
 
 	// Get rows affected and last insert ID
-	rowsAffected, _ := result.RowsAffected()
-	lastInsertID, _ := result.LastInsertId()
+	rowsAffected := result.RowsAffected()
 
 	// Send successful response
 	if req.CorrelationID != "" {
@@ -692,7 +687,7 @@ func (p *Plugin) handleSQLExec(event framework.Event) error {
 				CorrelationID: req.CorrelationID,
 				Success:       true,
 				RowsAffected:  rowsAffected,
-				LastInsertID:  lastInsertID,
+				LastInsertID:  0, // PostgreSQL command tags do not expose LastInsertId.
 			},
 		}
 		// deliverStartTime := time.Now()
@@ -886,7 +881,7 @@ func (p *Plugin) handleBatchQueryRequest(event framework.Event) error {
 			}
 
 			// Execute query
-			rows, err := p.db.QueryContext(ctx, queryReq.Query, params...)
+			rows, err := p.pool.Query(ctx, queryReq.Query, params...)
 			if err != nil {
 				responses = append(responses, &framework.SQLQueryResponse{
 					ID:            queryReq.ID,
@@ -897,66 +892,13 @@ func (p *Plugin) handleBatchQueryRequest(event framework.Event) error {
 				continue
 			}
 
-			// Process rows
-			columns, err := rows.Columns()
+			columns, resultRows, err := collectPGXRows(rows)
 			if err != nil {
-				_ = rows.Close()
 				responses = append(responses, &framework.SQLQueryResponse{
 					ID:            queryReq.ID,
 					CorrelationID: queryReq.CorrelationID,
 					Success:       false,
-					Error:         fmt.Sprintf("failed to get columns: %v", err),
-				})
-				continue
-			}
-
-			var resultRows [][]json.RawMessage
-			for rows.Next() {
-				// Create slice of interface{} to hold column values
-				values := make([]interface{}, len(columns))
-				scanArgs := make([]interface{}, len(columns))
-				for i := range values {
-					scanArgs[i] = &values[i]
-				}
-
-				if err := rows.Scan(scanArgs...); err != nil {
-					_ = rows.Close()
-					responses = append(responses, &framework.SQLQueryResponse{
-						ID:            queryReq.ID,
-						CorrelationID: queryReq.CorrelationID,
-						Success:       false,
-						Error:         fmt.Sprintf("failed to scan row: %v", err),
-					})
-					break
-				}
-
-				// Convert values to JSON
-				row := make([]json.RawMessage, len(columns))
-				for i, val := range values {
-					if val == nil {
-						row[i] = json.RawMessage("null")
-					} else {
-						jsonCompatibleVal := convertToJSONCompatible(val)
-						jsonVal, err := json.Marshal(jsonCompatibleVal)
-						if err != nil {
-							row[i] = json.RawMessage("null")
-						} else {
-							row[i] = jsonVal
-						}
-					}
-				}
-				resultRows = append(resultRows, row)
-			}
-			if err := rows.Close(); err != nil {
-				logger.Error(p.name, "Failed to close rows: %v", err)
-			}
-
-			if err := rows.Err(); err != nil {
-				responses = append(responses, &framework.SQLQueryResponse{
-					ID:            queryReq.ID,
-					CorrelationID: queryReq.CorrelationID,
-					Success:       false,
-					Error:         fmt.Sprintf("rows error: %v", err),
+					Error:         fmt.Sprintf("failed to collect rows: %v", err),
 				})
 				continue
 			}
@@ -1126,7 +1068,7 @@ func (p *Plugin) handleBatchExecRequest(event framework.Event) error {
 			}
 
 			// Execute statement
-			result, err := p.db.ExecContext(ctx, execReq.Query, params...)
+			result, err := p.pool.Exec(ctx, execReq.Query, params...)
 			timer.ObserveDuration()
 
 			if err != nil {
@@ -1140,9 +1082,8 @@ func (p *Plugin) handleBatchExecRequest(event framework.Event) error {
 				continue
 			}
 
-			// Get rows affected and last insert ID
-			rowsAffected, _ := result.RowsAffected()
-			lastInsertID, _ := result.LastInsertId()
+			// Get rows affected
+			rowsAffected := result.RowsAffected()
 
 			// Add successful response
 			responses = append(responses, &framework.SQLExecResponse{
@@ -1150,7 +1091,7 @@ func (p *Plugin) handleBatchExecRequest(event framework.Event) error {
 				CorrelationID: execReq.CorrelationID,
 				Success:       true,
 				RowsAffected:  rowsAffected,
-				LastInsertID:  lastInsertID,
+				LastInsertID:  0,
 			})
 		}
 	}
@@ -1370,7 +1311,7 @@ func (p *Plugin) executeBatchQuery(ctx context.Context, id, query string, params
 	defer timer.ObserveDuration()
 	metrics.DatabaseQueries.WithLabelValues("batch_query").Inc()
 
-	rows, err := p.db.QueryContext(ctx, query, params...)
+	rows, err := p.pool.Query(ctx, query, params...)
 	if err != nil {
 		metrics.DatabaseErrors.Inc()
 		return framework.BatchOperationResult{
@@ -1380,65 +1321,13 @@ func (p *Plugin) executeBatchQuery(ctx context.Context, id, query string, params
 			Error:         err.Error(),
 		}
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			logger.Error(p.name, "Failed to close rows: %v", err)
-		}
-	}()
-
-	// Convert rows to response format
-	columns, err := rows.Columns()
+	columns, resultRows, err := collectPGXRows(rows)
 	if err != nil {
 		return framework.BatchOperationResult{
 			ID:            id,
 			OperationType: "query",
 			Success:       false,
-			Error:         fmt.Sprintf("failed to get columns: %v", err),
-		}
-	}
-
-	var resultRows [][]json.RawMessage
-	for rows.Next() {
-		// Create slice of interface{} to hold column values
-		values := make([]interface{}, len(columns))
-		scanArgs := make([]interface{}, len(columns))
-		for i := range values {
-			scanArgs[i] = &values[i]
-		}
-
-		if err := rows.Scan(scanArgs...); err != nil {
-			return framework.BatchOperationResult{
-				ID:            id,
-				OperationType: "query",
-				Success:       false,
-				Error:         fmt.Sprintf("failed to scan row: %v", err),
-			}
-		}
-
-		// Convert values to JSON
-		row := make([]json.RawMessage, len(columns))
-		for i, val := range values {
-			if val == nil {
-				row[i] = json.RawMessage("null")
-			} else {
-				jsonCompatibleVal := convertToJSONCompatible(val)
-				jsonVal, err := json.Marshal(jsonCompatibleVal)
-				if err != nil {
-					row[i] = json.RawMessage("null")
-				} else {
-					row[i] = jsonVal
-				}
-			}
-		}
-		resultRows = append(resultRows, row)
-	}
-
-	if err := rows.Err(); err != nil {
-		return framework.BatchOperationResult{
-			ID:            id,
-			OperationType: "query",
-			Success:       false,
-			Error:         fmt.Sprintf("rows error: %v", err),
+			Error:         fmt.Sprintf("failed to collect rows: %v", err),
 		}
 	}
 
@@ -1530,7 +1419,7 @@ func (p *Plugin) executeBatchExec(ctx context.Context, id, query string, params 
 	defer timer.ObserveDuration()
 	metrics.DatabaseQueries.WithLabelValues("batch_exec").Inc()
 
-	result, err := p.db.ExecContext(ctx, query, params...)
+	result, err := p.pool.Exec(ctx, query, params...)
 	if err != nil {
 		metrics.DatabaseErrors.Inc()
 		return framework.BatchOperationResult{
@@ -1541,15 +1430,14 @@ func (p *Plugin) executeBatchExec(ctx context.Context, id, query string, params 
 		}
 	}
 
-	rowsAffected, _ := result.RowsAffected()
-	lastInsertID, _ := result.LastInsertId()
+	rowsAffected := result.RowsAffected()
 
 	return framework.BatchOperationResult{
 		ID:            id,
 		OperationType: "exec",
 		Success:       true,
 		RowsAffected:  rowsAffected,
-		LastInsertID:  lastInsertID,
+		LastInsertID:  0,
 	}
 }
 

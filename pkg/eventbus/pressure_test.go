@@ -370,3 +370,71 @@ func TestRequestWaitsForQueueCapacityInsteadOfDropping(t *testing.T) {
 		t.Fatalf("expected request handler to run once, got %d", got)
 	}
 }
+
+func TestRequestRouteTypeClassifiesPluginRequestLanes(t *testing.T) {
+	eb := NewEventBus(&Config{})
+
+	tests := []struct {
+		name         string
+		target       string
+		eventType    string
+		data         *framework.EventData
+		metadata     *framework.EventMetadata
+		wantRoute    string
+		wantDispatch string
+	}{
+		{
+			name:      "sql request stays in sql lane",
+			target:    "sql",
+			eventType: "sql.query.request",
+			metadata:  framework.NewEventMetadata("test", "sql.query.request"),
+			wantRoute: "sql.query.request", wantDispatch: "sql.query.request",
+		},
+		{
+			name:      "eventfilter execute uses command lane",
+			target:    "speechflavor",
+			eventType: "plugin.request",
+			data: &framework.EventData{
+				PluginRequest: &framework.PluginRequest{From: "eventfilter", Type: "execute"},
+			},
+			metadata:  framework.NewEventMetadata("eventfilter", "plugin.request"),
+			wantRoute: pluginRequestRouteCommand, wantDispatch: pluginRequestRouteDefault,
+		},
+		{
+			name:      "background plugin request lane",
+			target:    "help",
+			eventType: "plugin.request",
+			data: &framework.EventData{
+				PluginRequest: &framework.PluginRequest{From: "mediatracker", Type: "sync"},
+			},
+			metadata:  framework.NewEventMetadata("mediatracker", "plugin.request"),
+			wantRoute: pluginRequestRouteBackground, wantDispatch: pluginRequestRouteDefault,
+		},
+		{
+			name:      "default plugin request lane",
+			target:    "help",
+			eventType: "plugin.request",
+			data: &framework.EventData{
+				PluginRequest: &framework.PluginRequest{From: "remind", Type: "query"},
+			},
+			metadata:  framework.NewEventMetadata("remind", "plugin.request"),
+			wantRoute: pluginRequestRouteDefault, wantDispatch: pluginRequestRouteDefault,
+		},
+		{
+			name:      "high metadata priority forces command lane",
+			target:    "help",
+			eventType: "plugin.request",
+			metadata:  framework.NewEventMetadata("remind", "plugin.request").WithPriority(framework.PriorityHigh),
+			wantRoute: pluginRequestRouteCommand, wantDispatch: pluginRequestRouteDefault,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			route, dispatch := eb.requestRouteType(tc.target, tc.eventType, tc.data, tc.metadata)
+			if route != tc.wantRoute || dispatch != tc.wantDispatch {
+				t.Fatalf("requestRouteType() = (%s,%s), want (%s,%s)", route, dispatch, tc.wantRoute, tc.wantDispatch)
+			}
+		})
+	}
+}

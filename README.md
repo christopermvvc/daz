@@ -320,6 +320,7 @@ the Free Software Foundation, either version 3 of the License, or
 
 - [Architecture Guide](docs/daz-chatbot-architecture.md)
 - [Configuration Reference](config.json.example)
+- [Postgres Performance Notes](docs/postgres-performance.md)
 - [API Documentation](docs/api.md)
 - [Plugin Development Guide](docs/plugins.md)
 

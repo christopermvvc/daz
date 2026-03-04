@@ -23,7 +23,9 @@
     "buffer_sizes": {
       "cytube.event": 2000,
       "sql.request": 500,
-      "plugin.request": 2000
+      "plugin.request": 2000,
+      "plugin.request.command": 3000,
+      "plugin.request.background": 800
     }
   },
   "plugins": {
@@ -38,12 +40,17 @@
         "max_conn_lifetime": 3600,
         "connect_timeout": 30
       },
-      "background_max_connections": 5,
+      "background_max_connections": 2,
+      "critical_lane_concurrency": 2,
+      "background_lane_concurrency": 1,
       "background_queue_max": 40,
       "background_queue_wait_ms": 1200,
       "core_event_queue_size": 4000,
       "core_event_batch_size": 64,
       "core_event_flush_ms": 200,
+      "enable_pg_stat_statements": true,
+      "pg_stat_report_interval_seconds": 0,
+      "pg_stat_top_n": 5,
       "logger_rules": [
         {
           "event_pattern": "cytube.event.*",

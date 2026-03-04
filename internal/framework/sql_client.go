@@ -39,8 +39,9 @@ func (c *SQLClient) ExecContext(ctx context.Context, query string, args ...inter
 func (c *SQLClient) Exec(query string, args ...interface{}) error {
 	ctx := context.Background()
 
-	// Use slow exec for convenience method (30s timeout, 2 retries)
-	_, err := c.sqlHelper.SlowExec(ctx, query, args...)
+	// Convenience exec defaults to a single-attempt best-effort write to avoid
+	// retry-amplifying non-critical insert/update traffic under pressure.
+	_, err := c.sqlHelper.BestEffortExec(ctx, query, args...)
 	return err
 }
 
