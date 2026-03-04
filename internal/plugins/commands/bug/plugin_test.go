@@ -29,6 +29,7 @@ type testEventBus struct {
 	subscriptions []string
 	broadcastErr  error
 	subscribeErr  error
+	subscribeErrs map[string]error
 }
 
 func (b *testEventBus) Broadcast(eventType string, data *framework.EventData) error {
@@ -74,6 +75,11 @@ func (b *testEventBus) DeliverResponse(correlationID string, response *framework
 }
 
 func (b *testEventBus) Subscribe(eventType string, handler framework.EventHandler) error {
+	if b.subscribeErrs != nil {
+		if err, exists := b.subscribeErrs[eventType]; exists {
+			return err
+		}
+	}
 	if b.subscribeErr != nil {
 		return b.subscribeErr
 	}
@@ -82,6 +88,12 @@ func (b *testEventBus) Subscribe(eventType string, handler framework.EventHandle
 	defer b.mu.Unlock()
 	b.subscriptions = append(b.subscriptions, eventType)
 	return nil
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func (b *testEventBus) SubscribeWithTags(pattern string, handler framework.EventHandler, tags []string) error {
@@ -238,6 +250,22 @@ func TestStartFailsWhenSubscribeFails(t *testing.T) {
 	}
 	if err := p.Start(); err == nil || !strings.Contains(err.Error(), "failed to subscribe") {
 		t.Fatalf("expected subscribe failure from Start, got %v", err)
+	}
+}
+
+func TestStartFailsWhenChatSubscriptionFails(t *testing.T) {
+	bus := &testEventBus{
+		subscribeErrs: map[string]error{
+			eventbus.EventCytubeChatMsg: errors.New("chat-sub-fail"),
+		},
+	}
+	p := New().(*Plugin)
+	if err := p.Init(nil, bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+	err := p.Start()
+	if err == nil || !strings.Contains(err.Error(), eventbus.EventCytubeChatMsg) {
+		t.Fatalf("expected chat subscription failure, got %v", err)
 	}
 }
 
@@ -519,6 +547,31 @@ func TestHandleCommandHandlesNilOrNonDataEvent(t *testing.T) {
 	}
 }
 
+func TestHandleChatMessageIgnoresInvalidEvents(t *testing.T) {
+	p := New().(*Plugin)
+	if err := p.Init(nil, &testEventBus{}); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+
+	events := []framework.Event{
+		nil,
+		&framework.DataEvent{},
+		&framework.DataEvent{Data: &framework.EventData{}},
+		&framework.DataEvent{Data: &framework.EventData{ChatMessage: &framework.ChatMessageData{Username: "", Channel: "chan", Message: "x"}}},
+		&framework.DataEvent{Data: &framework.EventData{ChatMessage: &framework.ChatMessageData{Username: "u", Channel: "", Message: "x"}}},
+		&framework.DataEvent{Data: &framework.EventData{ChatMessage: &framework.ChatMessageData{Username: "u", Channel: "chan", Message: ""}}},
+	}
+	for _, ev := range events {
+		if err := p.handleChatMessage(ev); err != nil {
+			t.Fatalf("handleChatMessage should ignore invalid event, got %v", err)
+		}
+	}
+
+	if got := p.getRecentChat("chan", 10); len(got) != 0 {
+		t.Fatalf("expected no captured lines for invalid events, got %d", len(got))
+	}
+}
+
 func TestSendResponseIgnoresEmptyMessage(t *testing.T) {
 	bus := &testEventBus{}
 	p := New().(*Plugin)
@@ -529,6 +582,17 @@ func TestSendResponseIgnoresEmptyMessage(t *testing.T) {
 	if len(bus.broadcasts) != 0 {
 		t.Fatalf("expected no broadcast for empty response message")
 	}
+}
+
+func TestSendResponseToleratesBroadcastErrors(t *testing.T) {
+	bus := &testEventBus{broadcastErr: errors.New("down")}
+	p := New().(*Plugin)
+	if err := p.Init(nil, bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+
+	p.sendResponse("alice", "chan", false, "hello chat")
+	p.sendResponse("alice", "chan", true, "hello pm")
 }
 
 func TestCreateIssueFromReportUsesGitHubAPI(t *testing.T) {
@@ -775,6 +839,44 @@ func TestGitHubRequestHandlesMarshalError(t *testing.T) {
 	}
 }
 
+func TestGitHubRequestHandlesTransportFailure(t *testing.T) {
+	bus := &testEventBus{}
+	p := New().(*Plugin)
+	if err := p.Init(nil, bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+	p.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			_ = req
+			return nil, errors.New("dial fail")
+		}),
+	}
+
+	err := p.githubRequest(context.Background(), "token", http.MethodGet, "/x", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "github request failed") {
+		t.Fatalf("expected transport failure error, got %v", err)
+	}
+}
+
+func TestGitHubRequestSuccessWithNilOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	bus := &testEventBus{}
+	p := New().(*Plugin)
+	cfg := []byte(fmt.Sprintf(`{"api_base_url":"%s"}`, server.URL))
+	if err := p.Init(cfg, bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+	p.httpClient = server.Client()
+
+	if err := p.githubRequest(context.Background(), "token", http.MethodGet, "/x", nil, nil); err != nil {
+		t.Fatalf("expected nil-out success path, got %v", err)
+	}
+}
+
 func TestInitInvalidConfigFails(t *testing.T) {
 	bus := &testEventBus{}
 	p := New().(*Plugin)
@@ -904,6 +1006,24 @@ func TestBuildBugIssueAssetsFormatting(t *testing.T) {
 	}
 }
 
+func TestBuildBugIssueAssetsUsesFallbackContextAndTruncatesTitleComment(t *testing.T) {
+	p := New().(*Plugin)
+	p.config.TitlePrefix = "bug report"
+	longComment := strings.Repeat("a", 90)
+	title, body := p.buildBugIssueAssets(bugReport{
+		Channel:   "chan",
+		Username:  "alice",
+		Comment:   longComment,
+		CreatedAt: time.Date(2026, 3, 3, 10, 30, 0, 0, time.UTC),
+	}, nil)
+	if !strings.Contains(title, "...") {
+		t.Fatalf("expected truncated title comment, got %q", title)
+	}
+	if !strings.Contains(body, "- (no recent chat captured)") {
+		t.Fatalf("expected fallback context marker, got %q", body)
+	}
+}
+
 func TestQuoteBlock(t *testing.T) {
 	block := quoteBlock("line1\n\n line2 ")
 	want := "> line1\n>\n> line2"
@@ -930,6 +1050,36 @@ func TestHandleChatMessageCapturesRecentLines(t *testing.T) {
 	}
 	if lines[0].Message != "line 3" || lines[9].Message != "line 12" {
 		t.Fatalf("unexpected line window: first=%q last=%q", lines[0].Message, lines[9].Message)
+	}
+}
+
+func TestAppendRecentChatTrimsToHistoryLimit(t *testing.T) {
+	p := New().(*Plugin)
+	if err := p.Init(nil, &testEventBus{}); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+	for i := 1; i <= 60; i++ {
+		p.appendRecentChat("chan", "u", fmt.Sprintf("line %d", i))
+	}
+	lines := p.getRecentChat("chan", 100)
+	if len(lines) != chatHistoryLimit {
+		t.Fatalf("expected %d lines, got %d", chatHistoryLimit, len(lines))
+	}
+	if lines[0].Message != "line 11" || lines[len(lines)-1].Message != "line 60" {
+		t.Fatalf("unexpected retained window: first=%q last=%q", lines[0].Message, lines[len(lines)-1].Message)
+	}
+}
+
+func TestAppendRecentChatIgnoresMissingFields(t *testing.T) {
+	p := New().(*Plugin)
+	if err := p.Init(nil, &testEventBus{}); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+	p.appendRecentChat("", "u", "msg")
+	p.appendRecentChat("chan", "", "msg")
+	p.appendRecentChat("chan", "u", "")
+	if got := p.getRecentChat("chan", 10); len(got) != 0 {
+		t.Fatalf("expected no captured lines, got %d", len(got))
 	}
 }
 
@@ -984,5 +1134,43 @@ func TestCreateIssueFromReportIncludesRecentChatContext(t *testing.T) {
 	}
 	if strings.Contains(payloadBody, "- u: ctx 1\n") || strings.Contains(payloadBody, "- u: ctx 2\n") {
 		t.Fatalf("issue body should only include last 10 lines: %q", payloadBody)
+	}
+}
+
+func TestGetRecentChatEdgeCases(t *testing.T) {
+	p := New().(*Plugin)
+	if err := p.Init(nil, &testEventBus{}); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+	p.appendRecentChat("chan", "u", "line")
+
+	if got := p.getRecentChat("chan", 0); got != nil {
+		t.Fatalf("expected nil for non-positive limit, got %#v", got)
+	}
+	if got := p.getRecentChat("", 5); got != nil {
+		t.Fatalf("expected nil for empty channel, got %#v", got)
+	}
+	if got := p.getRecentChat("other", 5); got != nil {
+		t.Fatalf("expected nil for missing channel history, got %#v", got)
+	}
+}
+
+func TestFormatChatContextEdgeCases(t *testing.T) {
+	if got := formatChatContext(nil); !strings.Contains(got, "no recent chat captured") {
+		t.Fatalf("expected empty-context fallback, got %q", got)
+	}
+
+	invalidOnly := formatChatContext([]chatLine{
+		{Username: "", Message: "msg"},
+		{Username: "u", Message: ""},
+	})
+	if !strings.Contains(invalidOnly, "no recent chat captured") {
+		t.Fatalf("expected fallback when all lines invalid, got %q", invalidOnly)
+	}
+
+	long := strings.Repeat("x", 240)
+	got := formatChatContext([]chatLine{{Username: "u", Message: long}})
+	if !strings.Contains(got, "...") {
+		t.Fatalf("expected truncated long line context, got %q", got)
 	}
 }
