@@ -286,12 +286,7 @@ func TestIsPushRetryable(t *testing.T) {
 		},
 		{
 			name:      "missing auth",
-			err:       fmt.Errorf("no pages publish token configured and deploy key not found"),
-			retryable: false,
-		},
-		{
-			name:      "missing key",
-			err:       fmt.Errorf("deploy key not found"),
+			err:       fmt.Errorf("no pages publish token configured (set DAZ_GALLERY_GITHUB_TOKEN or DAZ_GH_PAGES_TOKEN)"),
 			retryable: false,
 		},
 		{

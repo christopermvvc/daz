@@ -1226,6 +1226,9 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 
 	// Resolve optional dedicated pages publish token once.
 	githubToken := resolveGalleryPublishToken()
+	if githubToken == "" {
+		return fmt.Errorf("no pages publish token configured (set %s or %s)", galleryPublishTokenEnv, pagesPublishTokenEnv)
+	}
 
 	// Helper function to run git commands
 	runGitCmd := func(args ...string) error {
@@ -1239,54 +1242,7 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 		return nil
 	}
 
-	resolveDeployKey := func() (string, error) {
-		candidates := []string{
-			"dazza_deploy_key",
-		}
-		cwd, err := os.Getwd()
-		if err == nil {
-			candidates = append([]string{filepath.Join(cwd, "dazza_deploy_key")}, candidates...)
-		}
-		executablePath, err := os.Executable()
-		if err == nil {
-			execDir := filepath.Dir(executablePath)
-			candidates = append(candidates, filepath.Join(execDir, "dazza_deploy_key"))
-		}
-
-		for _, candidate := range candidates {
-			if candidate == "" {
-				continue
-			}
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate, nil
-			}
-		}
-
-		return "", fmt.Errorf("deploy key not found")
-	}
-
 	pushOnce := func() error {
-		if githubToken == "" {
-			deployKey, err := resolveDeployKey()
-			if err != nil {
-				return fmt.Errorf("no pages publish token configured and deploy key not found")
-			}
-			cmd := exec.CommandContext(ctx, "git", "push", "origin", "gh-pages", "--force")
-			cmd.Dir = g.config.HTMLOutputPath
-			cmd.Env = append(os.Environ(),
-				"GIT_TERMINAL_PROMPT=0",
-				"GIT_SSH_COMMAND=ssh -i "+deployKey+" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new",
-			)
-
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				return fmt.Errorf("push failed: %w, output: %s", err, strings.TrimSpace(string(output)))
-			}
-
-			logger.Debug("gallery", "Push output: %s", string(output))
-			return nil
-		}
-
 		askpassScript, err := os.CreateTemp("", "daz-pages-askpass-*")
 		if err != nil {
 			return fmt.Errorf("failed to create askpass script: %w", err)
@@ -1386,9 +1342,6 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 	}
 
 	remoteURL := "https://github.com/hildolfr/daz.git"
-	if githubToken == "" {
-		remoteURL = "git@github.com:hildolfr/daz.git"
-	}
 
 	// Check if remote exists
 	if err := runGitCmd("remote", "get-url", "origin"); err != nil {
@@ -1452,7 +1405,7 @@ func isPushRetryable(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "no pages publish token configured") || strings.Contains(msg, "deploy key not found") {
+	if strings.Contains(msg, "no pages publish token configured") {
 		return false
 	}
 

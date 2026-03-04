@@ -573,9 +573,13 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 	if githubToken == "" {
 		remoteURL = "git@github.com:hildolfr/daz.git"
 	}
-	if _, err := g.runGit(ctx, nil, "remote", "add", "origin", remoteURL); err != nil {
-		if !strings.Contains(err.Error(), "remote origin already exists") {
-			logger.Warn("help", "Failed to add remote: %v", err)
+	if _, err := g.runGit(ctx, nil, "remote", "get-url", "origin"); err != nil {
+		if _, err := g.runGit(ctx, nil, "remote", "add", "origin", remoteURL); err != nil {
+			return fmt.Errorf("failed to add remote: %w", err)
+		}
+	} else {
+		if _, err := g.runGit(ctx, nil, "remote", "set-url", "origin", remoteURL); err != nil {
+			return fmt.Errorf("failed to update remote: %w", err)
 		}
 	}
 
