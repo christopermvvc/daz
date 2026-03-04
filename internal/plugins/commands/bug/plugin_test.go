@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
+	"github.com/hildolfr/daz/pkg/eventbus"
 )
 
 type broadcastCall struct {
@@ -169,6 +170,20 @@ func mkBugCommandEvent(username, channel string, isPM, isAdmin bool, args ...str
 						},
 					},
 				},
+			},
+		},
+	}
+}
+
+func mkChatEvent(username, channel, message string) *framework.DataEvent {
+	return &framework.DataEvent{
+		EventType: eventbus.EventCytubeChatMsg,
+		EventTime: time.Now(),
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username: username,
+				Channel:  channel,
+				Message:  message,
 			},
 		},
 	}
@@ -570,7 +585,7 @@ func TestCreateIssueFromReportUsesGitHubAPI(t *testing.T) {
 	if !strings.Contains(strings.ToLower(payloadTitle), "bug report") {
 		t.Fatalf("expected bug report title, got %q", payloadTitle)
 	}
-	if !strings.Contains(payloadBody, "@alice") || !strings.Contains(payloadBody, "queue shuffle") {
+	if !strings.Contains(payloadBody, "Reporter: alice") || !strings.Contains(payloadBody, "queue shuffle") {
 		t.Fatalf("issue body missing report details: %q", payloadBody)
 	}
 }
@@ -875,12 +890,17 @@ func TestBuildBugIssueAssetsFormatting(t *testing.T) {
 		Username:  "alice",
 		Comment:   "line one\nline two",
 		CreatedAt: time.Date(2026, 3, 3, 10, 30, 0, 0, time.UTC),
+	}, []chatLine{
+		{Username: "bob", Message: "seen this too"},
 	})
 	if !strings.Contains(title, "bug report (chan):") {
 		t.Fatalf("unexpected title: %q", title)
 	}
-	if !strings.Contains(body, "Reporter: @alice") || !strings.Contains(body, "> line one") || !strings.Contains(body, "> line two") {
+	if !strings.Contains(body, "Reporter: alice") || !strings.Contains(body, "> line one") || !strings.Contains(body, "> line two") {
 		t.Fatalf("issue body missing expected format: %q", body)
+	}
+	if !strings.Contains(body, "Recent Chat Context (last 10 lines):") || !strings.Contains(body, "- bob: seen this too") {
+		t.Fatalf("issue body missing recent chat context: %q", body)
 	}
 }
 
@@ -889,5 +909,80 @@ func TestQuoteBlock(t *testing.T) {
 	want := "> line1\n>\n> line2"
 	if block != want {
 		t.Fatalf("unexpected quote block:\n%s\nwant:\n%s", block, want)
+	}
+}
+
+func TestHandleChatMessageCapturesRecentLines(t *testing.T) {
+	p := New().(*Plugin)
+	if err := p.Init(nil, &testEventBus{}); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+
+	for i := 1; i <= 12; i++ {
+		if err := p.handleChatMessage(mkChatEvent("user", "chan", fmt.Sprintf("line %d", i))); err != nil {
+			t.Fatalf("handleChatMessage error: %v", err)
+		}
+	}
+
+	lines := p.getRecentChat("chan", 10)
+	if len(lines) != 10 {
+		t.Fatalf("expected 10 recent lines, got %d", len(lines))
+	}
+	if lines[0].Message != "line 3" || lines[9].Message != "line 12" {
+		t.Fatalf("unexpected line window: first=%q last=%q", lines[0].Message, lines[9].Message)
+	}
+}
+
+func TestCreateIssueFromReportIncludesRecentChatContext(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+
+	var payloadBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/repos/hildolfr/daz/issues" {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		payloadBody, _ = req["body"].(string)
+		_, _ = w.Write([]byte(`{"number":321,"html_url":"https://github.com/hildolfr/daz/issues/321"}`))
+	}))
+	defer server.Close()
+
+	bus := &testEventBus{}
+	p := New().(*Plugin)
+	cfg := []byte(fmt.Sprintf(`{"api_base_url":"%s","repo_owner":"hildolfr","repo_name":"daz"}`, server.URL))
+	if err := p.Init(cfg, bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+	p.httpClient = server.Client()
+
+	for i := 1; i <= 12; i++ {
+		if err := p.handleChatMessage(mkChatEvent("u", "always_always_sunny", fmt.Sprintf("ctx %d", i))); err != nil {
+			t.Fatalf("handleChatMessage error: %v", err)
+		}
+	}
+
+	_, err := p.createIssueFromReport(context.Background(), bugReport{
+		Channel:   "always_always_sunny",
+		Username:  "alice",
+		Comment:   "bug happened",
+		CreatedAt: time.Date(2026, 3, 3, 10, 30, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("createIssueFromReport error: %v", err)
+	}
+
+	if !strings.Contains(payloadBody, "Recent Chat Context (last 10 lines):") {
+		t.Fatalf("missing context section in issue body: %q", payloadBody)
+	}
+	if !strings.Contains(payloadBody, "- u: ctx 3") || !strings.Contains(payloadBody, "- u: ctx 12") {
+		t.Fatalf("issue body missing expected recent chat lines: %q", payloadBody)
+	}
+	if strings.Contains(payloadBody, "- u: ctx 1\n") || strings.Contains(payloadBody, "- u: ctx 2\n") {
+		t.Fatalf("issue body should only include last 10 lines: %q", payloadBody)
 	}
 }

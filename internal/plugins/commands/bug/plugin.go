@@ -14,6 +14,7 @@ import (
 
 	"github.com/hildolfr/daz/internal/framework"
 	"github.com/hildolfr/daz/internal/logger"
+	"github.com/hildolfr/daz/pkg/eventbus"
 )
 
 const (
@@ -24,6 +25,8 @@ const (
 	defaultCooldownMinutes    = 60
 	defaultRequestTimeoutSecs = 20
 	defaultMaxCommentLength   = 700
+	chatHistoryLimit          = 50
+	issueContextLines         = 10
 )
 
 type Plugin struct {
@@ -43,6 +46,9 @@ type Plugin struct {
 
 	cooldownMu       sync.Mutex
 	nonAdminCooldown map[string]time.Time
+
+	chatMu     sync.RWMutex
+	recentChat map[string][]chatLine
 }
 
 type Config struct {
@@ -61,6 +67,11 @@ type bugReport struct {
 	Username  string
 	Comment   string
 	CreatedAt time.Time
+}
+
+type chatLine struct {
+	Username string
+	Message  string
 }
 
 type createdIssue struct {
@@ -86,6 +97,7 @@ func New() framework.Plugin {
 		name:             "bug",
 		now:              time.Now,
 		nonAdminCooldown: make(map[string]time.Time),
+		recentChat:       make(map[string][]chatLine),
 	}
 }
 
@@ -147,6 +159,9 @@ func (p *Plugin) Init(rawConfig json.RawMessage, bus framework.EventBus) error {
 	if p.nonAdminCooldown == nil {
 		p.nonAdminCooldown = make(map[string]time.Time)
 	}
+	if p.recentChat == nil {
+		p.recentChat = make(map[string][]chatLine)
+	}
 
 	return nil
 }
@@ -162,6 +177,9 @@ func (p *Plugin) Start() error {
 
 	if err := p.eventBus.Subscribe("command.bug.execute", p.handleCommand); err != nil {
 		return fmt.Errorf("failed to subscribe to command.bug.execute: %w", err)
+	}
+	if err := p.eventBus.Subscribe(eventbus.EventCytubeChatMsg, p.handleChatMessage); err != nil {
+		return fmt.Errorf("failed to subscribe to %s: %w", eventbus.EventCytubeChatMsg, err)
 	}
 
 	p.registerCommand()
@@ -187,6 +205,22 @@ func (p *Plugin) Stop() error {
 
 func (p *Plugin) HandleEvent(event framework.Event) error {
 	_ = event
+	return nil
+}
+
+func (p *Plugin) handleChatMessage(event framework.Event) error {
+	dataEvent, ok := event.(*framework.DataEvent)
+	if !ok || dataEvent.Data == nil || dataEvent.Data.ChatMessage == nil {
+		return nil
+	}
+	msg := dataEvent.Data.ChatMessage
+	channel := strings.TrimSpace(msg.Channel)
+	username := strings.TrimSpace(msg.Username)
+	text := strings.TrimSpace(msg.Message)
+	if channel == "" || username == "" || text == "" {
+		return nil
+	}
+	p.appendRecentChat(channel, username, text)
 	return nil
 }
 
@@ -419,7 +453,7 @@ func (p *Plugin) createIssueFromReport(ctx context.Context, report bugReport) (*
 		return nil, fmt.Errorf("GITHUB_TOKEN is not set")
 	}
 
-	title, body := p.buildBugIssueAssets(report)
+	title, body := p.buildBugIssueAssets(report, p.getRecentChat(report.Channel, issueContextLines))
 	issue, err := p.openIssue(ctx, token, title, body)
 	if err != nil {
 		return nil, err
@@ -427,7 +461,7 @@ func (p *Plugin) createIssueFromReport(ctx context.Context, report bugReport) (*
 	return issue, nil
 }
 
-func (p *Plugin) buildBugIssueAssets(report bugReport) (title, body string) {
+func (p *Plugin) buildBugIssueAssets(report bugReport, recent []chatLine) (title, body string) {
 	reportedAt := report.CreatedAt.UTC().Format(time.RFC3339)
 	shortComment := report.Comment
 	if len(shortComment) > 72 {
@@ -435,14 +469,18 @@ func (p *Plugin) buildBugIssueAssets(report bugReport) (title, body string) {
 	}
 
 	title = fmt.Sprintf("%s (%s): %s", p.config.TitlePrefix, report.Channel, shortComment)
+	contextBlock := formatChatContext(recent)
 	body = strings.TrimSpace(fmt.Sprintf(
 		`This issue was auto-generated from chat command !bug.
 
-- Reporter: @%s
+- Reporter: %s
 - Channel: %s
 - Reported At (UTC): %s
 
 Original Comment:
+%s
+
+Recent Chat Context (last 10 lines):
 %s
 
 Please triage and implement a fix.
@@ -451,6 +489,7 @@ Please triage and implement a fix.
 		report.Channel,
 		reportedAt,
 		quoteBlock(report.Comment),
+		contextBlock,
 	))
 	return title, body
 }
@@ -577,4 +616,73 @@ func normalizeLabels(labels []string) []string {
 		normalized = append(normalized, clean)
 	}
 	return normalized
+}
+
+func (p *Plugin) appendRecentChat(channel, username, message string) {
+	channelKey := strings.ToLower(strings.TrimSpace(channel))
+	if channelKey == "" {
+		return
+	}
+	line := chatLine{
+		Username: strings.TrimSpace(username),
+		Message:  strings.TrimSpace(message),
+	}
+	if line.Username == "" || line.Message == "" {
+		return
+	}
+
+	p.chatMu.Lock()
+	defer p.chatMu.Unlock()
+	lines := append(p.recentChat[channelKey], line)
+	if len(lines) > chatHistoryLimit {
+		lines = append([]chatLine(nil), lines[len(lines)-chatHistoryLimit:]...)
+	}
+	p.recentChat[channelKey] = lines
+}
+
+func (p *Plugin) getRecentChat(channel string, limit int) []chatLine {
+	if limit <= 0 {
+		return nil
+	}
+	channelKey := strings.ToLower(strings.TrimSpace(channel))
+	if channelKey == "" {
+		return nil
+	}
+
+	p.chatMu.RLock()
+	defer p.chatMu.RUnlock()
+	lines := p.recentChat[channelKey]
+	if len(lines) == 0 {
+		return nil
+	}
+	start := 0
+	if len(lines) > limit {
+		start = len(lines) - limit
+	}
+	copied := make([]chatLine, len(lines[start:]))
+	copy(copied, lines[start:])
+	return copied
+}
+
+func formatChatContext(lines []chatLine) string {
+	if len(lines) == 0 {
+		return "- (no recent chat captured)"
+	}
+	formatted := make([]string, 0, len(lines))
+	for _, line := range lines {
+		user := strings.TrimSpace(line.Username)
+		msg := strings.TrimSpace(line.Message)
+		if user == "" || msg == "" {
+			continue
+		}
+		msg = strings.Join(strings.Fields(strings.ReplaceAll(msg, "\n", " ")), " ")
+		if len(msg) > 180 {
+			msg = msg[:177] + "..."
+		}
+		formatted = append(formatted, fmt.Sprintf("- %s: %s", user, msg))
+	}
+	if len(formatted) == 0 {
+		return "- (no recent chat captured)"
+	}
+	return strings.Join(formatted, "\n")
 }
