@@ -14,6 +14,7 @@ func clearPublishTokenEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv(helpPublishTokenEnv, "")
 	t.Setenv(pagesPublishTokenEnv, "")
+	t.Setenv(pagesPublishUserEnv, "")
 	t.Setenv("GITHUB_TOKEN", "")
 }
 
@@ -32,6 +33,18 @@ func TestResolveHelpPublishToken(t *testing.T) {
 	t.Setenv(helpPublishTokenEnv, "help-pages-token")
 	if got := resolveHelpPublishToken(); got != "help-pages-token" {
 		t.Fatalf("expected help token to take precedence, got %q", got)
+	}
+}
+
+func TestResolveHelpPublishUsername(t *testing.T) {
+	clearPublishTokenEnv(t)
+	if got := resolveHelpPublishUsername(); got != "hildolfr" {
+		t.Fatalf("expected default username hildolfr, got %q", got)
+	}
+
+	t.Setenv(pagesPublishUserEnv, "custom-user")
+	if got := resolveHelpPublishUsername(); got != "custom-user" {
+		t.Fatalf("expected custom username, got %q", got)
 	}
 }
 

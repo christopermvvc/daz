@@ -299,6 +299,16 @@ func TestIsPushRetryable(t *testing.T) {
 			err:       fmt.Errorf("push failed: EOF"),
 			retryable: true,
 		},
+		{
+			name:      "auth failure",
+			err:       fmt.Errorf("push failed: exit status 128, output: remote: Invalid username or token"),
+			retryable: false,
+		},
+		{
+			name:      "permission failure",
+			err:       fmt.Errorf("push failed: exit status 128, output: The requested URL returned error: 403"),
+			retryable: false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -327,5 +337,17 @@ func TestResolveGalleryPublishToken(t *testing.T) {
 	t.Setenv(galleryPublishTokenEnv, "gallery-pages-token")
 	if got := resolveGalleryPublishToken(); got != "gallery-pages-token" {
 		t.Fatalf("expected gallery token to take precedence, got %q", got)
+	}
+}
+
+func TestResolveGalleryPublishUsername(t *testing.T) {
+	t.Setenv(pagesPublishUserEnv, "")
+	if got := resolveGalleryPublishUsername(); got != "hildolfr" {
+		t.Fatalf("expected default username hildolfr, got %q", got)
+	}
+
+	t.Setenv(pagesPublishUserEnv, "custom-user")
+	if got := resolveGalleryPublishUsername(); got != "custom-user" {
+		t.Fatalf("expected custom username, got %q", got)
 	}
 }

@@ -31,6 +31,7 @@ const galleryPublishStateFile = ".daz_gallery_publish_state.json"
 const (
 	galleryPublishTokenEnv = "DAZ_GALLERY_GITHUB_TOKEN"
 	pagesPublishTokenEnv   = "DAZ_GH_PAGES_TOKEN"
+	pagesPublishUserEnv    = "DAZ_GH_PAGES_USERNAME"
 )
 
 type publishState struct {
@@ -117,6 +118,13 @@ func resolveGalleryPublishToken() string {
 		return token
 	}
 	return ""
+}
+
+func resolveGalleryPublishUsername() string {
+	if username := strings.TrimSpace(os.Getenv(pagesPublishUserEnv)); username != "" {
+		return username
+	}
+	return "hildolfr"
 }
 
 // GenerateAllGalleries generates a single shared HTML gallery for all users
@@ -1272,24 +1280,54 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 
 			output, err := cmd.CombinedOutput()
 			if err != nil {
-				return fmt.Errorf("push failed: %w", err)
+				return fmt.Errorf("push failed: %w, output: %s", err, strings.TrimSpace(string(output)))
 			}
 
 			logger.Debug("gallery", "Push output: %s", string(output))
 			return nil
 		}
 
-		// Use pages publish token directly in URL for authentication.
-		authURL := fmt.Sprintf("https://x-access-token:%s@github.com/hildolfr/daz.git", githubToken)
-		cmd := exec.CommandContext(ctx, "git", "push", authURL, "gh-pages", "--force")
+		askpassScript, err := os.CreateTemp("", "daz-pages-askpass-*")
+		if err != nil {
+			return fmt.Errorf("failed to create askpass script: %w", err)
+		}
+		askpassPath := askpassScript.Name()
+		script := "#!/bin/sh\n" +
+			"case \"$1\" in\n" +
+			"  *Username*) printf '%s\\n' \"$DAZ_GIT_USERNAME\" ;;\n" +
+			"  *Password*) printf '%s\\n' \"$DAZ_GIT_TOKEN\" ;;\n" +
+			"  *) printf '\\n' ;;\n" +
+			"esac\n"
+		if _, err := askpassScript.WriteString(script); err != nil {
+			_ = askpassScript.Close()
+			_ = os.Remove(askpassPath)
+			return fmt.Errorf("failed to write askpass script: %w", err)
+		}
+		if err := askpassScript.Close(); err != nil {
+			_ = os.Remove(askpassPath)
+			return fmt.Errorf("failed to close askpass script: %w", err)
+		}
+		if err := os.Chmod(askpassPath, 0700); err != nil {
+			_ = os.Remove(askpassPath)
+			return fmt.Errorf("failed to chmod askpass script: %w", err)
+		}
+		defer func() {
+			_ = os.Remove(askpassPath)
+		}()
+
+		cmd := exec.CommandContext(ctx, "git", "push", "origin", "gh-pages", "--force")
 		cmd.Dir = g.config.HTMLOutputPath
 
 		cmd.Env = append(os.Environ(),
-			"GIT_TERMINAL_PROMPT=0")
+			"GIT_TERMINAL_PROMPT=0",
+			"GIT_ASKPASS="+askpassPath,
+			"DAZ_GIT_USERNAME="+resolveGalleryPublishUsername(),
+			"DAZ_GIT_TOKEN="+githubToken,
+		)
 
 		output, err := cmd.CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("push failed: %w", err)
+			return fmt.Errorf("push failed: %w, output: %s", err, strings.TrimSpace(string(output)))
 		}
 
 		logger.Debug("gallery", "Push output: %s", string(output))
@@ -1415,6 +1453,15 @@ func isPushRetryable(err error) bool {
 	}
 	msg := err.Error()
 	if strings.Contains(msg, "no pages publish token configured") || strings.Contains(msg, "deploy key not found") {
+		return false
+	}
+
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "authentication failed") ||
+		strings.Contains(lower, "invalid username or token") ||
+		strings.Contains(lower, "bad credentials") ||
+		strings.Contains(lower, "requested url returned error: 403") ||
+		strings.Contains(lower, "permission to ") {
 		return false
 	}
 	return true

@@ -25,6 +25,7 @@ const (
 	helpPublishStatePrefix = ".daz_help_publish_state_"
 	helpPublishTokenEnv    = "DAZ_HELP_GITHUB_TOKEN"
 	pagesPublishTokenEnv   = "DAZ_GH_PAGES_TOKEN"
+	pagesPublishUserEnv    = "DAZ_GH_PAGES_USERNAME"
 )
 
 type publishState struct {
@@ -174,6 +175,13 @@ func resolveHelpPublishToken() string {
 		return token
 	}
 	return ""
+}
+
+func resolveHelpPublishUsername() string {
+	if username := strings.TrimSpace(os.Getenv(pagesPublishUserEnv)); username != "" {
+		return username
+	}
+	return "hildolfr"
 }
 
 func (g *HTMLGenerator) GenerateAll(ctx context.Context) error {
@@ -509,8 +517,40 @@ func (g *HTMLGenerator) pushToGitHub(ctx context.Context) error {
 		}
 
 		logger.Info("help", "Using pages publish token for help page publish")
-		authURL := fmt.Sprintf("https://x-access-token:%s@github.com/hildolfr/daz.git", githubToken)
-		if _, err := g.runGit(ctx, []string{"GIT_TERMINAL_PROMPT=0"}, "push", authURL, "gh-pages", "--force"); err != nil {
+		askpassScript, err := os.CreateTemp("", "daz-pages-askpass-*")
+		if err != nil {
+			return fmt.Errorf("failed to create askpass script: %w", err)
+		}
+		askpassPath := askpassScript.Name()
+		script := "#!/bin/sh\n" +
+			"case \"$1\" in\n" +
+			"  *Username*) printf '%s\\n' \"$DAZ_GIT_USERNAME\" ;;\n" +
+			"  *Password*) printf '%s\\n' \"$DAZ_GIT_TOKEN\" ;;\n" +
+			"  *) printf '\\n' ;;\n" +
+			"esac\n"
+		if _, err := askpassScript.WriteString(script); err != nil {
+			_ = askpassScript.Close()
+			_ = os.Remove(askpassPath)
+			return fmt.Errorf("failed to write askpass script: %w", err)
+		}
+		if err := askpassScript.Close(); err != nil {
+			_ = os.Remove(askpassPath)
+			return fmt.Errorf("failed to close askpass script: %w", err)
+		}
+		if err := os.Chmod(askpassPath, 0700); err != nil {
+			_ = os.Remove(askpassPath)
+			return fmt.Errorf("failed to chmod askpass script: %w", err)
+		}
+		defer func() {
+			_ = os.Remove(askpassPath)
+		}()
+
+		if _, err := g.runGit(ctx, []string{
+			"GIT_TERMINAL_PROMPT=0",
+			"GIT_ASKPASS=" + askpassPath,
+			"DAZ_GIT_USERNAME=" + resolveHelpPublishUsername(),
+			"DAZ_GIT_TOKEN=" + githubToken,
+		}, "push", "origin", "gh-pages", "--force"); err != nil {
 			return fmt.Errorf("push failed: %w", err)
 		}
 		return nil
