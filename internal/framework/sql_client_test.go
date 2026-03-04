@@ -277,7 +277,25 @@ func TestSQLClient_QueryContext(t *testing.T) {
 	}
 }
 
-func TestSQLClientExecUsesBestEffortSingleAttempt(t *testing.T) {
+func TestSQLClientExecUsesRetryingDefaultPolicy(t *testing.T) {
+	mockBus := &mockSQLEventBus{
+		requests:              make(map[string]*EventData),
+		responses:             make(map[string]*EventData),
+		requestCounts:         make(map[string]int),
+		execFailuresRemaining: 2,
+	}
+
+	client := NewSQLClient(mockBus, "test-client")
+	if err := client.Exec("INSERT INTO test_table (name) VALUES ($1)", "demo"); err != nil {
+		t.Fatalf("expected Exec to succeed after retries, got error: %v", err)
+	}
+
+	if got := mockBus.requestCounts["sql.exec.request"]; got != 3 {
+		t.Fatalf("expected three exec attempts (2 failures + 1 success), got %d", got)
+	}
+}
+
+func TestSQLClientExecBestEffortUsesSingleAttempt(t *testing.T) {
 	mockBus := &mockSQLEventBus{
 		requests:              make(map[string]*EventData),
 		responses:             make(map[string]*EventData),
@@ -286,9 +304,26 @@ func TestSQLClientExecUsesBestEffortSingleAttempt(t *testing.T) {
 	}
 
 	client := NewSQLClient(mockBus, "test-client")
-	err := client.Exec("INSERT INTO test_table (name) VALUES ($1)", "demo")
+	err := client.ExecBestEffort("INSERT INTO test_table (name) VALUES ($1)", "demo")
 	if err == nil {
-		t.Fatal("expected Exec to fail on first-attempt error")
+		t.Fatal("expected ExecBestEffort to fail on first-attempt error")
+	}
+
+	if got := mockBus.requestCounts["sql.exec.request"]; got != 1 {
+		t.Fatalf("expected exactly one exec attempt, got %d", got)
+	}
+}
+
+func TestSQLClientExecBestEffortSuccessSingleAttempt(t *testing.T) {
+	mockBus := &mockSQLEventBus{
+		requests:      make(map[string]*EventData),
+		responses:     make(map[string]*EventData),
+		requestCounts: make(map[string]int),
+	}
+
+	client := NewSQLClient(mockBus, "test-client")
+	if err := client.ExecBestEffort("INSERT INTO test_table (name) VALUES ($1)", "demo"); err != nil {
+		t.Fatalf("expected ExecBestEffort to succeed, got error: %v", err)
 	}
 
 	if got := mockBus.requestCounts["sql.exec.request"]; got != 1 {

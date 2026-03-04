@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1158,29 +1160,60 @@ func (p *Plugin) logPostgresTuningDiagnostics(ctx context.Context) {
 	}
 
 	if shared, ok := settings["shared_buffers"]; ok {
-		if bytes, err := p.pgSettingBytes(queryCtx, shared.setting, shared.unit); err == nil && bytes < 64*1024*1024 {
+		if bytes, err := p.pgSettingBytes(shared.setting, shared.unit); err == nil && bytes < 64*1024*1024 {
 			logger.Warn("SQL", "Postgres shared_buffers appears low (%s%s). Consider >= 64MB for better ingest throughput.", shared.setting, shared.unit)
 		}
 	}
 	if workMem, ok := settings["work_mem"]; ok {
-		if bytes, err := p.pgSettingBytes(queryCtx, workMem.setting, workMem.unit); err == nil && bytes < 2*1024*1024 {
+		if bytes, err := p.pgSettingBytes(workMem.setting, workMem.unit); err == nil && bytes < 2*1024*1024 {
 			logger.Warn("SQL", "Postgres work_mem appears low (%s%s). Consider >= 2MB to reduce sort/hash stalls.", workMem.setting, workMem.unit)
 		}
 	}
 	if cacheSize, ok := settings["effective_cache_size"]; ok {
-		if bytes, err := p.pgSettingBytes(queryCtx, cacheSize.setting, cacheSize.unit); err == nil && bytes < 256*1024*1024 {
+		if bytes, err := p.pgSettingBytes(cacheSize.setting, cacheSize.unit); err == nil && bytes < 256*1024*1024 {
 			logger.Warn("SQL", "Postgres effective_cache_size appears low (%s%s). Consider >= 256MB when possible.", cacheSize.setting, cacheSize.unit)
 		}
 	}
 }
 
-func (p *Plugin) pgSettingBytes(ctx context.Context, setting, unit string) (int64, error) {
-	var bytes int64
-	value := strings.TrimSpace(setting + unit)
-	if err := p.pool.QueryRow(ctx, `SELECT pg_size_bytes($1)`, value).Scan(&bytes); err != nil {
+func (p *Plugin) pgSettingBytes(setting, unit string) (int64, error) {
+	value, err := strconv.ParseInt(strings.TrimSpace(setting), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse pg setting value %q: %w", setting, err)
+	}
+	if value < 0 {
+		return 0, fmt.Errorf("pg setting value must be non-negative: %q", setting)
+	}
+
+	multiplier, err := pgSettingUnitMultiplier(unit)
+	if err != nil {
 		return 0, err
 	}
-	return bytes, nil
+
+	if value > math.MaxInt64/multiplier {
+		return 0, fmt.Errorf("pg setting value %q with unit %q overflows int64 bytes", setting, unit)
+	}
+
+	return value * multiplier, nil
+}
+
+func pgSettingUnitMultiplier(unit string) (int64, error) {
+	switch strings.ToLower(strings.TrimSpace(unit)) {
+	case "", "b", "byte", "bytes":
+		return 1, nil
+	case "kb":
+		return 1024, nil
+	case "8kb":
+		return 8 * 1024, nil
+	case "mb":
+		return 1024 * 1024, nil
+	case "gb":
+		return 1024 * 1024 * 1024, nil
+	case "tb":
+		return 1024 * 1024 * 1024 * 1024, nil
+	default:
+		return 0, fmt.Errorf("unsupported pg setting unit %q", unit)
+	}
 }
 
 func isCriticalCoreEvent(eventType string) bool {

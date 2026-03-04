@@ -208,6 +208,95 @@ func TestAcquirePendingDispatchSlotUsesDedicatedSQLPendingLane(t *testing.T) {
 	}
 }
 
+func TestAcquirePendingDispatchSlotUsesDedicatedCommandPendingLane(t *testing.T) {
+	eb := NewEventBus(&Config{})
+	msg := &eventMessage{
+		Type:     "command.update.execute",
+		Metadata: framework.NewEventMetadata("test", "command.update.execute"),
+	}
+
+	release, admitted := eb.acquirePendingDispatchSlot(msg)
+	if !admitted {
+		t.Fatal("expected command pending dispatch slot admission")
+	}
+	defer release()
+
+	if got := len(eb.dispatchPendingCommand); got != 1 {
+		t.Fatalf("expected command pending semaphore to be used, got len=%d", got)
+	}
+	if got := len(eb.dispatchPending); got != 0 {
+		t.Fatalf("expected shared pending semaphore to remain unused, got len=%d", got)
+	}
+}
+
+func TestAcquirePendingDispatchSlotCommandNotBlockedBySharedPendingSaturation(t *testing.T) {
+	eb := NewEventBus(&Config{})
+
+	for i := 0; i < cap(eb.dispatchPending); i++ {
+		eb.dispatchPending <- struct{}{}
+	}
+	defer func() {
+		for len(eb.dispatchPending) > 0 {
+			<-eb.dispatchPending
+		}
+	}()
+
+	msg := &eventMessage{
+		Type:     "command.update.execute",
+		Metadata: framework.NewEventMetadata("test", "command.update.execute"),
+	}
+
+	type result struct {
+		release  func()
+		admitted bool
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		release, admitted := eb.acquirePendingDispatchSlot(msg)
+		resultCh <- result{release: release, admitted: admitted}
+	}()
+
+	select {
+	case res := <-resultCh:
+		if !res.admitted {
+			t.Fatal("expected command pending admission even when shared lane is saturated")
+		}
+		if res.release == nil {
+			t.Fatal("expected non-nil release function for admitted command event")
+		}
+		defer res.release()
+		if got := len(eb.dispatchPendingCommand); got != 1 {
+			t.Fatalf("expected command pending lane occupancy 1, got %d", got)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timed out waiting for command pending lane admission")
+	}
+}
+
+func TestAcquirePendingDispatchSlotNormalUsesSharedPendingLane(t *testing.T) {
+	eb := NewEventBus(&Config{})
+	msg := &eventMessage{
+		Type:     "cytube.event.setAFK",
+		Metadata: framework.NewEventMetadata("test", "cytube.event.setAFK"),
+	}
+
+	release, admitted := eb.acquirePendingDispatchSlot(msg)
+	if !admitted {
+		t.Fatal("expected normal event pending admission")
+	}
+	defer release()
+
+	if got := len(eb.dispatchPending); got != 1 {
+		t.Fatalf("expected shared pending lane occupancy 1, got %d", got)
+	}
+	if got := len(eb.dispatchPendingCommand); got != 0 {
+		t.Fatalf("expected command pending lane occupancy 0, got %d", got)
+	}
+	if got := len(eb.dispatchPendingSQL); got != 0 {
+		t.Fatalf("expected sql pending lane occupancy 0, got %d", got)
+	}
+}
+
 func TestComputeDispatchLaneSizes(t *testing.T) {
 	tests := []struct {
 		name        string

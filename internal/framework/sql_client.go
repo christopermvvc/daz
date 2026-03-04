@@ -38,9 +38,14 @@ func (c *SQLClient) ExecContext(ctx context.Context, query string, args ...inter
 // Exec executes a SQL statement (convenience method)
 func (c *SQLClient) Exec(query string, args ...interface{}) error {
 	ctx := context.Background()
+	_, err := c.sqlHelper.NormalExec(ctx, query, args...)
+	return err
+}
 
-	// Convenience exec defaults to a single-attempt best-effort write to avoid
-	// retry-amplifying non-critical insert/update traffic under pressure.
+// ExecBestEffort executes a SQL statement with a single attempt.
+// Use this only for non-critical writes where dropping on transient failure is acceptable.
+func (c *SQLClient) ExecBestEffort(query string, args ...interface{}) error {
+	ctx := context.Background()
 	_, err := c.sqlHelper.BestEffortExec(ctx, query, args...)
 	return err
 }

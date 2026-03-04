@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -631,6 +633,91 @@ func TestRunCoreEventWriterFlushesAndDrainsOnShutdown(t *testing.T) {
 	}
 	if flushCalls.Load() < 2 {
 		t.Fatalf("expected at least two flush calls (batch + drain), got %d", flushCalls.Load())
+	}
+}
+
+func TestPGSettingBytes(t *testing.T) {
+	p := &Plugin{}
+
+	tests := []struct {
+		name    string
+		setting string
+		unit    string
+		want    int64
+		wantErr bool
+	}{
+		{
+			name:    "bytes default unit",
+			setting: "1024",
+			unit:    "",
+			want:    1024,
+		},
+		{
+			name:    "kilobytes",
+			setting: "64",
+			unit:    "kB",
+			want:    64 * 1024,
+		},
+		{
+			name:    "shared buffer blocks",
+			setting: "16384",
+			unit:    "8kB",
+			want:    16384 * 8 * 1024,
+		},
+		{
+			name:    "megabytes",
+			setting: "2",
+			unit:    "MB",
+			want:    2 * 1024 * 1024,
+		},
+		{
+			name:    "gigabytes",
+			setting: "1",
+			unit:    "GB",
+			want:    1024 * 1024 * 1024,
+		},
+		{
+			name:    "invalid unit",
+			setting: "1",
+			unit:    "widget",
+			wantErr: true,
+		},
+		{
+			name:    "invalid value",
+			setting: "abc",
+			unit:    "kB",
+			wantErr: true,
+		},
+		{
+			name:    "negative value",
+			setting: "-1",
+			unit:    "kB",
+			wantErr: true,
+		},
+		{
+			name:    "overflow value",
+			setting: strconv.FormatInt(math.MaxInt64, 10),
+			unit:    "kB",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := p.pgSettingBytes(tc.setting, tc.unit)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil (value=%d)", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("pgSettingBytes(%q, %q) = %d, want %d", tc.setting, tc.unit, got, tc.want)
+			}
+		})
 	}
 }
 

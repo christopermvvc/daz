@@ -34,12 +34,13 @@ type EventBus struct {
 	bufferSizes map[string]int
 
 	// Limit concurrent handler execution with reserved capacity for high-priority events.
-	dispatchSemCommand chan struct{}
-	dispatchSemNormal  chan struct{}
-	dispatchSemHigh    chan struct{}
-	dispatchSemSQL     chan struct{}
-	dispatchPending    chan struct{}
-	dispatchPendingSQL chan struct{}
+	dispatchSemCommand     chan struct{}
+	dispatchSemNormal      chan struct{}
+	dispatchSemHigh        chan struct{}
+	dispatchSemSQL         chan struct{}
+	dispatchPending        chan struct{}
+	dispatchPendingCommand chan struct{}
+	dispatchPendingSQL     chan struct{}
 
 	// Track active routers to prevent duplicates
 	activeRouters map[string]bool
@@ -130,24 +131,29 @@ func NewEventBus(config *Config) *EventBus {
 	}
 
 	workerCount, commandWorkers, highPriorityWorkers, normalWorkers := computeDispatchLaneSizes(runtime.GOMAXPROCS(0))
+	commandPendingCapacity := commandWorkers * 8
+	if commandPendingCapacity < 8 {
+		commandPendingCapacity = 8
+	}
 
 	eb := &EventBus{
-		queues:             make(map[string]*messageQueue),
-		subscribers:        make(map[string][]subscriberInfo),
-		patternSubscribers: make([]subscriberInfo, 0),
-		plugins:            make(map[string]framework.Plugin),
-		bufferSizes:        bufferSizes,
-		activeRouters:      make(map[string]bool),
-		pendingRequests:    make(map[string]chan *pluginResponse),
-		droppedEvents:      make(map[string]int64),
-		dispatchSemCommand: make(chan struct{}, commandWorkers),
-		dispatchSemNormal:  make(chan struct{}, normalWorkers),
-		dispatchSemHigh:    make(chan struct{}, highPriorityWorkers),
-		dispatchSemSQL:     make(chan struct{}, computeSQLLaneSize(runtime.GOMAXPROCS(0))),
-		dispatchPending:    make(chan struct{}, workerCount*8),
-		dispatchPendingSQL: make(chan struct{}, workerCount*4),
-		ctx:                ctx,
-		cancel:             cancel,
+		queues:                 make(map[string]*messageQueue),
+		subscribers:            make(map[string][]subscriberInfo),
+		patternSubscribers:     make([]subscriberInfo, 0),
+		plugins:                make(map[string]framework.Plugin),
+		bufferSizes:            bufferSizes,
+		activeRouters:          make(map[string]bool),
+		pendingRequests:        make(map[string]chan *pluginResponse),
+		droppedEvents:          make(map[string]int64),
+		dispatchSemCommand:     make(chan struct{}, commandWorkers),
+		dispatchSemNormal:      make(chan struct{}, normalWorkers),
+		dispatchSemHigh:        make(chan struct{}, highPriorityWorkers),
+		dispatchSemSQL:         make(chan struct{}, computeSQLLaneSize(runtime.GOMAXPROCS(0))),
+		dispatchPending:        make(chan struct{}, workerCount*8),
+		dispatchPendingCommand: make(chan struct{}, commandPendingCapacity),
+		dispatchPendingSQL:     make(chan struct{}, workerCount*4),
+		ctx:                    ctx,
+		cancel:                 cancel,
 	}
 
 	// Initialize queues for known event types
@@ -721,9 +727,9 @@ func (eb *EventBus) acquirePendingDispatchSlot(msg *eventMessage) (func(), bool)
 
 	if eb.isCommandPath(msg) {
 		select {
-		case eb.dispatchPending <- struct{}{}:
+		case eb.dispatchPendingCommand <- struct{}{}:
 			eb.observePendingLaneMetrics()
-			return eb.makePendingRelease(eb.dispatchPending), true
+			return eb.makePendingRelease(eb.dispatchPendingCommand), true
 		case <-eb.ctx.Done():
 			return nil, false
 		}
@@ -807,6 +813,9 @@ func (eb *EventBus) observeDispatchLaneMetrics() {
 func (eb *EventBus) observePendingLaneMetrics() {
 	metrics.EventBusPendingLaneOccupancy.WithLabelValues("shared").Set(float64(len(eb.dispatchPending)))
 	metrics.EventBusPendingLaneCapacity.WithLabelValues("shared").Set(float64(cap(eb.dispatchPending)))
+
+	metrics.EventBusPendingLaneOccupancy.WithLabelValues("command").Set(float64(len(eb.dispatchPendingCommand)))
+	metrics.EventBusPendingLaneCapacity.WithLabelValues("command").Set(float64(cap(eb.dispatchPendingCommand)))
 
 	metrics.EventBusPendingLaneOccupancy.WithLabelValues("sql").Set(float64(len(eb.dispatchPendingSQL)))
 	metrics.EventBusPendingLaneCapacity.WithLabelValues("sql").Set(float64(cap(eb.dispatchPendingSQL)))
