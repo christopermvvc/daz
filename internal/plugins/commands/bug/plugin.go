@@ -2,17 +2,12 @@ package bug
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -24,15 +19,12 @@ import (
 const (
 	defaultRepoOwner          = "hildolfr"
 	defaultRepoName           = "daz"
-	defaultBaseBranch         = "master"
 	defaultAPIBaseURL         = "https://api.github.com"
 	defaultTitlePrefix        = "bug report"
 	defaultCooldownMinutes    = 60
 	defaultRequestTimeoutSecs = 20
 	defaultMaxCommentLength   = 700
 )
-
-var slugRegex = regexp.MustCompile(`[^a-z0-9]+`)
 
 type Plugin struct {
 	name     string
@@ -45,23 +37,23 @@ type Plugin struct {
 
 	config Config
 
-	now          func() time.Time
-	httpClient   *http.Client
-	createPRFunc func(ctx context.Context, report bugReport) (*createdPR, error)
+	now             func() time.Time
+	httpClient      *http.Client
+	createIssueFunc func(ctx context.Context, report bugReport) (*createdIssue, error)
 
 	cooldownMu       sync.Mutex
 	nonAdminCooldown map[string]time.Time
 }
 
 type Config struct {
-	RepoOwner          string `json:"repo_owner"`
-	RepoName           string `json:"repo_name"`
-	BaseBranch         string `json:"base_branch"`
-	APIBaseURL         string `json:"api_base_url"`
-	TitlePrefix        string `json:"title_prefix"`
-	CooldownMinutes    int    `json:"cooldown_minutes"`
-	RequestTimeoutSecs int    `json:"request_timeout_seconds"`
-	MaxCommentLength   int    `json:"max_comment_length"`
+	RepoOwner          string   `json:"repo_owner"`
+	RepoName           string   `json:"repo_name"`
+	APIBaseURL         string   `json:"api_base_url"`
+	TitlePrefix        string   `json:"title_prefix"`
+	CooldownMinutes    int      `json:"cooldown_minutes"`
+	RequestTimeoutSecs int      `json:"request_timeout_seconds"`
+	MaxCommentLength   int      `json:"max_comment_length"`
+	Labels             []string `json:"labels"`
 }
 
 type bugReport struct {
@@ -71,15 +63,9 @@ type bugReport struct {
 	CreatedAt time.Time
 }
 
-type createdPR struct {
+type createdIssue struct {
 	Number  int    `json:"number"`
 	HTMLURL string `json:"html_url"`
-}
-
-type githubRefResponse struct {
-	Object struct {
-		SHA string `json:"sha"`
-	} `json:"object"`
 }
 
 type githubErrorResponse struct {
@@ -110,7 +96,6 @@ func (p *Plugin) Init(rawConfig json.RawMessage, bus framework.EventBus) error {
 	p.config = Config{
 		RepoOwner:          defaultRepoOwner,
 		RepoName:           defaultRepoName,
-		BaseBranch:         defaultBaseBranch,
 		APIBaseURL:         defaultAPIBaseURL,
 		TitlePrefix:        defaultTitlePrefix,
 		CooldownMinutes:    defaultCooldownMinutes,
@@ -125,7 +110,6 @@ func (p *Plugin) Init(rawConfig json.RawMessage, bus framework.EventBus) error {
 
 	p.config.RepoOwner = strings.TrimSpace(p.config.RepoOwner)
 	p.config.RepoName = strings.TrimSpace(p.config.RepoName)
-	p.config.BaseBranch = strings.TrimSpace(p.config.BaseBranch)
 	p.config.APIBaseURL = strings.TrimSpace(p.config.APIBaseURL)
 	p.config.TitlePrefix = strings.TrimSpace(p.config.TitlePrefix)
 	if p.config.RepoOwner == "" {
@@ -133,9 +117,6 @@ func (p *Plugin) Init(rawConfig json.RawMessage, bus framework.EventBus) error {
 	}
 	if p.config.RepoName == "" {
 		p.config.RepoName = defaultRepoName
-	}
-	if p.config.BaseBranch == "" {
-		p.config.BaseBranch = defaultBaseBranch
 	}
 	if p.config.APIBaseURL == "" {
 		p.config.APIBaseURL = defaultAPIBaseURL
@@ -152,12 +133,13 @@ func (p *Plugin) Init(rawConfig json.RawMessage, bus framework.EventBus) error {
 	if p.config.MaxCommentLength <= 0 {
 		p.config.MaxCommentLength = defaultMaxCommentLength
 	}
+	p.config.Labels = normalizeLabels(p.config.Labels)
 
 	if p.httpClient == nil {
 		p.httpClient = &http.Client{Timeout: time.Duration(p.config.RequestTimeoutSecs) * time.Second}
 	}
-	if p.createPRFunc == nil {
-		p.createPRFunc = p.createPRFromReport
+	if p.createIssueFunc == nil {
+		p.createIssueFunc = p.createIssueFromReport
 	}
 	if p.now == nil {
 		p.now = time.Now
@@ -234,7 +216,7 @@ func (p *Plugin) registerCommand() {
 				KeyValue: map[string]string{
 					"commands":    "bug",
 					"min_rank":    "0",
-					"description": "file a bug report as a GitHub pull request",
+					"description": "file a bug report as a GitHub issue",
 				},
 			},
 		},
@@ -312,9 +294,9 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(p.config.RequestTimeoutSecs)*time.Second)
 	defer cancel()
 
-	pr, err := p.createPRFunc(timeoutCtx, report)
+	issue, err := p.createIssueFunc(timeoutCtx, report)
 	if err != nil {
-		p.sendResponse(username, channel, isPM, fmt.Sprintf("failed to file bug PR: %s", safeErrMessage(err)))
+		p.sendResponse(username, channel, isPM, fmt.Sprintf("failed to file bug issue: %s", safeErrMessage(err)))
 		return nil
 	}
 
@@ -326,7 +308,7 @@ func (p *Plugin) handleCommand(event framework.Event) error {
 		username,
 		channel,
 		isPM,
-		fmt.Sprintf("bug filed as PR #%d: %s", pr.Number, pr.HTMLURL),
+		fmt.Sprintf("bug filed as issue #%d: %s", issue.Number, issue.HTMLURL),
 	)
 	return nil
 }
@@ -428,128 +410,30 @@ func safeErrMessage(err error) string {
 	return msg
 }
 
-func (p *Plugin) createPRFromReport(ctx context.Context, report bugReport) (*createdPR, error) {
+func (p *Plugin) createIssueFromReport(ctx context.Context, report bugReport) (*createdIssue, error) {
 	token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
 	if token == "" {
 		return nil, fmt.Errorf("GITHUB_TOKEN is not set")
 	}
 
-	baseSHA, err := p.fetchBaseBranchSHA(ctx, token)
+	title, body := p.buildBugIssueAssets(report)
+	issue, err := p.openIssue(ctx, token, title, body)
 	if err != nil {
 		return nil, err
 	}
-
-	branchName, err := p.createUniqueBranch(ctx, token, report, baseSHA)
-	if err != nil {
-		return nil, err
-	}
-
-	path, title, fileContent, prBody := p.buildBugReportAssets(report)
-	if err := p.commitReportFile(ctx, token, branchName, path, fileContent, report); err != nil {
-		return nil, err
-	}
-
-	pr, err := p.openPullRequest(ctx, token, branchName, title, prBody)
-	if err != nil {
-		return nil, err
-	}
-	return pr, nil
+	return issue, nil
 }
 
-func (p *Plugin) fetchBaseBranchSHA(ctx context.Context, token string) (string, error) {
-	path := fmt.Sprintf(
-		"/repos/%s/%s/git/ref/heads/%s",
-		url.PathEscape(p.config.RepoOwner),
-		url.PathEscape(p.config.RepoName),
-		url.PathEscape(p.config.BaseBranch),
-	)
-	var resp githubRefResponse
-	if err := p.githubRequest(ctx, token, http.MethodGet, path, nil, &resp); err != nil {
-		return "", fmt.Errorf("read base branch ref: %w", err)
-	}
-	sha := strings.TrimSpace(resp.Object.SHA)
-	if sha == "" {
-		return "", fmt.Errorf("empty base branch sha for %s", p.config.BaseBranch)
-	}
-	return sha, nil
-}
-
-func (p *Plugin) createUniqueBranch(ctx context.Context, token string, report bugReport, baseSHA string) (string, error) {
-	baseSlug := slugFromText(report.Comment, 32)
-	if baseSlug == "" {
-		baseSlug = "report"
-	}
-	ts := report.CreatedAt.Format("20060102-150405")
-
-	for attempt := 0; attempt < 5; attempt++ {
-		suffix, err := randomSuffix(3)
-		if err != nil {
-			return "", fmt.Errorf("generate branch suffix: %w", err)
-		}
-		branch := fmt.Sprintf("daz/bug/%s-%s-%s", ts, baseSlug, suffix)
-
-		path := fmt.Sprintf("/repos/%s/%s/git/refs", url.PathEscape(p.config.RepoOwner), url.PathEscape(p.config.RepoName))
-		payload := map[string]string{
-			"ref": "refs/heads/" + branch,
-			"sha": baseSHA,
-		}
-		err = p.githubRequest(ctx, token, http.MethodPost, path, payload, nil)
-		if err == nil {
-			return branch, nil
-		}
-
-		var statusErr *githubStatusError
-		if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnprocessableEntity {
-			continue
-		}
-		return "", fmt.Errorf("create branch %q: %w", branch, err)
-	}
-
-	return "", fmt.Errorf("failed to create unique branch after retries")
-}
-
-func (p *Plugin) buildBugReportAssets(report bugReport) (path, title, fileContent, prBody string) {
-	reporterSlug := slugFromText(report.Username, 24)
-	if reporterSlug == "" {
-		reporterSlug = "unknown"
-	}
-	commentSlug := slugFromText(report.Comment, 40)
-	if commentSlug == "" {
-		commentSlug = "report"
-	}
+func (p *Plugin) buildBugIssueAssets(report bugReport) (title, body string) {
 	reportedAt := report.CreatedAt.UTC().Format(time.RFC3339)
-	stamp := report.CreatedAt.UTC().Format("20060102_150405")
-	path = fmt.Sprintf("data/bugreports/%s_%s_%s.md", stamp, reporterSlug, commentSlug)
-
-	quotedComment := quoteBlock(report.Comment)
-	fileContent = strings.TrimSpace(fmt.Sprintf(
-		`# Bug Report
-
-- Reporter: @%s
-- Channel: %s
-- Reported At (UTC): %s
-- Source Command: !bug
-
-## Comment
-%s
-
-## Triage Notes
-- Auto-generated by the daz bug command plugin.
-`,
-		report.Username,
-		report.Channel,
-		reportedAt,
-		quotedComment,
-	))
-
 	shortComment := report.Comment
 	if len(shortComment) > 72 {
 		shortComment = strings.TrimSpace(shortComment[:72]) + "..."
 	}
-	title = fmt.Sprintf("%s (%s): %s", p.config.TitlePrefix, report.Channel, shortComment)
 
-	prBody = strings.TrimSpace(fmt.Sprintf(
-		`This PR was auto-generated from chat command !bug.
+	title = fmt.Sprintf("%s (%s): %s", p.config.TitlePrefix, report.Channel, shortComment)
+	body = strings.TrimSpace(fmt.Sprintf(
+		`This issue was auto-generated from chat command !bug.
 
 - Reporter: @%s
 - Channel: %s
@@ -563,51 +447,29 @@ Please triage and implement a fix.
 		report.Username,
 		report.Channel,
 		reportedAt,
-		quotedComment,
+		quoteBlock(report.Comment),
 	))
-	return path, title, fileContent, prBody
+	return title, body
 }
 
-func (p *Plugin) commitReportFile(
-	ctx context.Context,
-	token, branchName, path, fileContent string,
-	report bugReport,
-) error {
-	commitMessage := fmt.Sprintf("chore(bug): record report from %s in %s", report.Username, report.Channel)
-	payload := map[string]string{
-		"message": commitMessage,
-		"content": base64.StdEncoding.EncodeToString([]byte(fileContent)),
-		"branch":  branchName,
-	}
-	endpoint := fmt.Sprintf(
-		"/repos/%s/%s/contents/%s",
-		url.PathEscape(p.config.RepoOwner),
-		url.PathEscape(p.config.RepoName),
-		url.PathEscape(path),
-	)
-	if err := p.githubRequest(ctx, token, http.MethodPut, endpoint, payload, nil); err != nil {
-		return fmt.Errorf("commit report file: %w", err)
-	}
-	return nil
-}
-
-func (p *Plugin) openPullRequest(ctx context.Context, token, branchName, title, prBody string) (*createdPR, error) {
+func (p *Plugin) openIssue(ctx context.Context, token, title, body string) (*createdIssue, error) {
 	payload := map[string]any{
-		"title":                 title,
-		"head":                  branchName,
-		"base":                  p.config.BaseBranch,
-		"body":                  prBody,
-		"maintainer_can_modify": true,
+		"title": title,
+		"body":  body,
 	}
-	path := fmt.Sprintf("/repos/%s/%s/pulls", url.PathEscape(p.config.RepoOwner), url.PathEscape(p.config.RepoName))
-	var pr createdPR
-	if err := p.githubRequest(ctx, token, http.MethodPost, path, payload, &pr); err != nil {
-		return nil, fmt.Errorf("create pull request: %w", err)
+	if len(p.config.Labels) > 0 {
+		payload["labels"] = p.config.Labels
 	}
-	if pr.Number <= 0 || strings.TrimSpace(pr.HTMLURL) == "" {
-		return nil, fmt.Errorf("create pull request: github response missing PR metadata")
+
+	path := fmt.Sprintf("/repos/%s/%s/issues", url.PathEscape(p.config.RepoOwner), url.PathEscape(p.config.RepoName))
+	var issue createdIssue
+	if err := p.githubRequest(ctx, token, http.MethodPost, path, payload, &issue); err != nil {
+		return nil, fmt.Errorf("create issue: %w", err)
 	}
-	return &pr, nil
+	if issue.Number <= 0 || strings.TrimSpace(issue.HTMLURL) == "" {
+		return nil, fmt.Errorf("create issue: github response missing issue metadata")
+	}
+	return &issue, nil
 }
 
 func (p *Plugin) githubRequest(
@@ -680,16 +542,6 @@ func (p *Plugin) githubRequest(
 	return nil
 }
 
-func slugFromText(text string, max int) string {
-	s := strings.ToLower(strings.TrimSpace(text))
-	s = slugRegex.ReplaceAllString(s, "-")
-	s = strings.Trim(s, "-")
-	if max > 0 && len(s) > max {
-		s = strings.Trim(s[:max], "-")
-	}
-	return s
-}
-
 func quoteBlock(text string) string {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	for i, line := range lines {
@@ -703,13 +555,23 @@ func quoteBlock(text string) string {
 	return strings.Join(lines, "\n")
 }
 
-func randomSuffix(bytesLen int) (string, error) {
-	if bytesLen <= 0 {
-		bytesLen = 2
+func normalizeLabels(labels []string) []string {
+	if len(labels) == 0 {
+		return nil
 	}
-	buf := make([]byte, bytesLen)
-	if _, err := io.ReadFull(rand.Reader, buf); err != nil {
-		return "", err
+	seen := make(map[string]struct{}, len(labels))
+	normalized := make([]string, 0, len(labels))
+	for _, label := range labels {
+		clean := strings.TrimSpace(label)
+		if clean == "" {
+			continue
+		}
+		key := strings.ToLower(clean)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, clean)
 	}
-	return hex.EncodeToString(buf), nil
+	return normalized
 }

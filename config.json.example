@@ -154,11 +154,11 @@
     "bug": {
       "repo_owner": "hildolfr",
       "repo_name": "daz",
-      "base_branch": "master",
       "title_prefix": "bug report",
       "cooldown_minutes": 60,
       "request_timeout_seconds": 20,
-      "max_comment_length": 700
+      "max_comment_length": 700,
+      "labels": ["bug", "from-chat"]
     },
     "fishing": {}
   }

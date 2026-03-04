@@ -2,7 +2,6 @@ package bug
 
 import (
 	"context"
-	crand "crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -182,12 +181,6 @@ func boolToString(v bool) string {
 	return "false"
 }
 
-type errReader struct{}
-
-func (errReader) Read(_ []byte) (int, error) {
-	return 0, errors.New("read failed")
-}
-
 func TestStartRegistersBugCommand(t *testing.T) {
 	bus := &testEventBus{}
 	p := New().(*Plugin)
@@ -212,6 +205,9 @@ func TestStartRegistersBugCommand(t *testing.T) {
 		}
 		if fields["admin_only"] == "true" {
 			t.Fatalf("expected !bug command to not be admin-only")
+		}
+		if !strings.Contains(strings.ToLower(fields["description"]), "issue") {
+			t.Fatalf("expected issue-based description, got %q", fields["description"])
 		}
 		return
 	}
@@ -319,18 +315,18 @@ func TestHandleCommandNonAdminCooldown(t *testing.T) {
 	now := time.Date(2026, 3, 3, 9, 0, 0, 0, time.UTC)
 	p.now = func() time.Time { return now }
 	createCount := 0
-	p.createPRFunc = func(ctx context.Context, report bugReport) (*createdPR, error) {
+	p.createIssueFunc = func(ctx context.Context, report bugReport) (*createdIssue, error) {
 		_ = ctx
 		_ = report
 		createCount++
-		return &createdPR{Number: 41, HTMLURL: "https://example.com/pr/41"}, nil
+		return &createdIssue{Number: 41, HTMLURL: "https://example.com/issues/41"}, nil
 	}
 
 	if err := p.handleCommand(mkBugCommandEvent("alice", "chan", false, false, "first", "bug")); err != nil {
 		t.Fatalf("handleCommand first call error: %v", err)
 	}
 	if createCount != 1 {
-		t.Fatalf("expected first call to create PR once, got %d", createCount)
+		t.Fatalf("expected first call to create issue once, got %d", createCount)
 	}
 
 	now = now.Add(10 * time.Minute)
@@ -338,7 +334,7 @@ func TestHandleCommandNonAdminCooldown(t *testing.T) {
 		t.Fatalf("handleCommand second call error: %v", err)
 	}
 	if createCount != 1 {
-		t.Fatalf("expected cooldown to block second PR creation, got %d creations", createCount)
+		t.Fatalf("expected cooldown to block second issue creation, got %d creations", createCount)
 	}
 	if got := bus.lastChatMessage(); !strings.Contains(got, "cooldown active") {
 		t.Fatalf("expected cooldown message, got %q", got)
@@ -355,11 +351,14 @@ func TestHandleCommandCooldownExpiresAfterWindow(t *testing.T) {
 	now := time.Date(2026, 3, 3, 9, 0, 0, 0, time.UTC)
 	p.now = func() time.Time { return now }
 	createCount := 0
-	p.createPRFunc = func(ctx context.Context, report bugReport) (*createdPR, error) {
+	p.createIssueFunc = func(ctx context.Context, report bugReport) (*createdIssue, error) {
 		_ = ctx
 		_ = report
 		createCount++
-		return &createdPR{Number: 50 + createCount, HTMLURL: fmt.Sprintf("https://example.com/pr/%d", 50+createCount)}, nil
+		return &createdIssue{
+			Number:  50 + createCount,
+			HTMLURL: fmt.Sprintf("https://example.com/issues/%d", 50+createCount),
+		}, nil
 	}
 
 	if err := p.handleCommand(mkBugCommandEvent("alice", "chan", false, false, "first")); err != nil {
@@ -384,11 +383,11 @@ func TestHandleCommandAdminBypassesCooldown(t *testing.T) {
 	now := time.Date(2026, 3, 3, 9, 0, 0, 0, time.UTC)
 	p.now = func() time.Time { return now }
 	createCount := 0
-	p.createPRFunc = func(ctx context.Context, report bugReport) (*createdPR, error) {
+	p.createIssueFunc = func(ctx context.Context, report bugReport) (*createdIssue, error) {
 		_ = ctx
 		_ = report
 		createCount++
-		return &createdPR{Number: 77, HTMLURL: "https://example.com/pr/77"}, nil
+		return &createdIssue{Number: 77, HTMLURL: "https://example.com/issues/77"}, nil
 	}
 
 	if err := p.handleCommand(mkBugCommandEvent("admin", "chan", false, true, "bug", "one")); err != nil {
@@ -410,20 +409,20 @@ func TestHandleCommandFailureDoesNotConsumeCooldown(t *testing.T) {
 	}
 
 	calls := 0
-	p.createPRFunc = func(ctx context.Context, report bugReport) (*createdPR, error) {
+	p.createIssueFunc = func(ctx context.Context, report bugReport) (*createdIssue, error) {
 		_ = ctx
 		_ = report
 		calls++
 		if calls == 1 {
 			return nil, errors.New(strings.Repeat("x", 300))
 		}
-		return &createdPR{Number: 99, HTMLURL: "https://example.com/pr/99"}, nil
+		return &createdIssue{Number: 99, HTMLURL: "https://example.com/issues/99"}, nil
 	}
 
 	if err := p.handleCommand(mkBugCommandEvent("alice", "chan", false, false, "first")); err != nil {
 		t.Fatalf("first call error: %v", err)
 	}
-	if got := bus.lastChatMessage(); !strings.Contains(got, "failed to file bug PR:") {
+	if got := bus.lastChatMessage(); !strings.Contains(got, "failed to file bug issue:") {
 		t.Fatalf("expected failure response, got %q", got)
 	}
 	if !strings.Contains(bus.lastChatMessage(), "...") {
@@ -444,29 +443,17 @@ func TestHandleCommandPMUsesPluginResponse(t *testing.T) {
 	if err := p.Init(nil, bus); err != nil {
 		t.Fatalf("Init error: %v", err)
 	}
-	p.createPRFunc = func(ctx context.Context, report bugReport) (*createdPR, error) {
+	p.createIssueFunc = func(ctx context.Context, report bugReport) (*createdIssue, error) {
 		_ = ctx
 		_ = report
-		return &createdPR{Number: 11, HTMLURL: "https://example.com/pr/11"}, nil
+		return &createdIssue{Number: 11, HTMLURL: "https://example.com/issues/11"}, nil
 	}
 
 	if err := p.handleCommand(mkBugCommandEvent("alice", "chan", true, false, "pm", "bug")); err != nil {
 		t.Fatalf("pm call error: %v", err)
 	}
-	if got := bus.lastPMMessage(); !strings.Contains(got, "PR #11") {
-		t.Fatalf("expected PM plugin response with PR id, got %q", got)
-	}
-}
-
-func TestSendResponseIgnoresEmptyMessage(t *testing.T) {
-	bus := &testEventBus{}
-	p := New().(*Plugin)
-	if err := p.Init(nil, bus); err != nil {
-		t.Fatalf("Init error: %v", err)
-	}
-	p.sendResponse("alice", "chan", false, "   ")
-	if len(bus.broadcasts) != 0 {
-		t.Fatalf("expected no broadcast for empty response message")
+	if got := bus.lastPMMessage(); !strings.Contains(strings.ToLower(got), "issue #11") {
+		t.Fatalf("expected PM plugin response with issue id, got %q", got)
 	}
 }
 
@@ -487,79 +474,46 @@ func TestHandleCommandHandlesNilOrNonDataEvent(t *testing.T) {
 	}
 }
 
-func TestCreatePRFromReportUsesGitHubAPI(t *testing.T) {
+func TestSendResponseIgnoresEmptyMessage(t *testing.T) {
+	bus := &testEventBus{}
+	p := New().(*Plugin)
+	if err := p.Init(nil, bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+	p.sendResponse("alice", "chan", false, "   ")
+	if len(bus.broadcasts) != 0 {
+		t.Fatalf("expected no broadcast for empty response message")
+	}
+}
+
+func TestCreateIssueFromReportUsesGitHubAPI(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "test-token")
 
-	var mu sync.Mutex
-	var branch string
-	var contentPathSeen bool
-
+	var payloadTitle string
+	var payloadBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
 			http.Error(w, fmt.Sprintf("bad auth header: %q", got), http.StatusUnauthorized)
 			return
 		}
-
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/hildolfr/daz/git/ref/heads/master":
-			_, _ = w.Write([]byte(`{"object":{"sha":"abc123"}}`))
-			return
-
-		case r.Method == http.MethodPost && r.URL.Path == "/repos/hildolfr/daz/git/refs":
-			var req map[string]string
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			mu.Lock()
-			branch = strings.TrimPrefix(req["ref"], "refs/heads/")
-			mu.Unlock()
-			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{}`))
-			return
-
-		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/repos/hildolfr/daz/contents/"):
-			var req map[string]string
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			mu.Lock()
-			wantBranch := branch
-			mu.Unlock()
-			if req["branch"] != wantBranch {
-				http.Error(w, "unexpected branch in commit payload", http.StatusBadRequest)
-				return
-			}
-			contentPathSeen = true
-			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{}`))
-			return
-
-		case r.Method == http.MethodPost && r.URL.Path == "/repos/hildolfr/daz/pulls":
-			var req map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			mu.Lock()
-			wantBranch := branch
-			mu.Unlock()
-			if req["head"] != wantBranch {
-				http.Error(w, "unexpected head branch", http.StatusBadRequest)
-				return
-			}
-			_, _ = w.Write([]byte(`{"number":123,"html_url":"https://github.com/hildolfr/daz/pull/123"}`))
+		if r.Method != http.MethodPost || r.URL.Path != "/repos/hildolfr/daz/issues" {
+			http.NotFound(w, r)
 			return
 		}
-
-		http.NotFound(w, r)
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		payloadTitle, _ = req["title"].(string)
+		payloadBody, _ = req["body"].(string)
+		_, _ = w.Write([]byte(`{"number":123,"html_url":"https://github.com/hildolfr/daz/issues/123"}`))
 	}))
 	defer server.Close()
 
 	bus := &testEventBus{}
 	p := New().(*Plugin)
-	cfg := []byte(fmt.Sprintf(`{"api_base_url":"%s","repo_owner":"hildolfr","repo_name":"daz","base_branch":"master"}`, server.URL))
+	cfg := []byte(fmt.Sprintf(`{"api_base_url":"%s","repo_owner":"hildolfr","repo_name":"daz"}`, server.URL))
 	if err := p.Init(cfg, bus); err != nil {
 		t.Fatalf("Init error: %v", err)
 	}
@@ -568,31 +522,53 @@ func TestCreatePRFromReportUsesGitHubAPI(t *testing.T) {
 		return time.Date(2026, 3, 3, 10, 30, 0, 0, time.UTC)
 	}
 
-	pr, err := p.createPRFromReport(context.Background(), bugReport{
+	issue, err := p.createIssueFromReport(context.Background(), bugReport{
 		Channel:   "always_always_sunny",
 		Username:  "alice",
 		Comment:   "it broke after queue shuffle",
 		CreatedAt: p.now(),
 	})
 	if err != nil {
-		t.Fatalf("createPRFromReport error: %v", err)
+		t.Fatalf("createIssueFromReport error: %v", err)
 	}
-	if pr.Number != 123 {
-		t.Fatalf("expected pr number 123, got %d", pr.Number)
+	if issue.Number != 123 {
+		t.Fatalf("expected issue number 123, got %d", issue.Number)
 	}
-	if pr.HTMLURL != "https://github.com/hildolfr/daz/pull/123" {
-		t.Fatalf("unexpected pr url: %q", pr.HTMLURL)
+	if issue.HTMLURL != "https://github.com/hildolfr/daz/issues/123" {
+		t.Fatalf("unexpected issue url: %q", issue.HTMLURL)
 	}
-	if !contentPathSeen {
-		t.Fatalf("expected contents API call to commit bug report file")
+	if !strings.Contains(strings.ToLower(payloadTitle), "bug report") {
+		t.Fatalf("expected bug report title, got %q", payloadTitle)
+	}
+	if !strings.Contains(payloadBody, "@alice") || !strings.Contains(payloadBody, "queue shuffle") {
+		t.Fatalf("issue body missing report details: %q", payloadBody)
 	}
 }
 
-func TestCreatePRFromReportFailsOnBaseBranchLookup(t *testing.T) {
+func TestCreateIssueFromReportMissingToken(t *testing.T) {
+	_ = os.Unsetenv("GITHUB_TOKEN")
+	bus := &testEventBus{}
+	p := New().(*Plugin)
+	if err := p.Init(nil, bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+
+	_, err := p.createIssueFromReport(context.Background(), bugReport{
+		Channel:   "chan",
+		Username:  "alice",
+		Comment:   "something broke",
+		CreatedAt: time.Now().UTC(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "GITHUB_TOKEN") {
+		t.Fatalf("expected missing token error, got %v", err)
+	}
+}
+
+func TestCreateIssueFromReportPropagatesOpenError(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "test-token")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"message":"missing ref"}`))
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Resource not accessible by personal access token"}`))
 	}))
 	defer server.Close()
 
@@ -604,171 +580,18 @@ func TestCreatePRFromReportFailsOnBaseBranchLookup(t *testing.T) {
 	}
 	p.httpClient = server.Client()
 
-	_, err := p.createPRFromReport(context.Background(), bugReport{
+	_, err := p.createIssueFromReport(context.Background(), bugReport{
 		Channel:   "chan",
 		Username:  "alice",
 		Comment:   "broken",
 		CreatedAt: time.Now().UTC(),
 	})
-	if err == nil || !strings.Contains(err.Error(), "read base branch ref") {
-		t.Fatalf("expected base-branch lookup error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "create issue") {
+		t.Fatalf("expected create issue error, got %v", err)
 	}
 }
 
-func TestCreatePRFromReportFailsOnCommitStep(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "test-token")
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/hildolfr/daz/git/ref/heads/master":
-			_, _ = w.Write([]byte(`{"object":{"sha":"abc123"}}`))
-		case r.Method == http.MethodPost && r.URL.Path == "/repos/hildolfr/daz/git/refs":
-			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{}`))
-		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/repos/hildolfr/daz/contents/"):
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`{"message":"commit denied"}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-
-	bus := &testEventBus{}
-	p := New().(*Plugin)
-	cfg := []byte(fmt.Sprintf(`{"api_base_url":"%s","repo_owner":"hildolfr","repo_name":"daz","base_branch":"master"}`, server.URL))
-	if err := p.Init(cfg, bus); err != nil {
-		t.Fatalf("Init error: %v", err)
-	}
-	p.httpClient = server.Client()
-	p.now = func() time.Time { return time.Date(2026, 3, 3, 10, 30, 0, 0, time.UTC) }
-
-	_, err := p.createPRFromReport(context.Background(), bugReport{
-		Channel:   "chan",
-		Username:  "alice",
-		Comment:   "broken",
-		CreatedAt: p.now(),
-	})
-	if err == nil || !strings.Contains(err.Error(), "commit report file") {
-		t.Fatalf("expected commit-step error, got %v", err)
-	}
-}
-
-func TestCreateUniqueBranchRetriesOnConflict(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "token")
-	refCalls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/hildolfr/daz/git/refs" || r.Method != http.MethodPost {
-			http.NotFound(w, r)
-			return
-		}
-		refCalls++
-		if refCalls == 1 {
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			_, _ = w.Write([]byte(`{"message":"Reference already exists"}`))
-			return
-		}
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	defer server.Close()
-
-	bus := &testEventBus{}
-	p := New().(*Plugin)
-	cfg := []byte(fmt.Sprintf(`{"api_base_url":"%s"}`, server.URL))
-	if err := p.Init(cfg, bus); err != nil {
-		t.Fatalf("Init error: %v", err)
-	}
-	p.httpClient = server.Client()
-
-	branch, err := p.createUniqueBranch(context.Background(), "token", bugReport{
-		Comment:   "collision test",
-		CreatedAt: time.Date(2026, 3, 3, 10, 0, 0, 0, time.UTC),
-	}, "abc123")
-	if err != nil {
-		t.Fatalf("createUniqueBranch error: %v", err)
-	}
-	if !strings.HasPrefix(branch, "daz/bug/20260303-100000-collision-test-") {
-		t.Fatalf("unexpected branch name: %q", branch)
-	}
-	if refCalls != 2 {
-		t.Fatalf("expected 2 attempts, got %d", refCalls)
-	}
-}
-
-func TestCreateUniqueBranchFailsAfterRetries(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		_, _ = w.Write([]byte(`{"message":"Reference already exists"}`))
-	}))
-	defer server.Close()
-
-	bus := &testEventBus{}
-	p := New().(*Plugin)
-	cfg := []byte(fmt.Sprintf(`{"api_base_url":"%s"}`, server.URL))
-	if err := p.Init(cfg, bus); err != nil {
-		t.Fatalf("Init error: %v", err)
-	}
-	p.httpClient = server.Client()
-
-	_, err := p.createUniqueBranch(context.Background(), "token", bugReport{
-		Comment:   "collision test",
-		CreatedAt: time.Date(2026, 3, 3, 10, 0, 0, 0, time.UTC),
-	}, "abc123")
-	if err == nil || !strings.Contains(err.Error(), "failed to create unique branch after retries") {
-		t.Fatalf("expected retry exhaustion error, got %v", err)
-	}
-}
-
-func TestFetchBaseBranchSHARequiresValue(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"object":{"sha":""}}`))
-	}))
-	defer server.Close()
-
-	bus := &testEventBus{}
-	p := New().(*Plugin)
-	cfg := []byte(fmt.Sprintf(`{"api_base_url":"%s"}`, server.URL))
-	if err := p.Init(cfg, bus); err != nil {
-		t.Fatalf("Init error: %v", err)
-	}
-	p.httpClient = server.Client()
-
-	_, err := p.fetchBaseBranchSHA(context.Background(), "token")
-	if err == nil || !strings.Contains(err.Error(), "empty base branch sha") {
-		t.Fatalf("expected empty-sha error, got %v", err)
-	}
-}
-
-func TestCommitReportFilePropagatesGitHubError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"message":"write failed"}`))
-	}))
-	defer server.Close()
-
-	bus := &testEventBus{}
-	p := New().(*Plugin)
-	cfg := []byte(fmt.Sprintf(`{"api_base_url":"%s"}`, server.URL))
-	if err := p.Init(cfg, bus); err != nil {
-		t.Fatalf("Init error: %v", err)
-	}
-	p.httpClient = server.Client()
-
-	err := p.commitReportFile(
-		context.Background(),
-		"token",
-		"daz/bug/a",
-		"data/bugreports/test.md",
-		"report",
-		bugReport{Username: "alice", Channel: "chan"},
-	)
-	if err == nil || !strings.Contains(err.Error(), "commit report file") {
-		t.Fatalf("expected commit report error, got %v", err)
-	}
-}
-
-func TestOpenPullRequestRequiresMetadata(t *testing.T) {
+func TestOpenIssueRequiresMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"number":0,"html_url":""}`))
 	}))
@@ -782,9 +605,40 @@ func TestOpenPullRequestRequiresMetadata(t *testing.T) {
 	}
 	p.httpClient = server.Client()
 
-	_, err := p.openPullRequest(context.Background(), "token", "daz/bug/a", "title", "body")
-	if err == nil || !strings.Contains(err.Error(), "missing PR metadata") {
+	_, err := p.openIssue(context.Background(), "token", "title", "body")
+	if err == nil || !strings.Contains(err.Error(), "missing issue metadata") {
 		t.Fatalf("expected missing metadata error, got %v", err)
+	}
+}
+
+func TestOpenIssueIncludesLabels(t *testing.T) {
+	var gotLabels []any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		labels, _ := req["labels"].([]any)
+		gotLabels = labels
+		_, _ = w.Write([]byte(`{"number":44,"html_url":"https://example.com/issues/44"}`))
+	}))
+	defer server.Close()
+
+	bus := &testEventBus{}
+	p := New().(*Plugin)
+	cfg := []byte(fmt.Sprintf(`{"api_base_url":"%s","labels":["bug","from-chat"]}`, server.URL))
+	if err := p.Init(cfg, bus); err != nil {
+		t.Fatalf("Init error: %v", err)
+	}
+	p.httpClient = server.Client()
+
+	issue, err := p.openIssue(context.Background(), "token", "title", "body")
+	if err != nil {
+		t.Fatalf("openIssue error: %v", err)
+	}
+	if issue.Number != 44 {
+		t.Fatalf("unexpected issue number %d", issue.Number)
+	}
+	if len(gotLabels) != 2 {
+		t.Fatalf("expected labels payload, got %#v", gotLabels)
 	}
 }
 
@@ -876,25 +730,6 @@ func TestGitHubRequestHandlesMarshalError(t *testing.T) {
 	}
 }
 
-func TestCreatePRFromReportMissingToken(t *testing.T) {
-	_ = os.Unsetenv("GITHUB_TOKEN")
-	bus := &testEventBus{}
-	p := New().(*Plugin)
-	if err := p.Init(nil, bus); err != nil {
-		t.Fatalf("Init error: %v", err)
-	}
-
-	_, err := p.createPRFromReport(context.Background(), bugReport{
-		Channel:   "chan",
-		Username:  "alice",
-		Comment:   "something broke",
-		CreatedAt: time.Now().UTC(),
-	})
-	if err == nil || !strings.Contains(err.Error(), "GITHUB_TOKEN") {
-		t.Fatalf("expected missing token error, got %v", err)
-	}
-}
-
 func TestInitInvalidConfigFails(t *testing.T) {
 	bus := &testEventBus{}
 	p := New().(*Plugin)
@@ -906,15 +741,34 @@ func TestInitInvalidConfigFails(t *testing.T) {
 func TestInitDefaultsWhenConfigBlankOrInvalidValues(t *testing.T) {
 	bus := &testEventBus{}
 	p := New().(*Plugin)
-	raw := []byte(`{"repo_owner":"  ","repo_name":" ","base_branch":"","api_base_url":" ","title_prefix":" ","cooldown_minutes":0,"request_timeout_seconds":0,"max_comment_length":0}`)
+	raw := []byte(`{"repo_owner":"  ","repo_name":" ","api_base_url":" ","title_prefix":" ","cooldown_minutes":0,"request_timeout_seconds":0,"max_comment_length":0,"labels":[" ","BUG","bug","from-chat"]}`)
 	if err := p.Init(raw, bus); err != nil {
 		t.Fatalf("Init error: %v", err)
 	}
-	if p.config.RepoOwner != defaultRepoOwner || p.config.RepoName != defaultRepoName || p.config.BaseBranch != defaultBaseBranch {
-		t.Fatalf("expected default owner/repo/base, got %+v", p.config)
+	if p.config.RepoOwner != defaultRepoOwner || p.config.RepoName != defaultRepoName {
+		t.Fatalf("expected default owner/repo, got %+v", p.config)
+	}
+	if p.config.APIBaseURL != defaultAPIBaseURL || p.config.TitlePrefix != defaultTitlePrefix {
+		t.Fatalf("expected default api/title, got %+v", p.config)
 	}
 	if p.config.CooldownMinutes != defaultCooldownMinutes || p.config.RequestTimeoutSecs != defaultRequestTimeoutSecs || p.config.MaxCommentLength != defaultMaxCommentLength {
 		t.Fatalf("expected default limits/timeouts, got %+v", p.config)
+	}
+	if len(p.config.Labels) != 2 {
+		t.Fatalf("expected deduplicated labels, got %+v", p.config.Labels)
+	}
+}
+
+func TestNormalizeLabels(t *testing.T) {
+	got := normalizeLabels([]string{"", " bug ", "BUG", "from-chat", " From-Chat ", "triage"})
+	want := []string{"bug", "from-chat", "triage"}
+	if len(got) != len(want) {
+		t.Fatalf("normalizeLabels length mismatch: got=%v want=%v", got, want)
+	}
+	for i := range want {
+		if strings.ToLower(got[i]) != strings.ToLower(want[i]) {
+			t.Fatalf("normalizeLabels[%d] = %q, want %q (case-insensitive)", i, got[i], want[i])
+		}
 	}
 }
 
@@ -983,58 +837,27 @@ func TestSafeErrMessageVariants(t *testing.T) {
 	}
 }
 
-func TestBuildBugReportAssetsFallbackAndFormatting(t *testing.T) {
+func TestBuildBugIssueAssetsFormatting(t *testing.T) {
 	p := New().(*Plugin)
 	p.config.TitlePrefix = "bug report"
-	path, title, content, body := p.buildBugReportAssets(bugReport{
+	title, body := p.buildBugIssueAssets(bugReport{
 		Channel:   "chan",
-		Username:  "!!!",
-		Comment:   "???",
+		Username:  "alice",
+		Comment:   "line one\nline two",
 		CreatedAt: time.Date(2026, 3, 3, 10, 30, 0, 0, time.UTC),
 	})
-	if !strings.Contains(path, "unknown_report.md") {
-		t.Fatalf("expected unknown/report fallback path, got %q", path)
-	}
-	if !strings.Contains(title, "bug report (chan): ???") {
+	if !strings.Contains(title, "bug report (chan):") {
 		t.Fatalf("unexpected title: %q", title)
 	}
-	if !strings.Contains(content, "## Triage Notes") || !strings.Contains(body, "Original Comment:") {
-		t.Fatalf("missing expected sections in generated assets")
+	if !strings.Contains(body, "Reporter: @alice") || !strings.Contains(body, "> line one") || !strings.Contains(body, "> line two") {
+		t.Fatalf("issue body missing expected format: %q", body)
 	}
 }
 
-func TestSlugFromTextAndQuoteBlock(t *testing.T) {
-	if got := slugFromText("  Hello, World!  ", 64); got != "hello-world" {
-		t.Fatalf("unexpected slug: %q", got)
-	}
-	if got := slugFromText("abcde", 3); got != "abc" {
-		t.Fatalf("unexpected max-limited slug: %q", got)
-	}
+func TestQuoteBlock(t *testing.T) {
 	block := quoteBlock("line1\n\n line2 ")
 	want := "> line1\n>\n> line2"
 	if block != want {
 		t.Fatalf("unexpected quote block:\n%s\nwant:\n%s", block, want)
-	}
-}
-
-func TestRandomSuffixReadError(t *testing.T) {
-	orig := crand.Reader
-	crand.Reader = errReader{}
-	t.Cleanup(func() {
-		crand.Reader = orig
-	})
-
-	if _, err := randomSuffix(3); err == nil {
-		t.Fatalf("expected randomSuffix to fail when rand.Reader fails")
-	}
-}
-
-func TestRandomSuffixDefaultsLengthWhenZero(t *testing.T) {
-	value, err := randomSuffix(0)
-	if err != nil {
-		t.Fatalf("randomSuffix(0) error: %v", err)
-	}
-	if len(value) != 4 {
-		t.Fatalf("expected default 2-byte suffix -> 4 hex chars, got %q", value)
 	}
 }
