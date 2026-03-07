@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -527,11 +528,25 @@ func waitForBroadcastType(
 	t.Fatalf("timed out waiting for %d event(s) of type %s", expected, eventType)
 }
 
+func waitForServerCalls(t *testing.T, calls *atomic.Int32, expected int32, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if calls.Load() >= expected {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for %d server call(s); saw %d", expected, calls.Load())
+}
+
 func TestHandleChatMessageFollowUpQuestionWithoutMention(t *testing.T) {
 	bus := NewMockEventBus()
-	serverCalls := 0
+	var serverCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serverCalls++
+		serverCalls.Add(1)
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST request, got %s", r.Method)
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -614,9 +629,9 @@ func TestHandleChatMessageFollowUpQuestionWithoutMention(t *testing.T) {
 	if err := ollamaPlugin.handleChatMessage(event); err != nil {
 		t.Fatalf("handleChatMessage returned error: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
-	if serverCalls != 1 {
-		t.Fatalf("expected ollama request before wait, got %d", serverCalls)
+	waitForServerCalls(t, &serverCalls, 1, 2*time.Second)
+	if serverCalls.Load() != 1 {
+		t.Fatalf("expected ollama request before wait, got %d", serverCalls.Load())
 	}
 
 	waitForBroadcastType(t, bus, "cytube.send", 1, 2*time.Second)
@@ -638,8 +653,8 @@ func TestHandleChatMessageFollowUpQuestionWithoutMention(t *testing.T) {
 	if sentMessage != "you bet" {
 		t.Fatalf("expected sent message %q, got %q", "you bet", sentMessage)
 	}
-	if serverCalls != 1 {
-		t.Fatalf("expected 1 ollama request, got %d", serverCalls)
+	if serverCalls.Load() != 1 {
+		t.Fatalf("expected 1 ollama request, got %d", serverCalls.Load())
 	}
 
 	ollamaPlugin.followUpMu.RLock()
@@ -909,9 +924,9 @@ func TestHandlePluginRequestGenerateSuccess(t *testing.T) {
 	}
 	mockBus := NewMockEventBus()
 
-	serverCalls := 0
+	var serverCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serverCalls++
+		serverCalls.Add(1)
 
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -1018,8 +1033,8 @@ func TestHandlePluginRequestGenerateSuccess(t *testing.T) {
 		t.Errorf("expected model 'test-model', got %q", genResp.Model)
 	}
 
-	if serverCalls != 1 {
-		t.Fatalf("expected 1 call to ollama endpoint, got %d", serverCalls)
+	if serverCalls.Load() != 1 {
+		t.Fatalf("expected 1 call to ollama endpoint, got %d", serverCalls.Load())
 	}
 }
 
@@ -1031,9 +1046,9 @@ func TestHandlePluginRequestGenerateUsesRequestKeepAliveOverride(t *testing.T) {
 	}
 	mockBus := NewMockEventBus()
 
-	serverCalls := 0
+	var serverCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serverCalls++
+		serverCalls.Add(1)
 
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -1092,8 +1107,8 @@ func TestHandlePluginRequestGenerateUsesRequestKeepAliveOverride(t *testing.T) {
 	if err := ollamaPlugin.handlePluginRequest(event); err != nil {
 		t.Fatalf("handlePluginRequest failed: %v", err)
 	}
-	if serverCalls != 1 {
-		t.Fatalf("expected 1 call to ollama endpoint, got %d", serverCalls)
+	if serverCalls.Load() != 1 {
+		t.Fatalf("expected 1 call to ollama endpoint, got %d", serverCalls.Load())
 	}
 }
 

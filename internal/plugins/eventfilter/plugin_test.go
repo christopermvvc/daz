@@ -67,6 +67,24 @@ func (m *MockEventBus) Send(target string, eventType string, data *framework.Eve
 	return nil
 }
 
+func (m *MockEventBus) SnapshotBroadcasts() []broadcast {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	out := make([]broadcast, len(m.broadcasts))
+	copy(out, m.broadcasts)
+	return out
+}
+
+func (m *MockEventBus) SnapshotSends() []send {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	out := make([]send, len(m.sends))
+	copy(out, m.sends)
+	return out
+}
+
 // Removed SQL-specific methods as EventBus no longer supports them
 
 func (m *MockEventBus) BroadcastWithMetadata(eventType string, data *framework.EventData, metadata *framework.EventMetadata) error {
@@ -290,11 +308,12 @@ func TestCommandDetection(t *testing.T) {
 	}
 
 	// Check that command was routed
-	if len(mockBus.broadcasts) == 0 {
+	broadcasts := mockBus.SnapshotBroadcasts()
+	if len(broadcasts) == 0 {
 		t.Fatal("Expected command to be broadcast")
 	}
 
-	broadcast := mockBus.broadcasts[0]
+	broadcast := broadcasts[0]
 	if broadcast.eventType != "command.testplugin.execute" {
 		t.Errorf("Expected event type 'command.testplugin.execute', got '%s'", broadcast.eventType)
 	}
@@ -350,14 +369,15 @@ func TestAdminOnlyCommandBlocked(t *testing.T) {
 		t.Fatalf("Failed to handle chat message: %v", err)
 	}
 
-	for _, b := range mockBus.broadcasts {
+	broadcasts := mockBus.SnapshotBroadcasts()
+	for _, b := range broadcasts {
 		if b.eventType == "command.testplugin.execute" {
 			t.Fatal("Expected admin-only command to be blocked, but it was routed")
 		}
 	}
 
 	foundDeniedPM := false
-	for _, b := range mockBus.broadcasts {
+	for _, b := range broadcasts {
 		if b.eventType == "cytube.send.pm" && b.data != nil && b.data.PrivateMessage != nil {
 			if b.data.PrivateMessage.ToUser == "nobody" {
 				foundDeniedPM = true
@@ -416,11 +436,12 @@ func TestAdminOnlyCommandAllowedForAdmin(t *testing.T) {
 		t.Fatalf("Failed to handle chat message: %v", err)
 	}
 
-	if len(mockBus.broadcasts) == 0 {
+	broadcasts := mockBus.SnapshotBroadcasts()
+	if len(broadcasts) == 0 {
 		t.Fatal("Expected command to be routed for admin user")
 	}
 
-	for _, b := range mockBus.broadcasts {
+	for _, b := range broadcasts {
 		if b.eventType == "command.testplugin.execute" {
 			return
 		}
@@ -467,7 +488,7 @@ func TestHandleChatMessageIgnoresStaleCommand(t *testing.T) {
 		t.Fatalf("Failed to handle chat message: %v", err)
 	}
 
-	for _, b := range mockBus.broadcasts {
+	for _, b := range mockBus.SnapshotBroadcasts() {
 		if b.eventType == "command.testplugin.execute" {
 			t.Fatal("Expected stale command message to be ignored")
 		}
@@ -513,7 +534,7 @@ func TestHandleChatMessageAcceptsSecondsTimestamp(t *testing.T) {
 	}
 
 	routed := false
-	for _, b := range mockBus.broadcasts {
+	for _, b := range mockBus.SnapshotBroadcasts() {
 		if b.eventType == "command.testplugin.execute" {
 			routed = true
 			break
@@ -561,7 +582,7 @@ func TestHandlePMMessageIgnoresStaleCommand(t *testing.T) {
 		t.Fatalf("Failed to handle PM message: %v", err)
 	}
 
-	for _, b := range mockBus.broadcasts {
+	for _, b := range mockBus.SnapshotBroadcasts() {
 		if b.eventType == "command.testplugin.execute" {
 			t.Fatal("Expected stale PM command message to be ignored")
 		}
@@ -609,11 +630,12 @@ func TestEventRouting(t *testing.T) {
 	}
 
 	// Check that event was routed
-	if len(mockBus.sends) == 0 {
+	sends := mockBus.SnapshotSends()
+	if len(sends) == 0 {
 		t.Fatal("Expected event to be sent to usertracker")
 	}
 
-	send := mockBus.sends[0]
+	send := sends[0]
 	if send.target != "usertracker" {
 		t.Errorf("Expected target 'usertracker', got '%s'", send.target)
 	}
