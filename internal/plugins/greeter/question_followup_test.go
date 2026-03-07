@@ -36,10 +36,11 @@ func TestEnsureQuestionGreeting(t *testing.T) {
 		expected string
 		enforce  bool
 	}{
-		{name: "adds_question_when_missing", input: "how's it going", expected: "how's it going?", enforce: true},
+		{name: "adds_followup_question_when_missing", input: "welcome back mate", expected: "welcome back mate, how's it going?", enforce: true},
 		{name: "preserves_existing_question", input: "how's it going?", expected: "how's it going?", enforce: true},
+		{name: "normalizes_space_before_question", input: "how's it going ?", expected: "how's it going?", enforce: true},
 		{name: "trims_period", input: "how's it going. ", expected: "how's it going?", enforce: true},
-		{name: "trims_punctuation", input: "how's it going! ", expected: "how's it going?", enforce: true},
+		{name: "trims_punctuation", input: "good to see ya! ", expected: "good to see ya, how's it going?", enforce: true},
 		{name: "leaves_untouched_when_disabled", input: "how's it going.", expected: "how's it going.", enforce: false},
 	}
 
@@ -103,6 +104,6 @@ func TestGetGreetingFromOllamaAppliesQuestionMark(t *testing.T) {
 	plugin.ollamaClient = framework.NewOllamaClient(mockBus, plugin.name)
 
 	got := plugin.getGreetingFromOllama("testchannel", "alice", 1)
-	assert.Equal(t, "welcome to the lounge?", got)
+	assert.Equal(t, "welcome to the lounge, how's it going?", got)
 	mockBus.AssertNumberOfCalls(t, "Request", 1)
 }

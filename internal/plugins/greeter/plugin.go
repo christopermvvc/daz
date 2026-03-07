@@ -27,7 +27,7 @@ const (
 	maxGreetingDelay     = 3 * time.Minute
 	baseGreetingPrompt   = "Create a short, casual one-line welcome greeting for %s. Keep it in character as a laid-back Australian Dazza."
 	followupPromptHint   = " Also, ask a follow-up question so the user can answer."
-	questionEndHint      = " End your greeting with a question mark."
+	questionEndHint      = " End your greeting with a natural follow-up question."
 	followUpGreetingMode = "greeting"
 )
 
@@ -38,6 +38,14 @@ var greeterBotAliasStopwords = map[string]struct{}{
 	"when": {}, "where": {}, "will": {}, "want": {}, "need": {}, "make": {}, "take": {},
 	"give": {}, "came": {}, "come": {}, "gone": {}, "done": {}, "just": {}, "also": {},
 	"into": {}, "onto": {}, "over": {}, "under": {}, "after": {}, "before": {},
+}
+
+var greeterQuestionStarters = map[string]struct{}{
+	"how": {}, "what": {}, "when": {}, "where": {}, "why": {}, "who": {}, "whom": {}, "whose": {}, "which": {},
+	"is": {}, "are": {}, "am": {}, "do": {}, "does": {}, "did": {}, "can": {}, "could": {}, "should": {}, "would": {}, "will": {},
+	"have": {}, "has": {}, "had": {}, "may": {}, "might": {}, "shall": {},
+	"how's": {}, "what's": {}, "where's": {}, "who's": {}, "why's": {}, "when's": {},
+	"isn't": {}, "aren't": {}, "don't": {}, "doesn't": {}, "didn't": {}, "can't": {}, "couldn't": {}, "shouldn't": {}, "wouldn't": {}, "won't": {},
 }
 
 // Config holds greeter plugin configuration
@@ -896,14 +904,32 @@ func (p *Plugin) ensureQuestionGreeting(message string) string {
 	}
 
 	message = strings.TrimRight(message, " \t\r\n")
-	message = strings.TrimRight(message, ".!?;:")
-	message = strings.TrimRight(message, " \t\r\n")
 
 	if strings.HasSuffix(message, "?") {
+		base := strings.TrimSuffix(message, "?")
+		base = strings.TrimRight(base, " \t\r\n")
+		return base + "?"
+	}
+
+	if strings.Contains(message, "?") {
 		return message
 	}
 
-	return message + "?"
+	message = strings.TrimRight(message, ".!;:,")
+	message = strings.TrimRight(message, " \t\r\n")
+	if message == "" {
+		return ""
+	}
+
+	fields := strings.Fields(strings.ToLower(message))
+	if len(fields) > 0 {
+		first := strings.Trim(fields[0], "\"'`([{")
+		if _, ok := greeterQuestionStarters[first]; ok {
+			return message + "?"
+		}
+	}
+
+	return message + ", how's it going?"
 }
 
 // loadCooldowns loads recent cooldowns from the database
