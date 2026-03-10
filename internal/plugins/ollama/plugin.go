@@ -887,6 +887,7 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	if messageTimestamp.Before(p.startTime) {
 		return nil
 	}
+	now := time.UnixMilli(messageTime)
 
 	// Skip if user is ignored
 	for _, ignoredUser := range p.config.IgnoredUsers {
@@ -928,10 +929,17 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		}
 	}
 
+	if p.isCommandMessage(message) {
+		if p.hasActiveFollowUpSession(channel, username, now) {
+			logger.Debug(p.name, "Clearing follow-up session for command-like message from %s in %s", username, channel)
+			p.clearFollowUpSession(channel, username)
+		}
+		logger.Debug(p.name, "Skipping command-like message in %s from %s: %q", channel, username, message)
+		return nil
+	}
+
 	isQuestion := p.isLikelyQuestion(message)
 	isBotMentioned := p.isBotMentioned(message)
-
-	now := time.UnixMilli(messageTime)
 	session, hasFollowUpSession := p.getActiveFollowUpSession(channel, username, now)
 	isFollowUp := false
 	shouldTrackFollowUp := false
@@ -1078,6 +1086,15 @@ func (p *Plugin) isBotMentioned(message string) bool {
 		}
 	}
 	return false
+}
+
+func (p *Plugin) isCommandMessage(message string) bool {
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" {
+		return false
+	}
+
+	return strings.HasPrefix(trimmed, "!") || strings.HasPrefix(trimmed, "/")
 }
 
 func (p *Plugin) isLikelyQuestion(message string) bool {

@@ -372,6 +372,31 @@ func TestIsLikelyQuestion(t *testing.T) {
 	}
 }
 
+func TestIsCommandMessage(t *testing.T) {
+	plugin := &Plugin{}
+
+	tests := []struct {
+		name     string
+		message  string
+		expected bool
+	}{
+		{name: "bang prefix", message: "!help", expected: true},
+		{name: "slash prefix", message: "/help", expected: true},
+		{name: "bang with leading spaces", message: "   !bug", expected: true},
+		{name: "slash with spaces", message: "\t /ping", expected: true},
+		{name: "normal chat", message: "hey dazza", expected: false},
+		{name: "empty message", message: "", expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := plugin.isCommandMessage(tt.message); got != tt.expected {
+				t.Errorf("isCommandMessage(%q) = %v, expected %v", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestCalculateMessageHash(t *testing.T) {
 	plugin := &Plugin{}
 
@@ -757,6 +782,85 @@ func TestHandleChatMessageClearsFollowUpOnNonQuestion(t *testing.T) {
 
 	if _, ok := plugin.followUpSessions[key]; ok {
 		t.Fatalf("expected follow-up session to be cleared for key %s", key)
+	}
+}
+
+func TestHandleChatMessageIgnoresCommandPrefixes(t *testing.T) {
+	commandMessages := []string{"!help", "/help"}
+
+	for _, msg := range commandMessages {
+		t.Run(msg, func(t *testing.T) {
+			bus := NewMockEventBus()
+			var serverCalls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				serverCalls.Add(1)
+				_, err := w.Write([]byte(`{"message":{"content":"ignored"}}`))
+				if err != nil {
+					t.Fatalf("failed to write response: %v", err)
+				}
+			}))
+			defer server.Close()
+
+			ollamaPlugin := New()
+			plugin, ok := ollamaPlugin.(*Plugin)
+			if !ok {
+				t.Fatalf("New() returned %T", ollamaPlugin)
+			}
+			if err := plugin.Init(nil, bus); err != nil {
+				t.Fatalf("Init failed: %v", err)
+			}
+
+			plugin.config.FollowUpEnabled = true
+			plugin.config.Enabled = true
+			plugin.config.OllamaURL = server.URL
+			plugin.botName = "Dazza"
+			plugin.userLists = map[string]map[string]bool{
+				"testchannel": {"alice": true},
+			}
+			key := plugin.followUpSessionKey("testchannel", "alice")
+			plugin.followUpSessions[key] = followUpSession{
+				ExpiresAt:      time.Now().Add(3 * time.Minute),
+				Origin:         followUpOriginMention,
+				MaxMessages:    4,
+				MinIntervalMS:  2500,
+				RespondAll:     false,
+				LastResponseAt: time.Now().Add(-3 * time.Second),
+			}
+
+			now := time.Now().UnixMilli()
+			event := &framework.DataEvent{
+				Data: &framework.EventData{
+					ChatMessage: &framework.ChatMessageData{
+						Username:    "alice",
+						Message:     msg,
+						Channel:     "testchannel",
+						MessageTime: now,
+					},
+				},
+			}
+
+			err := plugin.handleChatMessage(event)
+			if err != nil {
+				t.Fatalf("handleChatMessage failed: %v", err)
+			}
+
+			if serverCalls.Load() != 0 {
+				t.Fatalf("expected no Ollama calls for command %q, got %d", msg, serverCalls.Load())
+			}
+
+			bus.mu.Lock()
+			for _, e := range bus.broadcasts {
+				if e.eventType == "cytube.send" {
+					bus.mu.Unlock()
+					t.Fatalf("expected no send event for command %q", msg)
+				}
+			}
+			bus.mu.Unlock()
+
+			if plugin.hasActiveFollowUpSession("testchannel", "alice", time.UnixMilli(now)) {
+				t.Fatalf("expected follow-up session to be cleared for command %q", msg)
+			}
+		})
 	}
 }
 
