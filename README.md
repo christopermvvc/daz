@@ -183,6 +183,7 @@ Daz's event-driven architecture ensures maximum performance and reliability:
 - **UserTracker** - Track user sessions and activity
 - **MediaTracker** - Monitor media plays and queue changes
 - **Analytics** - Aggregate statistics and reporting
+- **Ollama** - Generate chat responses from configured LLM models
 
 ### Command Plugins
 - **!help** - Display available commands
