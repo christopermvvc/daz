@@ -7,6 +7,9 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -344,6 +347,89 @@ func TestPluginInitClampsFollowUpMaxMessagesJitter(t *testing.T) {
 	ollamaPlugin := plugin.(*Plugin)
 	if ollamaPlugin.config.FollowUpMaxMessagesJitter != defaultFollowUpMaxJitter {
 		t.Fatalf("expected follow-up max jitter to clamp to %d, got %d", defaultFollowUpMaxJitter, ollamaPlugin.config.FollowUpMaxMessagesJitter)
+	}
+}
+
+func TestPluginInitAllowsZeroFollowUpMaxMessagesJitter(t *testing.T) {
+	plugin := New()
+	bus := NewMockEventBus()
+
+	config := Config{
+		Enabled:                   true,
+		FollowUpMaxMessages:       8,
+		FollowUpMaxMessagesJitter: 0,
+	}
+
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("Failed to marshal config: %v", err)
+	}
+
+	err = plugin.Init(configJSON, bus)
+	if err != nil {
+		t.Fatalf("Init failed with zero follow-up jitter: %v", err)
+	}
+
+	ollamaPlugin := plugin.(*Plugin)
+	if ollamaPlugin.config.FollowUpMaxMessagesJitter != 0 {
+		t.Fatalf("expected follow-up max jitter to stay at 0, got %d", ollamaPlugin.config.FollowUpMaxMessagesJitter)
+	}
+}
+
+func TestTouchFollowUpSessionUsesConfiguredMaxWhenJitterZero(t *testing.T) {
+	plugin := &Plugin{
+		config: &Config{
+			FollowUpEnabled:           true,
+			FollowUpMaxMessages:       5,
+			FollowUpMaxMessagesJitter: 0,
+			FollowUpWindowSeconds:     180,
+			FollowUpMinIntervalMs:     2500,
+		},
+		followUpSessions: make(map[string]followUpSession),
+	}
+
+	for i := 0; i < 20; i++ {
+		username := fmt.Sprintf("alice%d", i)
+		plugin.touchFollowUpSession("testchannel", username, plugin.defaultFollowUpSettings())
+
+		key := plugin.followUpSessionKey("testchannel", username)
+		plugin.followUpMu.RLock()
+		session, ok := plugin.followUpSessions[key]
+		plugin.followUpMu.RUnlock()
+		if !ok {
+			t.Fatalf("expected follow-up session for %s", key)
+		}
+
+		if session.MaxMessages != 5 {
+			t.Fatalf("expected max messages to be exact configured value 5, got %d", session.MaxMessages)
+		}
+	}
+}
+
+func TestOllamaConfigExampleMentionsFollowUpMaxMessagesJitter(t *testing.T) {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("failed to resolve test source path")
+	}
+
+	rootDir := filepath.Join(filepath.Dir(filename), "..", "..", "..")
+	readmePath := filepath.Join(filepath.Dir(filename), "README.md")
+	configPath := filepath.Join(rootDir, "config.json.example")
+
+	readme, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("failed to read ollama README: %v", err)
+	}
+	if !strings.Contains(string(readme), "follow_up_max_messages_jitter") {
+		t.Fatalf("ollama README should mention follow_up_max_messages_jitter")
+	}
+
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read config example: %v", err)
+	}
+	if !strings.Contains(string(config), "\"follow_up_max_messages_jitter\"") {
+		t.Fatalf("config.json.example should define follow_up_max_messages_jitter")
 	}
 }
 

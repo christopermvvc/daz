@@ -16,6 +16,7 @@ Config (optional)
 - Max enforced: values above `900` are clamped to 900 seconds (15 minutes).
 - `follow_up_respond_all_messages` (default: false)
 - `follow_up_max_messages` (default: 4)
+- `follow_up_max_messages_jitter` (default: 1)
 - `follow_up_min_interval_ms` (default: 2500)
 - `follow_up_noise_chance` (default: 0.08)
 - `follow_up_no_response_chance` (default: 0.05)
