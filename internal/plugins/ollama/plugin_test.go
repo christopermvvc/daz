@@ -3,6 +3,7 @@ package ollama
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -321,6 +322,31 @@ func TestPluginInitClampsFollowUpWindow(t *testing.T) {
 	}
 }
 
+func TestPluginInitClampsFollowUpMaxMessagesJitter(t *testing.T) {
+	plugin := New()
+	bus := NewMockEventBus()
+
+	config := Config{
+		Enabled:                   true,
+		FollowUpMaxMessagesJitter: -1,
+	}
+
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("Failed to marshal config: %v", err)
+	}
+
+	err = plugin.Init(configJSON, bus)
+	if err != nil {
+		t.Fatalf("Init failed with negative follow-up jitter: %v", err)
+	}
+
+	ollamaPlugin := plugin.(*Plugin)
+	if ollamaPlugin.config.FollowUpMaxMessagesJitter != defaultFollowUpMaxJitter {
+		t.Fatalf("expected follow-up max jitter to clamp to %d, got %d", defaultFollowUpMaxJitter, ollamaPlugin.config.FollowUpMaxMessagesJitter)
+	}
+}
+
 func TestPluginInitClampsFollowUpOwnerListenWindow(t *testing.T) {
 	plugin := New()
 	bus := NewMockEventBus()
@@ -389,6 +415,58 @@ func TestTouchFollowUpSessionCapsWindowFromConfig(t *testing.T) {
 
 	if session.ExpiresAt.After(time.Now().Add(time.Duration(maxFollowUpWindowSecs) * time.Second).Add(2 * time.Second)) {
 		t.Fatalf("expected follow-up expiry to respect max window cap %d", maxFollowUpWindowSecs)
+	}
+}
+
+func TestTouchFollowUpSessionRandomizesMaxMessagesWithinJitter(t *testing.T) {
+	plugin := &Plugin{
+		config: &Config{
+			FollowUpEnabled:           true,
+			FollowUpMaxMessages:       4,
+			FollowUpMaxMessagesJitter: 2,
+			FollowUpWindowSeconds:     180,
+			FollowUpMinIntervalMs:     2500,
+		},
+		followUpSessions: make(map[string]followUpSession),
+		randSource:       rand.New(rand.NewSource(1)),
+	}
+
+	seen := make(map[int]struct{})
+	for i := 0; i < 20; i++ {
+		username := fmt.Sprintf("alice%d", i)
+		plugin.touchFollowUpSession("testchannel", username, plugin.defaultFollowUpSettings())
+
+		key := plugin.followUpSessionKey("testchannel", username)
+		plugin.followUpMu.RLock()
+		session, ok := plugin.followUpSessions[key]
+		plugin.followUpMu.RUnlock()
+		if !ok {
+			t.Fatalf("expected follow-up session for %s", key)
+		}
+
+		if session.MaxMessages < 2 || session.MaxMessages > 6 {
+			t.Fatalf("expected randomized max within jitter range 2..6, got %d", session.MaxMessages)
+		}
+		seen[session.MaxMessages] = struct{}{}
+	}
+
+	if len(seen) < 2 {
+		t.Fatalf("expected follow-up max jitter to produce variation, seen values: %v", seen)
+	}
+
+	username := "alice-repeat"
+	plugin.touchFollowUpSession("testchannel", username, plugin.defaultFollowUpSettings())
+	plugin.followUpMu.Lock()
+	first := plugin.followUpSessions[plugin.followUpSessionKey("testchannel", username)]
+	plugin.followUpMu.Unlock()
+
+	plugin.touchFollowUpSession("testchannel", username, plugin.defaultFollowUpSettings())
+	plugin.followUpMu.Lock()
+	second := plugin.followUpSessions[plugin.followUpSessionKey("testchannel", username)]
+	plugin.followUpMu.Unlock()
+
+	if first.MaxMessages != second.MaxMessages {
+		t.Fatalf("expected existing follow-up session to keep max message cap, got %d then %d", first.MaxMessages, second.MaxMessages)
 	}
 }
 

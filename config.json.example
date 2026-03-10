@@ -124,6 +124,7 @@
       "follow_up_owner_listen_seconds": 30,
       "follow_up_respond_all_messages": false,
       "follow_up_max_messages": 4,
+      "follow_up_max_messages_jitter": 1,
       "follow_up_min_interval_ms": 2500,
       "follow_up_noise_chance": 0.08,
       "follow_up_no_response_chance": 0.05,

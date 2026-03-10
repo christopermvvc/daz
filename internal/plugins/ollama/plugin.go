@@ -31,6 +31,7 @@ const (
 	defaultFollowUpWindow             = 180 // 3 minute follow-up window
 	maxFollowUpWindowSecs             = 900 // 15 minute maximum turn-wait window
 	defaultFollowUpMax                = 4   // follow-up turns before drop
+	defaultFollowUpMaxJitter          = 1
 	defaultFollowUpMinMS              = 2500
 	defaultFollowUpOwnerListenSeconds = 30
 	operationGenerate                 = "generate"
@@ -318,6 +319,8 @@ type Config struct {
 	FollowUpOwnerListenSeconds int `json:"follow_up_owner_listen_seconds"`
 	// Maximum number of replies in a follow-up chain before requiring a fresh mention.
 	FollowUpMaxMessages int `json:"follow_up_max_messages"`
+	// Randomize follow-up limit by this many turns up/down.
+	FollowUpMaxMessagesJitter int `json:"follow_up_max_messages_jitter"`
 	// Minimum milliseconds between follow-up responses.
 	FollowUpMinIntervalMs int `json:"follow_up_min_interval_ms"`
 
@@ -420,6 +423,7 @@ func New() framework.Plugin {
 			FollowUpWindowSeconds:      defaultFollowUpWindow,
 			FollowUpOwnerListenSeconds: defaultFollowUpOwnerListenSeconds,
 			FollowUpMaxMessages:        defaultFollowUpMax,
+			FollowUpMaxMessagesJitter:  defaultFollowUpMaxJitter,
 			FollowUpMinIntervalMs:      defaultFollowUpMinMS,
 			FollowUpNoiseChance:        defaultFollowUpNoiseChance,
 			FollowUpNoResponseChance:   defaultFollowUpNoResponseChance,
@@ -494,6 +498,9 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 	if p.config.FollowUpWindowSeconds > maxFollowUpWindowSecs {
 		p.config.FollowUpWindowSeconds = maxFollowUpWindowSecs
+	}
+	if p.config.FollowUpMaxMessagesJitter < 0 {
+		p.config.FollowUpMaxMessagesJitter = defaultFollowUpMaxJitter
 	}
 	if p.config.FollowUpOwnerListenSeconds > maxFollowUpWindowSecs {
 		p.config.FollowUpOwnerListenSeconds = maxFollowUpWindowSecs
@@ -1477,21 +1484,15 @@ func (p *Plugin) touchFollowUpSession(channel, username string, settings followU
 	}
 
 	now := time.Now()
+	maxMessages := p.normalizeFollowUpMaxMessages(settings.MaxMessages)
 	session := followUpSession{
 		ExpiresAt:      now.Add(time.Duration(windowSeconds) * time.Second),
 		LastResponseAt: now,
 		MessageCount:   1,
-		MaxMessages:    settings.MaxMessages,
+		MaxMessages:    p.randomizeFollowUpMaxMessages(maxMessages),
 		MinIntervalMS:  settings.MinIntervalMS,
 		Origin:         settings.Origin,
 		RespondAll:     settings.RespondAll,
-	}
-
-	if session.MaxMessages <= 0 {
-		session.MaxMessages = p.config.FollowUpMaxMessages
-	}
-	if session.MaxMessages <= 0 {
-		session.MaxMessages = defaultFollowUpMax
 	}
 
 	if session.MinIntervalMS <= 0 {
@@ -1512,12 +1513,46 @@ func (p *Plugin) touchFollowUpSession(channel, username string, settings followU
 	key := p.followUpSessionKey(channel, username)
 	if existing, ok := p.followUpSessions[key]; ok {
 		session.MessageCount = existing.MessageCount + 1
+		session.MaxMessages = p.normalizeFollowUpMaxMessages(existing.MaxMessages)
 		if existing.Origin != "" && session.Origin == followUpOriginMention {
 			session.Origin = existing.Origin
 		}
 	}
 	p.followUpSessions[key] = session
 	p.followUpMu.Unlock()
+}
+
+func (p *Plugin) normalizeFollowUpMaxMessages(maxMessages int) int {
+	if maxMessages > 0 {
+		return maxMessages
+	}
+
+	if p.config != nil && p.config.FollowUpMaxMessages > 0 {
+		return p.config.FollowUpMaxMessages
+	}
+
+	return defaultFollowUpMax
+}
+
+func (p *Plugin) randomizeFollowUpMaxMessages(maxMessages int) int {
+	maxMessages = p.normalizeFollowUpMaxMessages(maxMessages)
+	if p.config == nil {
+		return maxMessages
+	}
+
+	jitter := p.config.FollowUpMaxMessagesJitter
+	if jitter <= 0 {
+		return maxMessages
+	}
+
+	span := jitter * 2
+	offset := p.nextRandomInt(span+1) - jitter
+	maxMessages += offset
+	if maxMessages < 1 {
+		maxMessages = 1
+	}
+
+	return maxMessages
 }
 
 func (p *Plugin) clearFollowUpSession(channel, username string) {
