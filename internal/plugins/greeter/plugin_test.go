@@ -3,11 +3,14 @@ package greeter
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/hildolfr/daz/internal/framework"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 // MockEventBus implements framework.EventBus for testing
@@ -129,22 +132,87 @@ func TestPluginDependencies(t *testing.T) {
 }
 
 func TestPluginInit(t *testing.T) {
-	plugin := New()
+	plugin := New().(*Plugin)
 	mockBus := new(MockEventBus)
 
 	// Test with no config
 	err := plugin.Init(nil, mockBus)
 	assert.NoError(t, err)
+	assert.Equal(t, defaultCooldownMinutes, plugin.config.CooldownMinutes)
 
 	// Test with valid config
 	config := json.RawMessage(`{"cooldown_minutes": 60, "enabled": false}`)
 	err = plugin.Init(config, mockBus)
 	assert.NoError(t, err)
+	assert.Equal(t, 60, plugin.config.CooldownMinutes)
 
 	// Test with invalid config
 	badConfig := json.RawMessage(`{"cooldown_minutes": "invalid"}`)
 	err = plugin.Init(badConfig, mockBus)
 	assert.Error(t, err)
+}
+
+func TestHandleUserJoinRecentGreetingCutoffUsesConfiguredWindow(t *testing.T) {
+	mockBus := new(MockEventBus)
+	plugin := New().(*Plugin)
+
+	if err := plugin.Init([]byte(`{"cooldown_minutes": 90}`), mockBus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	// Force skip path after cooldown checks so we don't enqueue a greeting.
+	plugin.skipProbability = 1.0
+
+	var greetingCutoff time.Time
+	mockBus.On("Request", mock.Anything, "sql", "sql.query.request", mock.MatchedBy(func(data *framework.EventData) bool {
+		if data == nil || data.SQLQueryRequest == nil {
+			return false
+		}
+
+		query := data.SQLQueryRequest.Query
+		if query == "" {
+			return false
+		}
+
+		if strings.Contains(query, "daz_greeter_history") {
+			if len(data.SQLQueryRequest.Params) < 2 {
+				return false
+			}
+
+			cutoff, ok := data.SQLQueryRequest.Params[1].Value.(time.Time)
+			if !ok {
+				return false
+			}
+			greetingCutoff = cutoff
+		}
+
+		return true
+	}), mock.Anything).
+		Return(&framework.EventData{
+			SQLQueryResponse: &framework.SQLQueryResponse{
+				Success: true,
+				Rows:    [][]json.RawMessage{},
+			},
+		}, nil)
+
+	event := &framework.AddUserEvent{
+		CytubeEvent: framework.CytubeEvent{ChannelName: "testchannel"},
+		Username:    "alice",
+		UserRank:    0,
+	}
+
+	when := time.Now()
+	if err := plugin.handleUserJoin(event); err != nil {
+		t.Fatalf("handleUserJoin failed: %v", err)
+	}
+	mockBus.AssertNumberOfCalls(t, "Request", 3)
+	require.False(t, greetingCutoff.IsZero())
+
+	expectedWindow := time.Duration(plugin.config.CooldownMinutes) * time.Minute
+	min := when.Add(-expectedWindow).Add(-3 * time.Second)
+	max := time.Now().Add(-expectedWindow).Add(3 * time.Second)
+	require.GreaterOrEqual(t, greetingCutoff.Unix(), min.Unix())
+	require.LessOrEqual(t, greetingCutoff.Unix(), max.Unix())
 }
 
 func TestPluginStartStop(t *testing.T) {

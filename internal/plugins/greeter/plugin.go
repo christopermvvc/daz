@@ -20,15 +20,15 @@ import (
 )
 
 const (
-	pluginName           = "greeter"
-	defaultCooldown      = 30 * time.Minute
-	greetingQueueSize    = 100
-	minGreetingDelay     = 15 * time.Second
-	maxGreetingDelay     = 3 * time.Minute
-	baseGreetingPrompt   = "Create a short, casual one-line welcome greeting for %s. Keep it in character as a laid-back Australian Dazza."
-	followupPromptHint   = " Also, ask a follow-up question so the user can answer."
-	questionEndHint      = " End your greeting with a natural follow-up question."
-	followUpGreetingMode = "greeting"
+	pluginName             = "greeter"
+	defaultCooldownMinutes = 24 * 60
+	greetingQueueSize      = 100
+	minGreetingDelay       = 15 * time.Second
+	maxGreetingDelay       = 3 * time.Minute
+	baseGreetingPrompt     = "Create a short, casual one-line welcome greeting for %s. Keep it in character as a laid-back Australian Dazza."
+	followupPromptHint     = " Also, ask a follow-up question so the user can answer."
+	questionEndHint        = " End your greeting with a natural follow-up question."
+	followUpGreetingMode   = "greeting"
 )
 
 var greeterBotAliasStopwords = map[string]struct{}{
@@ -137,7 +137,7 @@ func New() framework.Plugin {
 		skipProbability:  0.6 + getRandomFloat64()*0.2, // 60-80% skip rate
 		channelJoinTimes: make(map[string]time.Time),
 		config: &Config{
-			CooldownMinutes:         30,
+			CooldownMinutes:         defaultCooldownMinutes,
 			Enabled:                 true,
 			DefaultGreeting:         "Welcome back, %s!",
 			UseGreetingEngine:       true,
@@ -219,7 +219,7 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 
 	// Ensure default config values (already set in New(), but double-check)
 	if p.config.CooldownMinutes <= 0 {
-		p.config.CooldownMinutes = 30
+		p.config.CooldownMinutes = defaultCooldownMinutes
 	}
 	if p.config.DefaultGreeting == "" {
 		p.config.DefaultGreeting = "Welcome back, %s!"
@@ -524,12 +524,12 @@ func (p *Plugin) handleUserJoin(event framework.Event) error {
 	logger.Debug(p.name, "Recent activity check passed for %s (not active in last 60 min)", username)
 
 	// Check if user was recently greeted in ANY channel (global cooldown)
-	recentlyGreeted, err := p.wasUserRecentlyGreeted(p.ctx, username, 30) // 30 minutes
+	recentlyGreeted, err := p.wasUserRecentlyGreeted(p.ctx, username, p.config.CooldownMinutes)
 	if err != nil {
 		logger.Warn(p.name, "Failed to check recent greetings: %v", err)
 	}
 	if recentlyGreeted {
-		logger.Debug(p.name, "SKIP REASON: User %s was greeted in another channel within 30 min", username)
+		logger.Debug(p.name, "SKIP REASON: User %s was greeted in another channel within %d min", username, p.config.CooldownMinutes)
 		return nil
 	}
 
