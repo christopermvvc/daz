@@ -1309,9 +1309,110 @@ func TestHumanDelayJitter(t *testing.T) {
 	plugIn := &Plugin{}
 	plugIn.randSource = rand.New(rand.NewSource(1))
 
-	delay := plugIn.humanDelay(true, false)
+	delay := plugIn.humanDelay(true, false, "quick follow-up")
 	if delay < 500*time.Millisecond || delay > 1300*time.Millisecond {
 		t.Fatalf("expected follow-up delay in [500ms,1300ms], got %v", delay)
+	}
+}
+
+func TestHumanDelayLongRepairMessageIsSlower(t *testing.T) {
+	plugIn := &Plugin{}
+	plugIn.randSource = rand.New(rand.NewSource(7))
+
+	shortDelay := plugIn.humanDelay(false, false, "sup")
+	longRepairDelay := plugIn.humanDelay(false, true, "no, i meant can you explain how distributed tracing works across services")
+
+	if longRepairDelay <= shortDelay {
+		t.Fatalf("expected long repair delay > short delay, got %v <= %v", longRepairDelay, shortDelay)
+	}
+}
+
+func TestBuildRepairInstruction(t *testing.T) {
+	plugIn := &Plugin{}
+
+	if instruction := plugIn.buildRepairInstruction("no, i meant the other one"); instruction == "" {
+		t.Fatal("expected repair instruction for correction message")
+	}
+
+	if instruction := plugIn.buildRepairInstruction("hey mate what is up"); instruction != "" {
+		t.Fatalf("expected no repair instruction for regular message, got %q", instruction)
+	}
+}
+
+func TestBuildShortTermUserMemoryPrompt(t *testing.T) {
+	plugIn := &Plugin{}
+	history := []string{
+		"bob: hello room",
+		"alice: i love metal",
+		"alice: i usually work arvos",
+		"alice: metal gigs are the best",
+		"alice: new metal album rules",
+		"carol: nice",
+	}
+
+	prompt := plugIn.buildShortTermUserMemoryPrompt("alice", history)
+	if prompt == "" {
+		t.Fatal("expected short-term memory prompt")
+	}
+	if !strings.Contains(prompt, "i love metal") {
+		t.Fatalf("expected preference memory in prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "metal") {
+		t.Fatalf("expected topic memory in prompt, got %q", prompt)
+	}
+}
+
+func TestCallOllamaWithContextIncludesMemoryAndRepairInstruction(t *testing.T) {
+	bus := NewMockEventBus()
+	plugIn := New().(*Plugin)
+	if err := plugIn.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	type ollamaRequest struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+
+	var captured ollamaRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("failed to decode ollama request: %v", err)
+		}
+		if _, err := w.Write([]byte(`{"message":{"content":"all good"}}`)); err != nil {
+			t.Fatalf("failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	plugIn.config.OllamaURL = server.URL
+
+	_, err := plugIn.callOllamaWithContext(
+		"testchannel",
+		"no, i meant tell me about that one",
+		"alice",
+		[]string{
+			"alice: i love motorcycles",
+			"alice: motorcycles are expensive",
+			"bob: fair call",
+		},
+	)
+	if err != nil {
+		t.Fatalf("callOllamaWithContext returned error: %v", err)
+	}
+
+	if len(captured.Messages) == 0 {
+		t.Fatal("expected captured ollama request messages")
+	}
+
+	systemPrompt := captured.Messages[0].Content
+	if !strings.Contains(systemPrompt, "Short-term memory from recent chat history") {
+		t.Fatalf("expected short-term memory section in system prompt, got: %q", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "The user appears to be correcting a misunderstanding") {
+		t.Fatalf("expected repair instruction in system prompt, got: %q", systemPrompt)
 	}
 }
 
@@ -1347,6 +1448,38 @@ func TestHumanizeResponseTerseness(t *testing.T) {
 
 	if len(resp) > 120 {
 		t.Fatalf("expected terse response to be shortened, got len=%d", len(resp))
+	}
+}
+
+func TestApplyConfidenceStyleAddsUncertaintyOpener(t *testing.T) {
+	plugIn := &Plugin{}
+
+	resp := plugIn.applyConfidenceStyle("it might take a while", false)
+	if !strings.Contains(resp, "it might take a while") {
+		t.Fatalf("expected original uncertain response to remain, got %q", resp)
+	}
+
+	validPrefix := false
+	for _, opener := range uncertaintyOpeners {
+		if strings.HasPrefix(strings.ToLower(resp), opener+",") {
+			validPrefix = true
+			break
+		}
+	}
+	if !validPrefix {
+		t.Fatalf("expected uncertainty opener prefix, got %q", resp)
+	}
+}
+
+func TestApplyConfidenceStyleSoftensCertaintyForQuestions(t *testing.T) {
+	plugIn := &Plugin{}
+
+	resp := plugIn.applyConfidenceStyle("Definitely use this route", true)
+	if strings.HasPrefix(resp, "Definitely") {
+		t.Fatalf("expected certainty lead to be softened, got %q", resp)
+	}
+	if !strings.HasPrefix(resp, "pretty sure ") {
+		t.Fatalf("expected softened certainty prefix, got %q", resp)
 	}
 }
 

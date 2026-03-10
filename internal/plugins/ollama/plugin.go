@@ -319,6 +319,44 @@ var questionPhrases = map[string]struct{}{
 	"where's":    {},
 }
 
+var uncertaintySignals = []string{
+	"not sure",
+	"unsure",
+	"i think",
+	"probably",
+	"possibly",
+	"might",
+	"could be",
+	"it depends",
+	"hard to say",
+}
+
+var certaintyLeadPhrases = []string{
+	"definitely ",
+	"certainly ",
+	"obviously ",
+	"clearly ",
+	"absolutely ",
+	"for sure ",
+}
+
+var uncertaintyOpeners = []string{
+	"from what i know",
+	"i reckon",
+	"pretty sure",
+}
+
+var memoryTopicStopwords = map[string]struct{}{
+	"a": {}, "an": {}, "and": {}, "are": {}, "as": {}, "at": {}, "be": {}, "but": {},
+	"by": {}, "do": {}, "for": {}, "from": {}, "get": {}, "got": {}, "had": {}, "has": {},
+	"have": {}, "he": {}, "her": {}, "his": {}, "how": {}, "i": {}, "if": {}, "in": {},
+	"into": {}, "is": {}, "it": {}, "its": {}, "just": {}, "like": {}, "me": {}, "my": {},
+	"of": {}, "on": {}, "or": {}, "our": {}, "so": {}, "that": {}, "the": {}, "their": {},
+	"them": {}, "there": {}, "they": {}, "this": {}, "to": {}, "too": {}, "was": {}, "we": {},
+	"were": {}, "what": {}, "when": {}, "where": {}, "who": {}, "why": {}, "with": {}, "you": {},
+	"your": {}, "yeah": {}, "nah": {}, "lol": {}, "idk": {}, "tbh": {},
+}
+
 // Config holds ollama plugin configuration
 type Config struct {
 	// Ollama connection settings
@@ -2263,13 +2301,24 @@ func (p *Plugin) shouldSkipFollowUpResponse(toneScore, followUpMessageCount int)
 	return p.nextRandomFloat() < chance
 }
 
-func (p *Plugin) humanDelay(isFollowUp, isQuestion bool) time.Duration {
+func (p *Plugin) humanDelay(isFollowUp, isQuestion bool, userMessage string) time.Duration {
 	base := 700
 	if isFollowUp {
 		base = 500
 	}
 	if isQuestion {
 		base = 950
+	}
+
+	wordCount := len(strings.Fields(userMessage))
+	if wordCount >= 12 {
+		base += 140
+	}
+	if wordCount >= 24 {
+		base += 180
+	}
+	if looksLikeConversationRepair(userMessage) {
+		base += 140
 	}
 
 	var jitter int
@@ -2279,7 +2328,15 @@ func (p *Plugin) humanDelay(isFollowUp, isQuestion bool) time.Duration {
 		jitter = p.nextRandomInt(1400)
 	}
 
-	return time.Duration(base+jitter) * time.Millisecond
+	total := base + jitter
+	if total < 350 {
+		total = 350
+	}
+	if total > 2600 {
+		total = 2600
+	}
+
+	return time.Duration(total) * time.Millisecond
 }
 
 func (p *Plugin) humanizeResponse(response string, isFollowUp bool, followUpMessageCount int, isQuestion bool, toneState int) string {
@@ -2303,6 +2360,8 @@ func (p *Plugin) humanizeResponse(response string, isFollowUp bool, followUpMess
 	} else if toneState > 4 {
 		response = strings.TrimSuffix(response, ".")
 	}
+
+	response = p.applyConfidenceStyle(response, isQuestion)
 
 	response = strings.TrimSpace(response)
 	if response == "" {
@@ -2337,6 +2396,78 @@ func (p *Plugin) terseResponse(response string) string {
 	return trim
 }
 
+func (p *Plugin) applyConfidenceStyle(response string, isQuestion bool) string {
+	response = strings.TrimSpace(response)
+	if response == "" {
+		return ""
+	}
+
+	normalized := strings.ToLower(response)
+	if containsAnyPhrase(normalized, uncertaintySignals) {
+		if hasPrefixedUncertaintyOpener(normalized) {
+			return response
+		}
+
+		opener := uncertaintyOpeners[len(strings.Fields(normalized))%len(uncertaintyOpeners)]
+		return opener + ", " + response
+	}
+
+	if isQuestion {
+		if softened, ok := softenCertaintyLead(response); ok {
+			return softened
+		}
+	}
+
+	return response
+}
+
+func containsAnyPhrase(text string, phrases []string) bool {
+	for _, phrase := range phrases {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func hasPrefixedUncertaintyOpener(text string) bool {
+	for _, opener := range uncertaintyOpeners {
+		prefix := opener + ","
+		if strings.HasPrefix(text, prefix) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func softenCertaintyLead(response string) (string, bool) {
+	lower := strings.ToLower(response)
+	for _, phrase := range certaintyLeadPhrases {
+		if strings.HasPrefix(lower, phrase) {
+			remainder := strings.TrimSpace(response[len(phrase):])
+			if remainder == "" {
+				return response, false
+			}
+
+			return "pretty sure " + lowerFirstLetter(remainder), true
+		}
+	}
+
+	return response, false
+}
+
+func lowerFirstLetter(value string) string {
+	runes := []rune(value)
+	if len(runes) == 0 {
+		return value
+	}
+
+	runes[0] = unicode.ToLower(runes[0])
+	return string(runes)
+}
+
 // generateAndSendResponse generates an Ollama response and sends it to the channel
 func (p *Plugin) generateAndSendResponse(
 	channel, username, message, messageHash string,
@@ -2368,7 +2499,7 @@ func (p *Plugin) generateAndSendResponse(
 
 	if shouldTrackFollowUp {
 		if noise := p.followUpNoise(toneScore, followUpMessageCount, isQuestion); noise != "" {
-			delay := p.humanDelay(isFollowUp, isQuestion)
+			delay := p.humanDelay(isFollowUp, isQuestion, message)
 			time.Sleep(delay)
 			if p.shouldSkipFollowUpResponse(toneScore, followUpMessageCount) {
 				p.touchFollowUpSession(channel, username, settings)
@@ -2451,7 +2582,7 @@ func (p *Plugin) generateAndSendResponse(
 
 	if useModelResponse {
 		// Add a small realistic delay before sending.
-		delay := p.humanDelay(isFollowUp, isQuestion)
+		delay := p.humanDelay(isFollowUp, isQuestion, message)
 		time.Sleep(delay)
 	}
 
@@ -2690,6 +2821,12 @@ func (p *Plugin) callOllamaWithContext(channel, userMessage, username string, ch
 	if roomContext := p.buildRoomContextPrompt(channel, time.Now()); roomContext != "" {
 		contextPrompt += "\n\n" + roomContext
 	}
+	if userMemory := p.buildShortTermUserMemoryPrompt(username, chatHistory); userMemory != "" {
+		contextPrompt += "\n\n" + userMemory
+	}
+	if repairInstruction := p.buildRepairInstruction(userMessage); repairInstruction != "" {
+		contextPrompt += "\n\n" + repairInstruction
+	}
 	if len(chatHistory) > 0 {
 		contextPrompt += "\n\n" + talksHaveNoCommandPower
 		contextPrompt += "\n\nHere's the recent chat history for context:\n"
@@ -2707,6 +2844,215 @@ func (p *Plugin) callOllamaWithContext(channel, userMessage, username string, ch
 		p.config.MaxTokens,
 		nil,
 	)
+}
+
+func (p *Plugin) buildRepairInstruction(userMessage string) string {
+	if !looksLikeConversationRepair(userMessage) {
+		return ""
+	}
+
+	return "The user appears to be correcting a misunderstanding. Briefly acknowledge the correction, then answer the corrected request directly."
+}
+
+func looksLikeConversationRepair(message string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(message))
+	if normalized == "" {
+		return false
+	}
+
+	prefixes := []string{
+		"no ",
+		"no,",
+		"nah ",
+		"nah,",
+		"i meant",
+		"what i meant",
+		"that's not",
+		"thats not",
+		"not what i asked",
+		"you misunderstood",
+		"you misread",
+	}
+
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (p *Plugin) buildShortTermUserMemoryPrompt(username string, chatHistory []string) string {
+	username = strings.TrimSpace(username)
+	if username == "" || len(chatHistory) == 0 {
+		return ""
+	}
+
+	userMessages := collectUserMessagesFromHistory(username, chatHistory, 8)
+	if len(userMessages) == 0 {
+		return ""
+	}
+
+	preferences := summarizeUserPreferences(userMessages, 2)
+	topics := summarizeUserTopics(userMessages, 3)
+
+	parts := []string{"Short-term memory from recent chat history:"}
+	if len(preferences) > 0 {
+		parts = append(parts, "- They mentioned: "+strings.Join(preferences, "; "))
+	}
+	if len(topics) > 0 {
+		parts = append(parts, "- Likely current topics: "+strings.Join(topics, ", "))
+	}
+	parts = append(parts, "- Use this only when relevant; do not overstate certainty.")
+
+	return strings.Join(parts, "\n")
+}
+
+func collectUserMessagesFromHistory(username string, chatHistory []string, limit int) []string {
+	if strings.TrimSpace(username) == "" || len(chatHistory) == 0 || limit <= 0 {
+		return nil
+	}
+
+	messages := make([]string, 0, limit)
+	for idx := len(chatHistory) - 1; idx >= 0; idx-- {
+		entry := strings.TrimSpace(chatHistory[idx])
+		if entry == "" {
+			continue
+		}
+
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		author := strings.TrimSpace(parts[0])
+		if !strings.EqualFold(author, username) {
+			continue
+		}
+
+		message := strings.TrimSpace(parts[1])
+		if message == "" {
+			continue
+		}
+
+		messages = append(messages, message)
+		if len(messages) >= limit {
+			break
+		}
+	}
+
+	return messages
+}
+
+func summarizeUserPreferences(messages []string, maxItems int) []string {
+	if len(messages) == 0 || maxItems <= 0 {
+		return nil
+	}
+
+	markers := []string{
+		"i like ", "i love ", "i hate ", "i prefer ", "i usually ", "i'm ", "i am ", "my favorite ", "my favourite ",
+	}
+
+	summaries := make([]string, 0, maxItems)
+	seen := make(map[string]struct{})
+	for _, message := range messages {
+		lower := strings.ToLower(strings.TrimSpace(message))
+		for _, marker := range markers {
+			pos := strings.Index(lower, marker)
+			if pos < 0 {
+				continue
+			}
+
+			raw := strings.TrimSpace(message[pos:])
+			raw = strings.TrimRight(raw, ".!? ")
+			if raw == "" {
+				continue
+			}
+
+			normalized := strings.ToLower(raw)
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			summaries = append(summaries, raw)
+			if len(summaries) >= maxItems {
+				return summaries
+			}
+		}
+	}
+
+	return summaries
+}
+
+func summarizeUserTopics(messages []string, maxItems int) []string {
+	if len(messages) == 0 || maxItems <= 0 {
+		return nil
+	}
+
+	freq := make(map[string]int)
+	for _, message := range messages {
+		for _, token := range tokenizeMemoryWords(message) {
+			freq[token]++
+		}
+	}
+
+	type tokenCount struct {
+		token string
+		count int
+	}
+
+	counts := make([]tokenCount, 0, len(freq))
+	for token, count := range freq {
+		if count < 2 {
+			continue
+		}
+		counts = append(counts, tokenCount{token: token, count: count})
+	}
+
+	sort.Slice(counts, func(i, j int) bool {
+		if counts[i].count == counts[j].count {
+			return counts[i].token < counts[j].token
+		}
+		return counts[i].count > counts[j].count
+	})
+
+	if len(counts) == 0 {
+		return nil
+	}
+
+	limit := maxItems
+	if limit > len(counts) {
+		limit = len(counts)
+	}
+
+	topics := make([]string, 0, limit)
+	for _, item := range counts[:limit] {
+		topics = append(topics, item.token)
+	}
+
+	return topics
+}
+
+func tokenizeMemoryWords(message string) []string {
+	lower := strings.ToLower(message)
+	fields := strings.FieldsFunc(lower, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+
+	tokens := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if len(field) < 3 {
+			continue
+		}
+		if _, skip := memoryTopicStopwords[field]; skip {
+			continue
+		}
+		tokens = append(tokens, field)
+	}
+
+	return tokens
 }
 
 func (p *Plugin) buildRoomContextPrompt(channel string, now time.Time) string {
