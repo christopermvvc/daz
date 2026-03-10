@@ -168,7 +168,7 @@ func (m *MockEventBus) Request(ctx context.Context, target string, eventType str
 			}, nil
 		}
 
-		if strings.Contains(query, "from daz_mediatracker_queue") {
+		if strings.Contains(query, "from daz_mediatracker_plays") || strings.Contains(query, "from daz_mediatracker_queue") {
 			channel := ""
 			if len(data.SQLQueryRequest.Params) > 0 {
 				if s, ok := data.SQLQueryRequest.Params[0].Value.(string); ok {
@@ -302,14 +302,228 @@ func TestRegisterCommandsBroadcastsContextCommand(t *testing.T) {
 			t.Fatalf("expected command registration from ollama, got %q", event.data.PluginRequest.From)
 		}
 
-		if event.data.PluginRequest.Data.KeyValue["commands"] != "context" {
-			t.Fatalf("expected context command registration, got %q", event.data.PluginRequest.Data.KeyValue["commands"])
+		if event.data.PluginRequest.Data.KeyValue["commands"] != "context,professor" {
+			t.Fatalf("expected context and professor command registration, got %q", event.data.PluginRequest.Data.KeyValue["commands"])
 		}
 
 		return
 	}
 
 	t.Fatalf("expected command.register broadcast for context command")
+}
+
+func TestHandleCommandProfessorAdminSendsChannelMessage(t *testing.T) {
+	bus := NewMockEventBus()
+	plugin := New().(*Plugin)
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	type ollamaRequest struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+
+	var captured ollamaRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("failed to decode ollama request: %v", err)
+		}
+		if _, err := w.Write([]byte(`{"message":{"content":"The Earth orbits the Sun."}}`)); err != nil {
+			t.Fatalf("failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	plugin.config.OllamaURL = server.URL
+
+	handler := bus.subscriptions["command.ollama.execute"][0]
+	err := handler(framework.NewDataEvent("command.ollama.execute", &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			Data: &framework.RequestData{
+				Command: &framework.CommandData{
+					Name: "professor",
+					Args: []string{"what", "is", "astronomy"},
+					Params: map[string]string{
+						"channel":  "testchannel",
+						"username": "alice",
+						"is_admin": "true",
+					},
+				},
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("handleCommand returned error: %v", err)
+	}
+
+	if len(captured.Messages) < 2 {
+		t.Fatalf("expected professor request messages, got %d", len(captured.Messages))
+	}
+	if captured.Messages[0].Content != professorSystemPrompt {
+		t.Fatalf("expected professor system prompt, got %q", captured.Messages[0].Content)
+	}
+	if strings.Contains(captured.Messages[0].Content, "You are Dazza") {
+		t.Fatalf("expected professor command to avoid Dazza persona prompt, got %q", captured.Messages[0].Content)
+	}
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	for _, event := range bus.broadcasts {
+		if event.eventType != "cytube.send" || event.data == nil || event.data.RawMessage == nil {
+			continue
+		}
+		if event.data.RawMessage.Channel != "testchannel" {
+			t.Fatalf("expected channel message to testchannel, got %q", event.data.RawMessage.Channel)
+		}
+		if event.data.RawMessage.Message != "The Earth orbits the Sun." {
+			t.Fatalf("expected professor response text, got %q", event.data.RawMessage.Message)
+		}
+		return
+	}
+
+	t.Fatalf("expected channel response broadcast for professor command")
+}
+
+func TestHandleCommandProfessorAdminPmSendsPrivateMessage(t *testing.T) {
+	bus := NewMockEventBus()
+	plugin := New().(*Plugin)
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write([]byte(`{"message":{"content":"PM answer"}}`)); err != nil {
+			t.Fatalf("failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	plugin.config.OllamaURL = server.URL
+
+	handler := bus.subscriptions["command.ollama.execute"][0]
+	err := handler(framework.NewDataEvent("command.ollama.execute", &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			Data: &framework.RequestData{
+				Command: &framework.CommandData{
+					Name: "professor",
+					Args: []string{"explain", "gravity"},
+					Params: map[string]string{
+						"channel":  "testchannel",
+						"username": "alice",
+						"is_admin": "true",
+						"is_pm":    "true",
+					},
+				},
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("handleCommand returned error: %v", err)
+	}
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	for _, event := range bus.broadcasts {
+		if event.eventType != "cytube.send.pm" || event.data == nil || event.data.PrivateMessage == nil {
+			continue
+		}
+		if event.data.PrivateMessage.ToUser != "alice" {
+			t.Fatalf("expected PM to alice, got %q", event.data.PrivateMessage.ToUser)
+		}
+		if event.data.PrivateMessage.Message != "PM answer" {
+			t.Fatalf("expected PM professor response text, got %q", event.data.PrivateMessage.Message)
+		}
+		return
+	}
+
+	t.Fatalf("expected PM response broadcast for professor command")
+}
+
+func TestHandleCommandProfessorNonAdminDenied(t *testing.T) {
+	bus := NewMockEventBus()
+	plugin := New().(*Plugin)
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	handler := bus.subscriptions["command.ollama.execute"][0]
+	err := handler(framework.NewDataEvent("command.ollama.execute", &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			Data: &framework.RequestData{
+				Command: &framework.CommandData{
+					Name: "professor",
+					Args: []string{"question"},
+					Params: map[string]string{
+						"channel":  "testchannel",
+						"username": "alice",
+						"is_admin": "false",
+					},
+				},
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("handleCommand returned error: %v", err)
+	}
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	for _, event := range bus.broadcasts {
+		if event.eventType != "cytube.send" || event.data == nil || event.data.RawMessage == nil {
+			continue
+		}
+		if event.data.RawMessage.Message != "that one's admin-only" {
+			t.Fatalf("expected admin-only denial, got %q", event.data.RawMessage.Message)
+		}
+		return
+	}
+
+	t.Fatalf("expected denial message broadcast")
+}
+
+func TestHandleCommandProfessorMissingQuestionShowsUsage(t *testing.T) {
+	bus := NewMockEventBus()
+	plugin := New().(*Plugin)
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	handler := bus.subscriptions["command.ollama.execute"][0]
+	err := handler(framework.NewDataEvent("command.ollama.execute", &framework.EventData{
+		PluginRequest: &framework.PluginRequest{
+			Data: &framework.RequestData{
+				Command: &framework.CommandData{
+					Name: "professor",
+					Args: []string{},
+					Params: map[string]string{
+						"channel":  "testchannel",
+						"username": "alice",
+						"is_admin": "true",
+					},
+				},
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("handleCommand returned error: %v", err)
+	}
+
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	for _, event := range bus.broadcasts {
+		if event.eventType != "cytube.send" || event.data == nil || event.data.RawMessage == nil {
+			continue
+		}
+		if event.data.RawMessage.Message != "usage: !professor <question>" {
+			t.Fatalf("expected usage message, got %q", event.data.RawMessage.Message)
+		}
+		return
+	}
+
+	t.Fatalf("expected usage message broadcast")
 }
 
 func TestHandleCommandContextAdminSendsPM(t *testing.T) {
