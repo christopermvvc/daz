@@ -23,21 +23,22 @@ import (
 )
 
 const (
-	pluginName               = "ollama"
-	defaultOllamaURL         = "http://localhost:11434"
-	defaultModel             = "huggingface.co/ArliAI/Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF:latest"
-	defaultKeepAlive         = "5m"
-	defaultRateLimitSecs     = 10  // 10 second rate limit per user
-	defaultFollowUpWindow    = 180 // 3 minute follow-up window
-	maxFollowUpWindowSecs    = 900 // 15 minute maximum turn-wait window
-	defaultFollowUpMax       = 4   // follow-up turns before drop
-	defaultFollowUpMinMS     = 2500
-	operationGenerate        = "generate"
-	operationDisableListener = "listener.disable"
-	operationEnableListener  = "listener.enable"
-	messageFreshnessWindow   = 30 * time.Second
-	maxResponseLength        = 500 // Increased for more complete responses
-	defaultSystemPrompt      = `You are Dazza, a regular chatroom user. Keep it casual, quick, and unpolished.
+	pluginName                        = "ollama"
+	defaultOllamaURL                  = "http://localhost:11434"
+	defaultModel                      = "huggingface.co/ArliAI/Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF:latest"
+	defaultKeepAlive                  = "5m"
+	defaultRateLimitSecs              = 10  // 10 second rate limit per user
+	defaultFollowUpWindow             = 180 // 3 minute follow-up window
+	maxFollowUpWindowSecs             = 900 // 15 minute maximum turn-wait window
+	defaultFollowUpMax                = 4   // follow-up turns before drop
+	defaultFollowUpMinMS              = 2500
+	defaultFollowUpOwnerListenSeconds = 30
+	operationGenerate                 = "generate"
+	operationDisableListener          = "listener.disable"
+	operationEnableListener           = "listener.enable"
+	messageFreshnessWindow            = 30 * time.Second
+	maxResponseLength                 = 500 // Increased for more complete responses
+	defaultSystemPrompt               = `You are Dazza, a regular chatroom user. Keep it casual, quick, and unpolished.
 Keep replies short and conversational. Prefer one short sentence, or two at most when needed.
 Type like people actually chat: informal, lowercase, occasional typos, and common chat abbreviations (lol, nah, yeah, idk, tbh).
 Keep a light, natural Aussie flavour, but assume this room is probably not mostly Australian, so don't force heavy dialect.
@@ -313,6 +314,8 @@ type Config struct {
 	FollowUpWindowSeconds int  `json:"follow_up_window_seconds"`
 	// Continue follow-up replies on non-question messages.
 	FollowUpRespondAllMessages bool `json:"follow_up_respond_all_messages"`
+	// Keep invoker-only follow-up listening active for this many seconds after a response.
+	FollowUpOwnerListenSeconds int `json:"follow_up_owner_listen_seconds"`
 	// Maximum number of replies in a follow-up chain before requiring a fresh mention.
 	FollowUpMaxMessages int `json:"follow_up_max_messages"`
 	// Minimum milliseconds between follow-up responses.
@@ -410,20 +413,21 @@ func New() framework.Plugin {
 	return &Plugin{
 		name: pluginName,
 		config: &Config{
-			OllamaURL:                defaultOllamaURL,
-			Model:                    defaultModel,
-			RateLimitSeconds:         defaultRateLimitSecs,
-			FollowUpEnabled:          true,
-			FollowUpWindowSeconds:    defaultFollowUpWindow,
-			FollowUpMaxMessages:      defaultFollowUpMax,
-			FollowUpMinIntervalMs:    defaultFollowUpMinMS,
-			FollowUpNoiseChance:      defaultFollowUpNoiseChance,
-			FollowUpNoResponseChance: defaultFollowUpNoResponseChance,
-			Enabled:                  true,
-			Temperature:              0.7,
-			MaxTokens:                2048, // Increased to allow more complete thoughts
-			KeepAlive:                defaultKeepAlive,
-			SystemPrompt:             defaultSystemPrompt,
+			OllamaURL:                  defaultOllamaURL,
+			Model:                      defaultModel,
+			RateLimitSeconds:           defaultRateLimitSecs,
+			FollowUpEnabled:            true,
+			FollowUpWindowSeconds:      defaultFollowUpWindow,
+			FollowUpOwnerListenSeconds: defaultFollowUpOwnerListenSeconds,
+			FollowUpMaxMessages:        defaultFollowUpMax,
+			FollowUpMinIntervalMs:      defaultFollowUpMinMS,
+			FollowUpNoiseChance:        defaultFollowUpNoiseChance,
+			FollowUpNoResponseChance:   defaultFollowUpNoResponseChance,
+			Enabled:                    true,
+			Temperature:                0.7,
+			MaxTokens:                  2048, // Increased to allow more complete thoughts
+			KeepAlive:                  defaultKeepAlive,
+			SystemPrompt:               defaultSystemPrompt,
 		},
 		userLists:        make(map[string]map[string]bool),
 		followUpSessions: make(map[string]followUpSession),
@@ -490,6 +494,15 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 	if p.config.FollowUpWindowSeconds > maxFollowUpWindowSecs {
 		p.config.FollowUpWindowSeconds = maxFollowUpWindowSecs
+	}
+	if p.config.FollowUpOwnerListenSeconds > maxFollowUpWindowSecs {
+		p.config.FollowUpOwnerListenSeconds = maxFollowUpWindowSecs
+	}
+	if p.config.FollowUpOwnerListenSeconds == 0 {
+		p.config.FollowUpOwnerListenSeconds = defaultFollowUpOwnerListenSeconds
+	}
+	if p.config.FollowUpOwnerListenSeconds < 0 {
+		p.config.FollowUpOwnerListenSeconds = defaultFollowUpOwnerListenSeconds
 	}
 	if p.config.FollowUpMaxMessages == 0 {
 		p.config.FollowUpMaxMessages = defaultFollowUpMax
@@ -1102,11 +1115,6 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		return nil
 	}
 
-	if p.isOneOnOneFollowUpLockedOut(channel, username, now) {
-		logger.Debug(p.name, "Skipping message from %s in %s due active one-on-one follow-up lock", username, channel)
-		return nil
-	}
-
 	isBotMentioned := p.isBotMentioned(message) || hasManualInvocation
 	isQuestion := p.isLikelyQuestion(message)
 
@@ -1135,7 +1143,11 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 			p.clearFollowUpSession(channel, username)
 		case minInterval:
 			logger.Debug(p.name, "Skipping follow-up for user %s in %s due minimum interval", username, channel)
-		case sessionOrigin == followUpOriginMention && !session.RespondAll && !isQuestion && !isBotMentioned:
+		case sessionOrigin == followUpOriginMention &&
+			!session.RespondAll &&
+			!isQuestion &&
+			!isBotMentioned &&
+			!p.isFollowingUpWithOwner(now, session):
 			logger.Debug(p.name, "Ending follow-up for user %s in %s (non-qualifying message)", username, channel)
 			p.clearFollowUpSession(channel, username)
 		default:
@@ -1355,66 +1367,39 @@ func (p *Plugin) getActiveFollowUpSession(channel, username string, now time.Tim
 	return session, true
 }
 
-func (p *Plugin) oneOnOneFollowUpOwner(channel string, now time.Time) (string, bool) {
+func (p *Plugin) isFollowingUpWithOwner(now time.Time, session followUpSession) bool {
 	if p.config == nil || !p.config.FollowUpEnabled {
-		return "", false
+		return false
 	}
 
-	if p.followUpSessions == nil {
-		return "", false
+	if session.Origin != followUpOriginMention {
+		return false
+	}
+
+	if p.config.FollowUpOwnerListenSeconds <= 0 {
+		return false
 	}
 
 	if now.IsZero() {
 		now = time.Now()
 	}
 
-	normalizedChannel := strings.ToLower(strings.TrimSpace(channel))
-	if normalizedChannel == "" {
-		return "", false
-	}
-
-	latestResponse := time.Time{}
-	owner := ""
-
-	p.followUpMu.RLock()
-	for key, session := range p.followUpSessions {
-		if !now.Before(session.ExpiresAt) {
-			continue
-		}
-
-		sessionChannel, sessionUsername, hasUsername := strings.Cut(key, ":")
-		if !hasUsername {
-			continue
-		}
-		if sessionChannel != normalizedChannel {
-			continue
-		}
-
-		if owner == "" || session.LastResponseAt.After(latestResponse) {
-			owner = strings.ToLower(sessionUsername)
-			latestResponse = session.LastResponseAt
-		}
-	}
-	p.followUpMu.RUnlock()
-
-	if owner == "" {
-		return "", false
-	}
-
-	return owner, true
-}
-
-func (p *Plugin) isOneOnOneFollowUpLockedOut(channel, username string, now time.Time) bool {
-	if p.config == nil || !p.config.FollowUpEnabled {
+	if session.LastResponseAt.IsZero() {
 		return false
 	}
 
-	owner, hasActive := p.oneOnOneFollowUpOwner(channel, now)
-	if !hasActive {
+	window := time.Duration(p.config.FollowUpOwnerListenSeconds) * time.Second
+	if window <= 0 {
 		return false
 	}
 
-	return !strings.EqualFold(owner, username)
+	// Keep each user's follow-up chain sticky for a short period after each bot response,
+	// so the invoker can continue without re-mentioning every turn.
+	if !session.LastResponseAt.Add(window).Before(now) {
+		return true
+	}
+
+	return false
 }
 
 func (p *Plugin) hasActiveFollowUpSession(channel, username string, now time.Time) bool {

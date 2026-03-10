@@ -121,6 +121,7 @@
       "enabled": true,
       "follow_up_enabled": true,
       "follow_up_window_seconds": 180,
+      "follow_up_owner_listen_seconds": 30,
       "follow_up_respond_all_messages": false,
       "follow_up_max_messages": 4,
       "follow_up_min_interval_ms": 2500,

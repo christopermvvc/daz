@@ -321,6 +321,51 @@ func TestPluginInitClampsFollowUpWindow(t *testing.T) {
 	}
 }
 
+func TestPluginInitClampsFollowUpOwnerListenWindow(t *testing.T) {
+	plugin := New()
+	bus := NewMockEventBus()
+
+	config := Config{
+		Enabled:                    true,
+		FollowUpOwnerListenSeconds: maxFollowUpWindowSecs + 5,
+	}
+
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("Failed to marshal config: %v", err)
+	}
+
+	err = plugin.Init(configJSON, bus)
+	if err != nil {
+		t.Fatalf("Init failed with large owner follow-up window config: %v", err)
+	}
+
+	ollamaPlugin := plugin.(*Plugin)
+	if ollamaPlugin.config.FollowUpOwnerListenSeconds != maxFollowUpWindowSecs {
+		t.Fatalf("expected owner listen window to clamp to %d, got %d", maxFollowUpWindowSecs, ollamaPlugin.config.FollowUpOwnerListenSeconds)
+	}
+
+	config = Config{
+		Enabled:                    true,
+		FollowUpOwnerListenSeconds: 0,
+	}
+
+	configJSON, err = json.Marshal(config)
+	if err != nil {
+		t.Fatalf("Failed to marshal config: %v", err)
+	}
+
+	err = plugin.Init(configJSON, bus)
+	if err != nil {
+		t.Fatalf("Init failed with zero owner follow-up window config: %v", err)
+	}
+
+	ollamaPlugin = plugin.(*Plugin)
+	if ollamaPlugin.config.FollowUpOwnerListenSeconds != defaultFollowUpOwnerListenSeconds {
+		t.Fatalf("expected owner listen window default to be restored from zero, got %d", ollamaPlugin.config.FollowUpOwnerListenSeconds)
+	}
+}
+
 func TestTouchFollowUpSessionCapsWindowFromConfig(t *testing.T) {
 	plugin := &Plugin{
 		config: &Config{
@@ -1415,7 +1460,7 @@ func TestHandleChatMessageClearsFollowUpOnNonQuestion(t *testing.T) {
 	}
 }
 
-func TestHandleChatMessageLocksFollowUpToInitiatingUser(t *testing.T) {
+func TestHandleChatMessageAllowsConcurrentOwnerFollowUps(t *testing.T) {
 	bus := NewMockEventBus()
 	var serverCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1443,8 +1488,17 @@ func TestHandleChatMessageLocksFollowUpToInitiatingUser(t *testing.T) {
 		"testchannel": {"alice": true, "bob": true},
 	}
 
-	key := plugin.followUpSessionKey("testchannel", "alice")
-	plugin.followUpSessions[key] = followUpSession{
+	plugin.followUpSessions = make(map[string]followUpSession)
+	plugin.followUpSessions[plugin.followUpSessionKey("testchannel", "alice")] = followUpSession{
+		ExpiresAt:      time.Now().Add(3 * time.Minute),
+		LastResponseAt: time.Now().Add(-time.Second),
+		Origin:         followUpOriginMention,
+		MaxMessages:    4,
+		MinIntervalMS:  0,
+		RespondAll:     false,
+		MessageCount:   1,
+	}
+	plugin.followUpSessions[plugin.followUpSessionKey("testchannel", "bob")] = followUpSession{
 		ExpiresAt:      time.Now().Add(3 * time.Minute),
 		LastResponseAt: time.Now().Add(-time.Second),
 		Origin:         followUpOriginMention,
@@ -1458,7 +1512,7 @@ func TestHandleChatMessageLocksFollowUpToInitiatingUser(t *testing.T) {
 		Data: &framework.EventData{
 			ChatMessage: &framework.ChatMessageData{
 				Username:    "bob",
-				Message:     "daz tell me something",
+				Message:     "yeah",
 				Channel:     "testchannel",
 				MessageTime: time.Now().UnixMilli(),
 			},
@@ -1469,17 +1523,11 @@ func TestHandleChatMessageLocksFollowUpToInitiatingUser(t *testing.T) {
 		t.Fatalf("handleChatMessage (bob) failed: %v", err)
 	}
 
-	// Bob should be skipped while alice holds the active one-on-one follow-up lock.
-	time.Sleep(100 * time.Millisecond)
-	if serverCalls.Load() != 0 {
-		t.Fatalf("expected no Ollama calls while lock is held, got %d", serverCalls.Load())
-	}
-
 	aliceEvent := &framework.DataEvent{
 		Data: &framework.EventData{
 			ChatMessage: &framework.ChatMessageData{
 				Username:    "alice",
-				Message:     "thanks for that, huh?",
+				Message:     "thanks for that",
 				Channel:     "testchannel",
 				MessageTime: time.Now().UnixMilli(),
 			},
@@ -1490,8 +1538,76 @@ func TestHandleChatMessageLocksFollowUpToInitiatingUser(t *testing.T) {
 		t.Fatalf("handleChatMessage (alice) failed: %v", err)
 	}
 
-	waitForServerCalls(t, &serverCalls, 1, 4*time.Second)
-	waitForBroadcastType(t, bus, "cytube.send", 1, 4*time.Second)
+	waitForServerCalls(t, &serverCalls, 2, 4*time.Second)
+	waitForBroadcastType(t, bus, "cytube.send", 2, 4*time.Second)
+}
+
+func TestHandleChatMessageSkipsNonQuestionFollowUpOutsideOwnerWindow(t *testing.T) {
+	bus := NewMockEventBus()
+	var serverCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls.Add(1)
+		if _, err := w.Write([]byte(`{"message":{"content":"yeah, i got you"}}`)); err != nil {
+			t.Fatalf("failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	plugIn := New().(*Plugin)
+	if err := plugIn.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	plugIn.config.FollowUpEnabled = true
+	plugIn.config.FollowUpWindowSeconds = 120
+	plugIn.config.FollowUpMinIntervalMs = 0
+	plugIn.config.FollowUpOwnerListenSeconds = 1
+	plugIn.config.FollowUpNoResponseChance = 0
+	plugIn.config.FollowUpNoiseChance = 0
+	plugIn.config.OllamaURL = server.URL
+	plugIn.botName = "Dazza"
+	plugIn.botAliases = buildBotNameAliases("Dazza")
+	plugIn.userLists = map[string]map[string]bool{
+		"testchannel": {"alice": true},
+	}
+	plugIn.followUpSessions = make(map[string]followUpSession)
+	plugIn.followUpSessions[plugIn.followUpSessionKey("testchannel", "alice")] = followUpSession{
+		ExpiresAt:      time.Now().Add(3 * time.Minute),
+		LastResponseAt: time.Now().Add(-3 * time.Second),
+		Origin:         followUpOriginMention,
+		MaxMessages:    4,
+		MinIntervalMS:  0,
+		RespondAll:     false,
+		MessageCount:   1,
+	}
+
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "alice",
+				Message:     "thanks for that",
+				Channel:     "testchannel",
+				MessageTime: time.Now().UnixMilli(),
+			},
+		},
+	}
+
+	if err := plugIn.handleChatMessage(event); err != nil {
+		t.Fatalf("handleChatMessage failed: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if serverCalls.Load() != 0 {
+		t.Fatalf("expected no Ollama calls after owner window expiry, got %d", serverCalls.Load())
+	}
+
+	if len(bus.broadcasts) != 0 {
+		t.Fatalf("expected no send events for non-qualifying follow-up outside owner window, got %d", len(bus.broadcasts))
+	}
+
+	if _, ok := plugIn.followUpSessions[plugIn.followUpSessionKey("testchannel", "alice")]; ok {
+		t.Fatalf("expected follow-up session to clear after non-qualifying message outside owner window")
+	}
 }
 
 func TestHandleChatMessageIgnoresCommandPrefixes(t *testing.T) {
