@@ -29,6 +29,7 @@ const (
 	defaultKeepAlive         = "5m"
 	defaultRateLimitSecs     = 10  // 10 second rate limit per user
 	defaultFollowUpWindow    = 180 // 3 minute follow-up window
+	maxFollowUpWindowSecs    = 900 // 15 minute maximum turn-wait window
 	defaultFollowUpMax       = 4   // follow-up turns before drop
 	defaultFollowUpMinMS     = 2500
 	operationGenerate        = "generate"
@@ -486,6 +487,9 @@ func (p *Plugin) Init(config json.RawMessage, bus framework.EventBus) error {
 	}
 	if p.config.FollowUpWindowSeconds == 0 {
 		p.config.FollowUpWindowSeconds = defaultFollowUpWindow
+	}
+	if p.config.FollowUpWindowSeconds > maxFollowUpWindowSecs {
+		p.config.FollowUpWindowSeconds = maxFollowUpWindowSecs
 	}
 	if p.config.FollowUpMaxMessages == 0 {
 		p.config.FollowUpMaxMessages = defaultFollowUpMax
@@ -1080,14 +1084,27 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		}
 	}
 
+	strippedMessage, hasManualInvocation := p.stripBotInvocation(message)
+	if hasManualInvocation {
+		message = strings.TrimSpace(strippedMessage)
+	}
+
+	if strings.TrimSpace(message) == "" {
+		if hasManualInvocation {
+			logger.Debug(p.name, "Skipping empty message after bot-invocation strip for %s in %s", username, channel)
+		}
+		return nil
+	}
+
 	if p.isCommandMessage(message) {
 		logger.Debug(p.name, "Skipping command-like message in %s from %s: %q", channel, username, message)
 		logger.Debug(p.name, "Keeping follow-up state alive for command-like message in %s from %s", channel, username)
 		return nil
 	}
 
+	isBotMentioned := p.isBotMentioned(message) || hasManualInvocation
 	isQuestion := p.isLikelyQuestion(message)
-	isBotMentioned := p.isBotMentioned(message)
+
 	session, hasFollowUpSession := p.getActiveFollowUpSession(channel, username, now)
 	isFollowUp := false
 	shouldTrackFollowUp := false
@@ -1408,6 +1425,9 @@ func (p *Plugin) touchFollowUpSession(channel, username string, settings followU
 	if windowSeconds <= 0 {
 		windowSeconds = defaultFollowUpWindow
 	}
+	if windowSeconds > maxFollowUpWindowSecs {
+		windowSeconds = maxFollowUpWindowSecs
+	}
 
 	now := time.Now()
 	session := followUpSession{
@@ -1494,6 +1514,71 @@ func (p *Plugin) cleanupFollowUpSessions() {
 		}
 		p.recentResponsesMu.Unlock()
 	}
+}
+
+func (p *Plugin) stripBotInvocation(message string) (string, bool) {
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" {
+		return message, false
+	}
+
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return message, false
+	}
+
+	stripped := make([]string, 0, len(fields))
+	foundInvocation := false
+
+	for _, field := range fields {
+		if p.isLikelyManualInvocationToken(field) {
+			foundInvocation = true
+			continue
+		}
+
+		stripped = append(stripped, field)
+	}
+
+	if !foundInvocation {
+		return message, false
+	}
+
+	return strings.Join(stripped, " "), true
+}
+
+func (p *Plugin) isLikelyManualInvocationToken(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+
+	runes := []rune(token)
+	start := 0
+	end := len(runes)
+
+	for start < end && !unicode.IsLetter(runes[start]) && !unicode.IsDigit(runes[start]) {
+		start++
+	}
+	for end > start && !unicode.IsLetter(runes[end-1]) && !unicode.IsDigit(runes[end-1]) {
+		end--
+	}
+
+	if start >= end {
+		return false
+	}
+
+	token = string(runes[start:end])
+
+	token = normalizeBotToken(token)
+	if token == "" {
+		return false
+	}
+
+	if p.isBotIdentity(token) || p.isLikelyBotMutation(token) {
+		return true
+	}
+
+	return false
 }
 
 func (p *Plugin) followUpSessionKey(channel, username string) string {

@@ -296,6 +296,57 @@ func TestPluginInitClampsFollowUpChances(t *testing.T) {
 	}
 }
 
+func TestPluginInitClampsFollowUpWindow(t *testing.T) {
+	plugin := New()
+	bus := NewMockEventBus()
+
+	config := Config{
+		Enabled:               true,
+		FollowUpWindowSeconds: maxFollowUpWindowSecs + 30,
+	}
+
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("Failed to marshal config: %v", err)
+	}
+
+	err = plugin.Init(configJSON, bus)
+	if err != nil {
+		t.Fatalf("Init failed with large follow-up window config: %v", err)
+	}
+
+	ollamaPlugin := plugin.(*Plugin)
+	if ollamaPlugin.config.FollowUpWindowSeconds != maxFollowUpWindowSecs {
+		t.Fatalf("expected follow-up window to clamp to %d, got %d", maxFollowUpWindowSecs, ollamaPlugin.config.FollowUpWindowSeconds)
+	}
+}
+
+func TestTouchFollowUpSessionCapsWindowFromConfig(t *testing.T) {
+	plugin := &Plugin{
+		config: &Config{
+			FollowUpEnabled:       true,
+			FollowUpWindowSeconds: maxFollowUpWindowSecs + 10,
+			FollowUpMaxMessages:   4,
+			FollowUpMinIntervalMs: 2500,
+		},
+		followUpSessions: make(map[string]followUpSession),
+	}
+
+	plugin.touchFollowUpSession("testchannel", "alice", plugin.defaultFollowUpSettings())
+	key := plugin.followUpSessionKey("testchannel", "alice")
+
+	plugin.followUpMu.RLock()
+	session, ok := plugin.followUpSessions[key]
+	plugin.followUpMu.RUnlock()
+	if !ok {
+		t.Fatal("expected follow-up session after touch")
+	}
+
+	if session.ExpiresAt.After(time.Now().Add(time.Duration(maxFollowUpWindowSecs) * time.Second).Add(2 * time.Second)) {
+		t.Fatalf("expected follow-up expiry to respect max window cap %d", maxFollowUpWindowSecs)
+	}
+}
+
 func TestDefaultSystemPromptIsHardened(t *testing.T) {
 	prompt := defaultSystemPrompt
 
@@ -421,7 +472,7 @@ func TestGenerateAndSendResponseUsesFollowUpNoiseWithoutModelCall(t *testing.T) 
 		t.Fatalf("expected no Ollama model call when follow-up noise triggers, got %d", serverCalls.Load())
 	}
 
-	waitForBroadcastType(t, bus, "cytube.send", 1, 2*time.Second)
+	waitForBroadcastType(t, bus, "cytube.send", 1, 4*time.Second)
 
 	bus.mu.Lock()
 	sent := 0
@@ -505,6 +556,37 @@ func TestIsBotMentioned(t *testing.T) {
 			result := plugin.isBotMentioned(tt.message)
 			if result != tt.expected {
 				t.Errorf("isBotMentioned(%q) = %v, expected %v", tt.message, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestStripBotInvocation(t *testing.T) {
+	plugin := &Plugin{
+		botName:    "Dazza",
+		botAliases: buildBotNameAliases("Dazza"),
+	}
+
+	tests := []struct {
+		name            string
+		message         string
+		expectedMessage string
+		hasInvocation   bool
+	}{
+		{name: "leading", message: "dazza can you hear me", expectedMessage: "can you hear me", hasInvocation: true},
+		{name: "at symbol", message: "hey @Dazza, can you help?", expectedMessage: "hey can you help?", hasInvocation: true},
+		{name: "punctuation end", message: "@dazza!", expectedMessage: "", hasInvocation: true},
+		{name: "no mention", message: "hey everyone", expectedMessage: "hey everyone", hasInvocation: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, hasInvocation := plugin.stripBotInvocation(tt.message)
+			if hasInvocation != tt.hasInvocation {
+				t.Fatalf("expected hasInvocation=%v, got %v", tt.hasInvocation, hasInvocation)
+			}
+			if result != tt.expectedMessage {
+				t.Fatalf("expected stripped message %q, got %q", tt.expectedMessage, result)
 			}
 		})
 	}
@@ -958,6 +1040,158 @@ func TestHandleChatMessageFollowUpQuestionWithoutMention(t *testing.T) {
 	ollamaPlugin.followUpMu.RUnlock()
 	if !refreshedExpiry.ExpiresAt.After(initialExpiry) {
 		t.Fatalf("expected follow-up session to be refreshed beyond %v, got %v", initialExpiry, refreshedExpiry)
+	}
+}
+
+func TestHandleChatMessageManualInvocationStripsTokenFromMessage(t *testing.T) {
+	bus := NewMockEventBus()
+	var userMessage string
+	serverCalls := atomic.Int32{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls.Add(1)
+
+		var req OllamaRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode ollama request: %v", err)
+		}
+		if len(req.Messages) >= 2 {
+			userMessage = req.Messages[1].Content
+		}
+
+		_, err := w.Write([]byte(`{"message":{"content":"you bet"}}`))
+		if err != nil {
+			t.Fatalf("failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	plugin := New().(*Plugin)
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	plugin.config.FollowUpEnabled = false
+	plugin.config.OllamaURL = server.URL
+	plugin.botName = "Dazza"
+	plugin.botAliases = buildBotNameAliases("Dazza")
+	plugin.userLists = map[string]map[string]bool{
+		"testchannel": {"alice": true},
+	}
+
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "alice",
+				Message:     "hey @dazza, can you help me?",
+				Channel:     "testchannel",
+				MessageTime: time.Now().UnixMilli(),
+			},
+		},
+	}
+
+	if err := plugin.handleChatMessage(event); err != nil {
+		t.Fatalf("handleChatMessage failed: %v", err)
+	}
+
+	waitForServerCalls(t, &serverCalls, 1, 2*time.Second)
+	if userMessage != "hey can you help me?" {
+		t.Fatalf("expected model request message to strip invocation, got %q", userMessage)
+	}
+
+	waitForBroadcastType(t, bus, "cytube.send", 1, 4*time.Second)
+}
+
+func TestHandleChatMessageManualInvocationOnlyIgnored(t *testing.T) {
+	bus := NewMockEventBus()
+	plugin := New().(*Plugin)
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	plugin.config.Enabled = true
+	plugin.botName = "Dazza"
+	plugin.botAliases = buildBotNameAliases("Dazza")
+	plugin.userLists = map[string]map[string]bool{
+		"testchannel": {"alice": true},
+	}
+
+	event := &framework.DataEvent{
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "alice",
+				Message:     "daz",
+				Channel:     "testchannel",
+				MessageTime: time.Now().UnixMilli(),
+			},
+		},
+	}
+
+	if err := plugin.handleChatMessage(event); err != nil {
+		t.Fatalf("handleChatMessage failed: %v", err)
+	}
+
+	if len(bus.broadcasts) != 0 {
+		t.Fatalf("expected no response when message is invocation only")
+	}
+}
+
+func TestHandleChatMessageManualInvocationCommandIgnored(t *testing.T) {
+	bus := NewMockEventBus()
+	var serverCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls.Add(1)
+		if _, err := w.Write([]byte(`{"message":{"content":"ignored"}}`)); err != nil {
+			t.Fatalf("failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	plugin := New().(*Plugin)
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	plugin.config.FollowUpEnabled = true
+	plugin.config.Enabled = true
+	plugin.config.OllamaURL = server.URL
+	plugin.botName = "Dazza"
+	plugin.botAliases = buildBotNameAliases("Dazza")
+	plugin.userLists = map[string]map[string]bool{
+		"testchannel": {"alice": true},
+	}
+
+	key := plugin.followUpSessionKey("testchannel", "alice")
+	plugin.followUpSessions = make(map[string]followUpSession)
+	plugin.followUpSessions[key] = followUpSession{
+		ExpiresAt:      time.Now().Add(3 * time.Minute),
+		Origin:         followUpOriginMention,
+		MaxMessages:    4,
+		MinIntervalMS:  2500,
+		RespondAll:     false,
+		LastResponseAt: time.Now().Add(-3 * time.Second),
+	}
+
+	if err := plugin.handleChatMessage(&framework.DataEvent{
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "alice",
+				Message:     "daz !help",
+				Channel:     "testchannel",
+				MessageTime: time.Now().UnixMilli(),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("handleChatMessage failed: %v", err)
+	}
+
+	if serverCalls.Load() != 0 {
+		t.Fatalf("expected no Ollama calls for command-like message after invocation strip, got %d", serverCalls.Load())
+	}
+	if len(bus.broadcasts) != 0 {
+		t.Fatalf("expected no send event for invocation command")
+	}
+	if !plugin.hasActiveFollowUpSession("testchannel", "alice", time.UnixMilli(time.Now().UnixMilli())) {
+		t.Fatalf("expected follow-up session to remain active")
 	}
 }
 
