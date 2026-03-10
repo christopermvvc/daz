@@ -584,14 +584,14 @@ func (p *Plugin) helpURLForRequest(req *framework.PluginRequest) string {
 
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
-		return strings.TrimSuffix(baseURL, "/") + "/" + helpAdminOutputFile
+		return strings.TrimSuffix(baseURL, "/") + "/" + helpAdminHelpOutputFile
 	}
 
 	basePath := parsed.Path
 	if basePath == "" {
 		basePath = "/"
 	}
-	adminPath := path.Join(path.Dir(basePath), helpAdminOutputFile)
+	adminPath := path.Join(basePath, helpAdminHelpOutputFile)
 	if !strings.HasPrefix(adminPath, "/") {
 		adminPath = "/" + adminPath
 	}

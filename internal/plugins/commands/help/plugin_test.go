@@ -544,8 +544,8 @@ func TestHelpURLForRequest(t *testing.T) {
 	}
 
 	plugin.adminGenerator = NewHTMLGenerator(plugin.config, plugin.snapshotAllEntries, true, true)
-	if got := plugin.helpURLForRequest(adminReq); got != "https://example.com/admin.html" {
-		t.Fatalf("admin URL with admin generator = %q, want %q", got, "https://example.com/admin.html")
+	if got := plugin.helpURLForRequest(adminReq); got != "https://example.com/help/admin/index.html" {
+		t.Fatalf("admin URL with admin generator = %q, want %q", got, "https://example.com/help/admin/index.html")
 	}
 }
 
