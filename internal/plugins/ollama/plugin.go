@@ -413,7 +413,7 @@ func New() framework.Plugin {
 			OllamaURL:                defaultOllamaURL,
 			Model:                    defaultModel,
 			RateLimitSeconds:         defaultRateLimitSecs,
-			FollowUpEnabled:          false,
+			FollowUpEnabled:          true,
 			FollowUpWindowSeconds:    defaultFollowUpWindow,
 			FollowUpMaxMessages:      defaultFollowUpMax,
 			FollowUpMinIntervalMs:    defaultFollowUpMinMS,

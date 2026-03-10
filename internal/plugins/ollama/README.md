@@ -11,7 +11,7 @@ Config (optional)
 - `max_tokens` (default: 2048)
 - `keep_alive` (default: `5m`)
 - `system_prompt` (default: hardened Dazza persona and safety guardrails)
-- `follow_up_enabled` (default: false)
+- `follow_up_enabled` (default: true)
 - `follow_up_window_seconds` (default: 180)
 - Max enforced: values above `900` are clamped to 900 seconds (15 minutes).
 - `follow_up_respond_all_messages` (default: false)
