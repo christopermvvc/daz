@@ -930,11 +930,8 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	}
 
 	if p.isCommandMessage(message) {
-		if p.hasActiveFollowUpSession(channel, username, now) {
-			logger.Debug(p.name, "Clearing follow-up session for command-like message from %s in %s", username, channel)
-			p.clearFollowUpSession(channel, username)
-		}
 		logger.Debug(p.name, "Skipping command-like message in %s from %s: %q", channel, username, message)
+		logger.Debug(p.name, "Keeping follow-up state alive for command-like message in %s from %s", channel, username)
 		return nil
 	}
 

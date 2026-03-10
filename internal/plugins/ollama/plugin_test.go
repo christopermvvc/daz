@@ -857,8 +857,8 @@ func TestHandleChatMessageIgnoresCommandPrefixes(t *testing.T) {
 			}
 			bus.mu.Unlock()
 
-			if plugin.hasActiveFollowUpSession("testchannel", "alice", time.UnixMilli(now)) {
-				t.Fatalf("expected follow-up session to be cleared for command %q", msg)
+			if !plugin.hasActiveFollowUpSession("testchannel", "alice", time.UnixMilli(now)) {
+				t.Fatalf("expected follow-up session to remain active for command %q", msg)
 			}
 		})
 	}
