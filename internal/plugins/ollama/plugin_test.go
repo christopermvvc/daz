@@ -1415,6 +1415,85 @@ func TestHandleChatMessageClearsFollowUpOnNonQuestion(t *testing.T) {
 	}
 }
 
+func TestHandleChatMessageLocksFollowUpToInitiatingUser(t *testing.T) {
+	bus := NewMockEventBus()
+	var serverCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls.Add(1)
+		if _, err := w.Write([]byte(`{"message":{"content":"yeah, i got you"}}`)); err != nil {
+			t.Fatalf("failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	plugin := New().(*Plugin)
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	plugin.config.FollowUpEnabled = true
+	plugin.config.FollowUpWindowSeconds = 120
+	plugin.config.FollowUpMinIntervalMs = 0
+	plugin.config.FollowUpNoResponseChance = 0
+	plugin.config.FollowUpNoiseChance = 0
+	plugin.config.OllamaURL = server.URL
+	plugin.botName = "Dazza"
+	plugin.botAliases = buildBotNameAliases("Dazza")
+	plugin.userLists = map[string]map[string]bool{
+		"testchannel": {"alice": true, "bob": true},
+	}
+
+	key := plugin.followUpSessionKey("testchannel", "alice")
+	plugin.followUpSessions[key] = followUpSession{
+		ExpiresAt:      time.Now().Add(3 * time.Minute),
+		LastResponseAt: time.Now().Add(-time.Second),
+		Origin:         followUpOriginMention,
+		MaxMessages:    4,
+		MinIntervalMS:  0,
+		RespondAll:     false,
+		MessageCount:   1,
+	}
+
+	bobEvent := &framework.DataEvent{
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "bob",
+				Message:     "daz tell me something",
+				Channel:     "testchannel",
+				MessageTime: time.Now().UnixMilli(),
+			},
+		},
+	}
+
+	if err := plugin.handleChatMessage(bobEvent); err != nil {
+		t.Fatalf("handleChatMessage (bob) failed: %v", err)
+	}
+
+	// Bob should be skipped while alice holds the active one-on-one follow-up lock.
+	time.Sleep(100 * time.Millisecond)
+	if serverCalls.Load() != 0 {
+		t.Fatalf("expected no Ollama calls while lock is held, got %d", serverCalls.Load())
+	}
+
+	aliceEvent := &framework.DataEvent{
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "alice",
+				Message:     "thanks for that, huh?",
+				Channel:     "testchannel",
+				MessageTime: time.Now().UnixMilli(),
+			},
+		},
+	}
+
+	if err := plugin.handleChatMessage(aliceEvent); err != nil {
+		t.Fatalf("handleChatMessage (alice) failed: %v", err)
+	}
+
+	waitForServerCalls(t, &serverCalls, 1, 4*time.Second)
+	waitForBroadcastType(t, bus, "cytube.send", 1, 4*time.Second)
+}
+
 func TestHandleChatMessageIgnoresCommandPrefixes(t *testing.T) {
 	commandMessages := []string{"!help", "/help"}
 

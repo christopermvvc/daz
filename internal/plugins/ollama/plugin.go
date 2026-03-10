@@ -1102,6 +1102,11 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 		return nil
 	}
 
+	if p.isOneOnOneFollowUpLockedOut(channel, username, now) {
+		logger.Debug(p.name, "Skipping message from %s in %s due active one-on-one follow-up lock", username, channel)
+		return nil
+	}
+
 	isBotMentioned := p.isBotMentioned(message) || hasManualInvocation
 	isQuestion := p.isLikelyQuestion(message)
 
@@ -1348,6 +1353,68 @@ func (p *Plugin) getActiveFollowUpSession(channel, username string, now time.Tim
 	}
 
 	return session, true
+}
+
+func (p *Plugin) oneOnOneFollowUpOwner(channel string, now time.Time) (string, bool) {
+	if p.config == nil || !p.config.FollowUpEnabled {
+		return "", false
+	}
+
+	if p.followUpSessions == nil {
+		return "", false
+	}
+
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	normalizedChannel := strings.ToLower(strings.TrimSpace(channel))
+	if normalizedChannel == "" {
+		return "", false
+	}
+
+	latestResponse := time.Time{}
+	owner := ""
+
+	p.followUpMu.RLock()
+	for key, session := range p.followUpSessions {
+		if !now.Before(session.ExpiresAt) {
+			continue
+		}
+
+		sessionChannel, sessionUsername, hasUsername := strings.Cut(key, ":")
+		if !hasUsername {
+			continue
+		}
+		if sessionChannel != normalizedChannel {
+			continue
+		}
+
+		if owner == "" || session.LastResponseAt.After(latestResponse) {
+			owner = strings.ToLower(sessionUsername)
+			latestResponse = session.LastResponseAt
+		}
+	}
+	p.followUpMu.RUnlock()
+
+	if owner == "" {
+		return "", false
+	}
+
+	return owner, true
+}
+
+func (p *Plugin) isOneOnOneFollowUpLockedOut(channel, username string, now time.Time) bool {
+	if p.config == nil || !p.config.FollowUpEnabled {
+		return false
+	}
+
+	owner, hasActive := p.oneOnOneFollowUpOwner(channel, now)
+	if !hasActive {
+		return false
+	}
+
+	return !strings.EqualFold(owner, username)
 }
 
 func (p *Plugin) hasActiveFollowUpSession(channel, username string, now time.Time) bool {
