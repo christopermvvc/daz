@@ -1154,14 +1154,9 @@ func (p *Plugin) handleChatMessage(event framework.Event) error {
 	toneScore := p.recordToneSignal(channel, username, message)
 
 	if p.config != nil && p.config.FollowUpEnabled {
-		shouldTrackFollowUp = true
+		shouldTrackFollowUp = isFollowUp || isBotMentioned
 		if !isFollowUp {
 			followUpSettings.Origin = followUpOriginMention
-		}
-		if !isFollowUp && !isBotMentioned {
-			shouldTrackFollowUp = false
-		} else if !isFollowUp && !isQuestion {
-			shouldTrackFollowUp = false
 		}
 	}
 

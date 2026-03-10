@@ -1043,6 +1043,131 @@ func TestHandleChatMessageFollowUpQuestionWithoutMention(t *testing.T) {
 	}
 }
 
+func TestHandleChatMessageFollowUpStartsFromNonQuestionInvocation(t *testing.T) {
+	bus := NewMockEventBus()
+	var serverCalls atomic.Int32
+	requestMessages := make([]string, 0)
+	var messagesMu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls.Add(1)
+
+		var req OllamaRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode Ollama request: %v", err)
+		}
+
+		if len(req.Messages) >= 2 {
+			messagesMu.Lock()
+			requestMessages = append(requestMessages, req.Messages[1].Content)
+			messagesMu.Unlock()
+		}
+
+		if _, err := w.Write([]byte(`{"message":{"content":"you bet"}}`)); err != nil {
+			t.Fatalf("failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	plugin := New().(*Plugin)
+	if err := plugin.Init(nil, bus); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	plugin.config.FollowUpEnabled = true
+	plugin.config.FollowUpWindowSeconds = 120
+	plugin.config.RateLimitSeconds = 0
+	plugin.config.FollowUpMinIntervalMs = 10
+	plugin.config.FollowUpNoResponseChance = 0
+	plugin.config.FollowUpNoiseChance = 0
+	plugin.config.OllamaURL = server.URL
+	plugin.randSource = rand.New(rand.NewSource(1))
+	plugin.botName = "Dazza"
+	plugin.botAliases = buildBotNameAliases("Dazza")
+	plugin.userLists = map[string]map[string]bool{
+		"testchannel": {"alice": true},
+	}
+
+	firstMessageTime := time.Now().UnixMilli()
+	responseDeadline := 4 * time.Second
+	if err := plugin.handleChatMessage(&framework.DataEvent{
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "alice",
+				Message:     "daz lets talk for a bit",
+				Channel:     "testchannel",
+				MessageTime: firstMessageTime,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("handleChatMessage (invocation) failed: %v", err)
+	}
+
+	waitForServerCalls(t, &serverCalls, 1, responseDeadline)
+	waitForBroadcastType(t, bus, "cytube.send", 1, responseDeadline)
+	key := plugin.followUpSessionKey("testchannel", "alice")
+	plugin.followUpMu.RLock()
+	firstSession, hasFirstSession := plugin.followUpSessions[key]
+	plugin.followUpMu.RUnlock()
+	if !hasFirstSession {
+		t.Fatalf("expected follow-up session after non-question invocation")
+	}
+	if firstSession.MessageCount < 1 {
+		t.Fatalf("expected follow-up session message count at least 1, got %d", firstSession.MessageCount)
+	}
+
+	messagesMu.Lock()
+	if len(requestMessages) < 1 {
+		messagesMu.Unlock()
+		t.Fatalf("expected first Ollama request")
+	}
+	if requestMessages[0] != "lets talk for a bit" {
+		sent := requestMessages[0]
+		messagesMu.Unlock()
+		t.Fatalf("expected invocation strip to send %q, got %q", "lets talk for a bit", sent)
+	}
+	messagesMu.Unlock()
+
+	if err := plugin.handleChatMessage(&framework.DataEvent{
+		Data: &framework.EventData{
+			ChatMessage: &framework.ChatMessageData{
+				Username:    "alice",
+				Message:     "life is shit, how is it over there?",
+				Channel:     "testchannel",
+				MessageTime: time.Now().Add(250 * time.Millisecond).UnixMilli(),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("handleChatMessage (follow-up) failed: %v", err)
+	}
+
+	waitForServerCalls(t, &serverCalls, 2, responseDeadline)
+	waitForBroadcastType(t, bus, "cytube.send", 2, responseDeadline)
+
+	messagesMu.Lock()
+	if len(requestMessages) < 2 {
+		messagesMu.Unlock()
+		t.Fatalf("expected follow-up Ollama request")
+	}
+	if requestMessages[1] != "life is shit, how is it over there?" {
+		sent := requestMessages[1]
+		messagesMu.Unlock()
+		t.Fatalf("expected follow-up request content %q, got %q", "life is shit, how is it over there?", sent)
+	}
+	messagesMu.Unlock()
+
+	key = plugin.followUpSessionKey("testchannel", "alice")
+	plugin.followUpMu.RLock()
+	session, hasSession := plugin.followUpSessions[key]
+	plugin.followUpMu.RUnlock()
+	if !hasSession {
+		t.Fatalf("expected follow-up session to remain active after follow-up")
+	}
+	if session.MessageCount < 2 {
+		t.Fatalf("expected follow-up message count to advance, got %d", session.MessageCount)
+	}
+}
+
 func TestHandleChatMessageManualInvocationStripsTokenFromMessage(t *testing.T) {
 	bus := NewMockEventBus()
 	var userMessage string
